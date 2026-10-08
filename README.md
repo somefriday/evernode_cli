@@ -16,12 +16,12 @@ virtual environment:
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv git
-git clone REPOSITORY_URL /root/node-cli-tool
+git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
 
 sudo install -d -m 0755 /opt/evernode
 sudo python3 -m venv /opt/evernode/venv
 sudo /opt/evernode/venv/bin/python -m pip install --upgrade pip
-sudo /opt/evernode/venv/bin/python -m pip install /root/node-cli-tool
+sudo /opt/evernode/venv/bin/python -m pip install /root/evernode_cli
 sudo ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
 
 sudo evernode host setup --yes
@@ -31,6 +31,20 @@ sudo evernode host check
 `host setup` detects Ubuntu or Debian, installs Docker Engine, Buildx, Compose,
 and the reference-script dependencies. It does not modify the firewall. Allow
 only each node's allocated ADNL UDP port through the host and provider firewall.
+
+### Update an existing installation
+
+After pulling a newer checkout, reinstall the local package into the existing
+virtual environment. Confirm that the wallet command is available before
+continuing an import flow.
+
+```bash
+cd /root/evernode_cli
+git pull --ff-only
+sudo /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
+sudo evernode --version
+sudo evernode wallet --help
+```
 
 ## Build an image
 
@@ -53,9 +67,11 @@ sudo evernode node create -n validator01 --image IMAGE
 sudo evernode node sync -n validator01 --wait
 ```
 
-Complete each on-chain stage in order. Save every phrase and address displayed
-by `wallet create` and `depool prepare`, then fund the requested contract
-before its deployment command.
+`node create` creates the node only. After synchronization, `wallet create`
+generates the new Safe phrases and prints every phrase and the wallet address
+to the interactive terminal. It then requires `SAVED` before it records that
+stage. Save the output before funding the wallet and running its deployment
+command.
 
 ```bash
 sudo evernode wallet create -n validator01
@@ -88,9 +104,10 @@ sudo evernode depool verify -n validator02
 sudo evernode election start -n validator02
 ```
 
-Wallet phrases restore the Safe wallet only. They do not restore the former
-node's ADNL, consensus, or console keys. Fence the former validator before
-starting elections on a replacement.
+`wallet recover` uses the phrases entered during node creation and does not
+print them again. Wallet phrases restore the Safe wallet only. They do not
+restore the former node's ADNL, consensus, or console keys. Fence the former
+validator before starting elections on a replacement.
 
 ## Operate a node
 

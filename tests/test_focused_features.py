@@ -1,13 +1,17 @@
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from evernode import (
     cli,
     configuration,
+    creation,
     docker,
     elections,
     host,
@@ -15,6 +19,7 @@ from evernode import (
     process,
     scripts,
     storage,
+    setup_actions,
     wallets,
 )
 from evernode.arguments import build_argument_parser
@@ -350,23 +355,74 @@ class FocusedFeatureTests(unittest.TestCase):
             ),
             patch("evernode.cli.sys.stdin.isatty", return_value=True),
             patch(
-                "evernode.cli.prompt_for_value",
+                "evernode.creation.ui.prompt_for_value",
                 side_effect=lambda value, _label, default=None: (
                     value if value is not None else default
                 ),
             ),
             patch(
-                "evernode.cli.prompt_integer",
+                "evernode.creation.ui.prompt_integer",
                 side_effect=lambda value, label, default: (
                     default if value is None else value
                 ),
             ) as integer,
         ):
-            self.assertEqual(cli.handle_node_creation(self.store, args), 0)
+            self.assertEqual(creation.handle_node_creation(self.store, args), 0)
         self.assertEqual(
             [call.args[1] for call in integer.call_args_list],
             ["Wallet workchain", "Election check interval in minutes"],
         )
+
+    def test_import_prompt_labels_depool_address_as_required(self):
+        args = build_argument_parser().parse_args(
+            [
+                "node",
+                "create",
+                "-n",
+                "validator",
+                "--image",
+                "local/ever-node:abc",
+                "--ip",
+                "203.0.113.5",
+                "--memory",
+                "40G",
+                "--import-wallet",
+                "--wallet-address",
+                "0:" + "a" * 64,
+                "--custodians",
+                "3",
+                "--required-signatures",
+                "2",
+                "--dry-run",
+            ]
+        )
+        with (
+            patch(
+                "evernode.creation.docker.select_container_names",
+                return_value=("ever-node-01", "statsd-01"),
+            ),
+            patch(
+                "evernode.creation.docker.select_available_node_port",
+                side_effect=(58888, 9102),
+            ),
+            patch("evernode.creation.sys.stdin.isatty", return_value=True),
+            patch(
+                "evernode.creation.ui.prompt_for_value",
+                side_effect=lambda value, _label, default=None: (
+                    value if value is not None else default
+                ),
+            ),
+            patch(
+                "evernode.creation.ui.prompt_integer",
+                side_effect=lambda value, _label, default: (
+                    default if value is None else value
+                ),
+            ),
+            patch("builtins.input", return_value="") as prompt,
+        ):
+            with self.assertRaisesRegex(process.OperationError, "requires expected"):
+                creation.handle_node_creation(self.store, args)
+        prompt.assert_called_once_with("Existing DePool address: ")
 
     def test_current_vendored_env_accepts_all_rendered_values(self):
         root = Path(__file__).resolve().parents[1]
@@ -419,6 +475,57 @@ class FocusedFeatureTests(unittest.TestCase):
         self.assertNotIn("one one", str(result))
         self.assertEqual(len(phrases), 2)
         self.assertIn("evernode wallet deploy", result["next"])
+
+    def test_wallet_create_displays_generated_phrases_on_the_terminal(self):
+        phrase = "one " * 12
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            setup_actions._print_new_secrets("Safe wallet", "0:" + "a" * 64, [phrase])
+        self.assertIn("Safe wallet seed phrase 1: " + phrase, output.getvalue())
+        self.assertIn("Safe wallet address: 0:" + "a" * 64, output.getvalue())
+
+        config = make_node_configuration(
+            "validator",
+            wallet={
+                "mode": "new",
+                "custodians": 1,
+                "required_signatures": 1,
+                "wallet_address": None,
+                "depool_address": None,
+            },
+            setup_stage="node-started",
+        )
+        self.store.node_directory("validator").mkdir(parents=True)
+        self.store.save_node_config(config)
+        args = SimpleNamespace(
+            name="validator", group="wallet", action="create", yes=True
+        )
+        result = {
+            "stage": "wallet-created",
+            "wallet": {"address": "0:" + "a" * 64},
+            "next": "evernode wallet deploy -n validator",
+        }
+        with (
+            patch("evernode.setup_actions.sys.stdin") as stdin,
+            patch("evernode.setup_actions.sys.stdout") as stdout,
+            patch(
+                "evernode.setup_actions._require_synchronized_setup_node",
+                return_value=config,
+            ),
+            patch("evernode.setup_actions.ui.confirm_operation"),
+            patch(
+                "evernode.wallets.wallet_create",
+                return_value=(config, result, [phrase]),
+            ),
+            patch("evernode.setup_actions._print_new_secrets") as show_secrets,
+            patch("evernode.setup_actions._acknowledge_secret_backup"),
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            self.assertEqual(setup_actions.handle_setup_action(self.store, args), 0)
+        show_secrets.assert_called_once_with(
+            "Safe wallet", result["wallet"]["address"], [phrase]
+        )
 
     def test_each_fresh_action_runs_one_reference_script_and_requires_its_stage(self):
         profile = {

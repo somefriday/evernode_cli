@@ -37,6 +37,12 @@ the builder image. This keeps host Rust and Cargo versions out of the build.
 
 ## 1. Install the CLI
 
+Clone the repository directly on the server:
+
+```bash
+git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
+```
+
 Install the command globally from the cloned checkout. The CLI is isolated in
 a virtual environment, so it does not modify the operating system's managed Python:
 
@@ -44,7 +50,7 @@ a virtual environment, so it does not modify the operating system's managed Pyth
 sudo install -d -m 0755 /opt/evernode
 sudo python3 -m venv /opt/evernode/venv
 sudo /opt/evernode/venv/bin/python -m pip install --upgrade pip
-sudo /opt/evernode/venv/bin/python -m pip install /root/node-cli-tool
+sudo /opt/evernode/venv/bin/python -m pip install /root/evernode_cli
 sudo ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
 
 evernode --version
@@ -68,11 +74,19 @@ does not open firewall ports. When a node is created, allow only its allocated
 **ADNL UDP** port through the provider and host firewall. Metrics bind to
 `127.0.0.1`; console and StatsD ports remain inside Docker.
 
-To update the installed CLI after replacing `/root/node-cli-tool`, run:
+To update the installed CLI after pulling a newer checkout, run:
 
 ```bash
-sudo /opt/evernode/venv/bin/python -m pip install --upgrade /root/node-cli-tool
+cd /root/evernode_cli
+git pull --ff-only
+sudo /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
+sudo evernode --version
+sudo evernode wallet --help
 ```
+
+The `wallet` and `depool` command groups are required for the setup stages
+below. If `wallet --help` fails, the virtual environment still has an older
+installed package; rerun the commands above before continuing.
 
 ## 3. Build a shared base image
 
@@ -166,9 +180,10 @@ sudo evernode election start -n validator01
 sudo evernode election status -n validator01
 ```
 
-`wallet create` and `depool prepare` require an interactive terminal. They
-print new seed phrases directly to that terminal and require you to acknowledge
-that they were saved. Phrases are not included in logs or JSON output.
+`node create` does not generate Safe phrases. `wallet create` and `depool
+prepare` require an interactive terminal. They print new seed phrases directly
+to that terminal and require you to acknowledge that they were saved. Phrases
+are not included in logs or JSON output.
 
 The election schedule is an isolated root-owned file at
 `/etc/cron.d/evernode-validator01`. On every interval it runs the reference
@@ -231,10 +246,11 @@ sudo evernode election start -n validator02
 sudo evernode election status -n validator02
 ```
 
-`wallet recover` derives the wallet address from stored phrases. `wallet
-verify` checks its custodian count and required-signature threshold. `depool
-verify` checks the supplied DePool through the reference helper. These commands
-do not deploy contracts or make a stake.
+`wallet recover` derives the wallet address from stored phrases and never
+prints them again. `wallet verify` checks its custodian count and
+required-signature threshold. `depool verify` checks the supplied DePool
+through the reference helper. These commands do not deploy contracts or make a
+stake.
 
 ## 6. Update one validator to a rebuilt image
 
