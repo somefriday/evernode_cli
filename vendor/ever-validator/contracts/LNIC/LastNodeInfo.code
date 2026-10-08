@@ -1,0 +1,993 @@
+.fragment c4_to_c7, {
+	PUSHROOT
+	CTOS
+	LDU 256 ; pubkey c4
+	LDU 64 ; pubkey timestamp c4
+	LDU 1 ; ctor flag
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDU 8
+	LDU 8
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDI 1
+	LDU 32
+	LDU 32
+	LDREF
+	LDI 1
+	ROLLREV 15
+	TUPLE 15
+	SWAP
+	LDU 8
+	LDU 32
+	LDU 32
+	LDREF
+	ENDS
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	SETGLOB 6
+	SETGLOB 3
+	SETGLOB 2
+}
+
+.fragment ABI_hex, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 14
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc000000000000000000000000092dc7ee6
+		NEWC
+		STSLICE
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment c7_to_c4, {
+	GETGLOB 14
+	GETGLOB 13
+	GETGLOB 12
+	GETGLOB 11
+	GETGLOB 10
+	GETGLOB 3
+	GETGLOB 2
+	NEWC
+	STU 256
+	STU 64
+	STONE
+	SWAP
+	UNTUPLE 15
+	REVERSE 16, 0
+	STREF
+	STREF
+	STREF
+	ROLLREV 16
+	NEWC
+	STREF
+	STREF
+	STREF
+	STU 8
+	STU 8
+	ROLLREV 11
+	NEWC
+	STREF
+	STREF
+	STI 1
+	STU 32
+	STU 32
+	STREF
+	STI 1
+	STU 8
+	STU 32
+	STU 32
+	STREF
+	STBREFR
+	STBREFR
+	ENDC
+	POPROOT
+}
+
+.fragment change_node_info_48210e3e_internal, {
+	.loc LastNodeInfo.sol, 62
+	PUSHREF {
+		.blob x5075626c6963206b6579206973207a65726f21
+	}
+	GETGLOB 2
+	NEQINT 0
+	THROWARGIFNOT 101
+	.loc LastNodeInfo.sol, 63
+	PUSHREF {
+		.blob x5075626c6963206b6579206d69736d61746368
+	}
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWARGIFNOT 102
+	.loc LastNodeInfo.sol, 64
+	ACCEPT
+	.loc LastNodeInfo.sol, 80
+	DUP
+	GETGLOB 13
+	GREATER
+	THROWIFNOT 903
+	.loc LastNodeInfo.sol, 81
+	SETGLOB 13
+	.loc LastNodeInfo.sol, 82
+	SETGLOB 10
+	.loc LastNodeInfo.sol, 0
+}
+
+.fragment change_node_info, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc LastNodeInfo.sol, 79
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDU 8
+	LDU 8
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDI 1
+	LDU 32
+	LDU 32
+	LDREF
+	LDI 1
+	ROLLREV 15
+	TUPLE 15
+	SWAP
+	LDU 32
+	ENDS
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline change_node_info_48210e3e_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment code_updated_time, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 12
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000ca604f0c
+		NEWC
+		STSLICE
+		STU 32
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment code_ver, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 11
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc00000000000000000000000009cb59e03
+		NEWC
+		STSLICE
+		STU 8
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment constructor, {
+	DROP
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 6
+	THROWIF 51
+	LDREF
+	LDREF
+	LDREF
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDREF
+	LDU 8
+	LDU 8
+	LDREF
+	ENDS
+	CTOS
+	LDREF
+	LDREF
+	LDI 1
+	LDU 32
+	LDU 32
+	LDREF
+	LDI 1
+	ROLLREV 15
+	TUPLE 15
+	SWAP
+	LDU 32
+	LDU 32
+	LDREF
+	ENDS
+	.loc LastNodeInfo.sol, 69
+	PUSH S2
+	PUSHINT 1653553322
+	GREATER
+	THROWIFNOT 901
+	.loc LastNodeInfo.sol, 70
+	PUSH2 S1, S2
+	GEQ
+	THROWIFNOT 902
+	.loc LastNodeInfo.sol, 71
+	ACCEPT
+	.loc LastNodeInfo.sol, 72
+	PUSHINT 1
+	SETGLOB 11
+	.loc LastNodeInfo.sol, 73
+	ROLL 3
+	SETGLOB 10
+	.loc LastNodeInfo.sol, 74
+	SETGLOB 14
+	.loc LastNodeInfo.sol, 75
+	SWAP
+	SETGLOB 12
+	.loc LastNodeInfo.sol, 76
+	SETGLOB 13
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment curr_node_info, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 10
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000001
+		NEWC
+		STSLICE
+		SWAP
+		NEWC
+		STSLICECONST xcd1ab268
+		SWAP
+		UNTUPLE 15
+		REVERSE 16, 0
+		STREF
+		STREF
+		STREF
+		ROLLREV 12
+		NEWC
+		STREF
+		STREF
+		STREF
+		STU 8
+		STU 8
+		ROLLREV 7
+		NEWC
+		STREF
+		STREF
+		STI 1
+		STU 32
+		STU 32
+		STREF
+		STI 1
+		STBREFR
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment getABI_d83baed8_internal, {
+	.loc LastNodeInfo.sol, 90
+	GETGLOB 14
+	.loc LastNodeInfo.sol, 0
+}
+
+.fragment upd_only_time_in_c4, {
+	PUSHROOT
+	CTOS
+	LDU 256
+	LDU 64
+	NIP
+	GETGLOB 3
+	ROT
+	NEWC
+	STU 256
+	STU 64
+	STSLICE
+	ENDC
+	POPROOT
+}
+
+.fragment getABI, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc LastNodeInfo.sol, 89
+	ENDS
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline getABI_d83baed8_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 3414885077
+		STUR 130
+		STREF
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getALLinfo_90ba3bf6_internal, {
+	.loc LastNodeInfo.sol, 99
+	GETGLOB 10
+	GETGLOB 11
+	GETGLOB 12
+	GETGLOB 13
+	.loc LastNodeInfo.sol, 0
+}
+
+.fragment getALLinfo, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc LastNodeInfo.sol, 93
+	ENDS
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline getALLinfo_90ba3bf6_internal
+	}
+	PUSH S4
+	PUSHCONT {
+		PUSH S6
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 1
+		STUR 98
+		REVERSE 5, 0
+		NEWC
+		STSLICECONST xc0b9a708
+		SWAP
+		UNTUPLE 15
+		REVERSE 16, 0
+		STREF
+		STREF
+		STREF
+		ROLLREV 15
+		NEWC
+		STREF
+		STREF
+		STREF
+		STU 8
+		STU 8
+		ROLLREV 10
+		NEWC
+		STREF
+		STREF
+		STI 1
+		STU 32
+		STU 32
+		STREF
+		STI 1
+		STU 8
+		STU 32
+		STU 32
+		STBREFR
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		BLKDROP 4
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment getLastNodeInfo_4a8ec358_internal, {
+	.loc LastNodeInfo.sol, 86
+	GETGLOB 10
+	.loc LastNodeInfo.sol, 0
+}
+
+.fragment getLastNodeInfo, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc LastNodeInfo.sol, 85
+	ENDS
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline getLastNodeInfo_4a8ec358_internal
+	}
+	OVER
+	PUSHCONT {
+		PUSH S3
+		CTOS
+		LDU 2
+		LDMSGADDR
+		DROP
+		NIP
+		NEWC
+		STSLICECONST xc
+		STSLICE
+		PUSHINT 1
+		STUR 98
+		SWAP
+		NEWC
+		STSLICECONST xa9f768e1
+		SWAP
+		UNTUPLE 15
+		REVERSE 16, 0
+		STREF
+		STREF
+		STREF
+		ROLLREV 12
+		NEWC
+		STREF
+		STREF
+		STREF
+		STU 8
+		STU 8
+		ROLLREV 7
+		NEWC
+		STREF
+		STREF
+		STI 1
+		STU 32
+		STU 32
+		STREF
+		STI 1
+		STBREFR
+		STBREFR
+		STBREFR
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	PUSHCONT {
+		DROP
+	}
+	IFELSE
+	IFREF {
+		.inline upd_only_time_in_c4
+	}
+	THROW 0
+}
+
+.fragment info_updated_time, {
+	DROP
+	ENDS
+	CALLREF {
+		.inline c4_to_c7
+	}
+	GETGLOB 13
+	OVER
+	PUSHCONT {
+		PUSHSLICE xc0000000000000000000000000f4684e57
+		NEWC
+		STSLICE
+		STU 32
+		ENDC
+		PUSHINT 0
+		SENDRAWMSG
+	}
+	IF
+	THROW 0
+}
+
+.fragment updateContractCode_97f87551_internal, {
+	.loc LastNodeInfo.sol, 62
+	PUSHREF {
+		.blob x5075626c6963206b6579206973207a65726f21
+	}
+	GETGLOB 2
+	NEQINT 0
+	THROWARGIFNOT 101
+	.loc LastNodeInfo.sol, 63
+	PUSHREF {
+		.blob x5075626c6963206b6579206d69736d61746368
+	}
+	GETGLOB 5
+	DUP
+	ISNULL
+	PUSHCONT {
+		DROP
+		PUSHINT 0
+	}
+	IF
+	GETGLOB 2
+	EQUAL
+	THROWARGIFNOT 102
+	.loc LastNodeInfo.sol, 64
+	ACCEPT
+	.loc LastNodeInfo.sol, 104
+	OVER
+	GETGLOB 12
+	GREATER
+	THROWIFNOT 904
+	.loc LastNodeInfo.sol, 105
+	PUSH S2
+	SETCODE
+	.loc LastNodeInfo.sol, 106
+	ROT
+	CTOS
+	DUP
+	PUSHSLICE x8adb35
+	SDEQ
+	PUSHCONT {
+		PLDREFIDX 1
+		CTOS
+	}
+	IF
+	LDREFRTOS
+	NIP
+	BLESS
+	POP C3
+	.loc LastNodeInfo.sol, 107
+	GETGLOB 13
+	ROTREV
+	GETGLOB 11
+	NEWC
+	STU 8
+	STREF
+	STU 32
+	STU 32
+	ENDC
+	.loc LastNodeInfo.sol, 108
+	PUSHINT 2083461128
+	PUSH C3
+	CALLX
+	.loc LastNodeInfo.sol, 0
+}
+
+.fragment updateContractCode, {
+	DROP
+	GETGLOB 6
+	THROWIFNOT 76
+	GETGLOB 2
+	ISNULL
+	IFREF {
+		.inline c4_to_c7
+	}
+	.loc LastNodeInfo.sol, 103
+	LDREF
+	LDU 32
+	LDREF
+	ENDS
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline updateContractCode_97f87551_internal
+	}
+	CALLREF {
+		.inline c7_to_c4
+	}
+	THROW 0
+}
+
+.fragment public_function_selector, {
+	DUP
+	PUSHINT 858797823
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 316440294
+		LEQ
+		IFJMPREF {
+			DUP
+			PUSHINT 287180580
+			EQUAL
+			IFJMPREF {
+				.inline updateContractCode
+			}
+			DUP
+			PUSHINT 316440294
+			EQUAL
+			IFJMPREF {
+				.inline ABI_hex
+			}
+		}
+		DUP
+		PUSHINT 481664515
+		EQUAL
+		IFJMPREF {
+			.inline code_ver
+		}
+		DUP
+		PUSHINT 704080097
+		EQUAL
+		IFJMPREF {
+			.inline getLastNodeInfo
+		}
+		DUP
+		PUSHINT 858797823
+		EQUAL
+		IFJMPREF {
+			.inline constructor
+		}
+	}
+	DUP
+	PUSHINT 1247825676
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1085908744
+		EQUAL
+		IFJMPREF {
+			.inline getALLinfo
+		}
+		DUP
+		PUSHINT 1168341099
+		EQUAL
+		IFJMPREF {
+			.inline change_node_info
+		}
+		DUP
+		PUSHINT 1247825676
+		EQUAL
+		IFJMPREF {
+			.inline code_updated_time
+		}
+	}
+	DUP
+	PUSHINT 1293595240
+	LEQ
+	IFJMPREF {
+		DUP
+		PUSHINT 1267401429
+		EQUAL
+		IFJMPREF {
+			.inline getABI
+		}
+		DUP
+		PUSHINT 1293595240
+		EQUAL
+		IFJMPREF {
+			.inline curr_node_info
+		}
+	}
+	DUP
+	PUSHINT 1952992855
+	EQUAL
+	IFJMPREF {
+		.inline info_updated_time
+	}
+}
+
+.fragment main_external, {
+	OVER
+	CALLREF {
+		.inline c4_to_c7
+	}
+	LDU 1 ; haveSign msgSlice
+	SWAP
+	PUSHCONT {
+		PUSHPOW2 9
+		LDSLICEX
+		DUP
+		MYADDR
+		NEWC
+		STSLICE
+		STSLICE
+		ENDC
+		HASHCU
+		ROT
+		GETGLOB 2
+		DUP
+		SETGLOB 5
+		CHKSIGNU
+		THROWIFNOT 40
+	}
+	IF
+	LDU 64 ; timestamp msgSlice
+	SWAP
+	.inline __replayProtection
+	LDU 32 ; expireAt msgSlice
+	SWAP
+	NOW ; msgSlice expireAt now
+	GREATER ; msgSlice expireAt>now
+	THROWIFNOT 57
+	LDU 32 ; funcId body
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment main_internal, {
+	PUSHROOT
+	CTOS
+	PUSHINT 320
+	SDSKIPFIRST
+	PLDI 1
+	SETGLOB 6
+	PUSH S2
+	CTOS
+	PLDU 4
+	MODPOW2 1
+	IFRET
+	OVER
+	SEMPTY ; isEmpty
+	IFJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	OVER
+	LDUQ 32  ; [funcId] body' ok
+	THROWIFNOT 60
+	OVER
+	IFNOTJMPREF {
+		GETGLOB 6
+		THROWIFNOT 76
+	}
+	SWAP
+	CALLREF {
+		.inline public_function_selector
+	}
+	THROW 60
+}
+
+.fragment onCodeUpgrade_0e89a1b9_internal, {
+	.loc LastNodeInfo.sol, 112
+	PUSHREF {
+	}
+	BLKPUSH 5, 0
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	PUSHINT 0
+	TUPLE 15
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	SETGLOB 14
+	SETGLOB 13
+	SETGLOB 12
+	SETGLOB 11
+	SETGLOB 10
+	.loc LastNodeInfo.sol, 113
+	CTOS
+	LDU 8
+	LDREF
+	LDU 32
+	LDU 32
+	ENDS
+	.loc LastNodeInfo.sol, 114
+	ROLL 3
+	INC
+	UFITS 8
+	SETGLOB 11
+	.loc LastNodeInfo.sol, 115
+	SWAP
+	SETGLOB 12
+	.loc LastNodeInfo.sol, 116
+	SETGLOB 13
+	.loc LastNodeInfo.sol, 117
+	SETGLOB 14
+	.loc LastNodeInfo.sol, 0
+	CALLREF {
+		.inline c7_to_c4
+	}
+	COMMIT
+	THROW 0
+}
+
+.fragment default_data_cell, {
+	PUSHREF {
+	}
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	BLKPUSH 5, 0
+	PUSHINT 0
+	DUP
+	PUSHREF {
+	}
+	DUP
+	PUSHINT 0
+	BLKPUSH 2, 0
+	PUSHREF {
+	}
+	PUSHINT 0
+	TUPLE 15
+	NEWC
+	PUSHINT 321
+	STZEROES
+	SWAP
+	UNTUPLE 15
+	REVERSE 16, 0
+	STREF
+	STREF
+	STREF
+	ROLLREV 16
+	NEWC
+	STREF
+	STREF
+	STREF
+	STU 8
+	STU 8
+	ROLLREV 11
+	NEWC
+	STREF
+	STREF
+	STI 1
+	STU 32
+	STU 32
+	STREF
+	STI 1
+	STU 8
+	STU 32
+	STU 32
+	STREF
+	STBREFR
+	STBREFR
+	ENDC
+}
+
+.fragment onTickTock, {
+}
+
+; The code below forms a value of the StateInit type.
+.blob x4_ ; split_depth = nothing
+.blob x4_ ; special = nothing
+.blob xc_ ; code = just
+.cell { ; code cell
+	PUSHREFCONT {
+		DICTPUSHCONST 32
+		DICTUGETJMPZ
+		THROW 78
+		.code-dict-cell 32, {
+			x7c2f1808 = onCodeUpgrade_0e89a1b9_internal,
+		}
+		.cell { ; version
+			.blob x736f6c20302e37362e30 ; sol 0.76.0
+		}
+	}
+	POPCTR c3
+	DUP
+	IFNOTJMPREF {
+		.inline main_internal
+	}
+	DUP
+	EQINT -1
+	IFJMPREF {
+		.inline main_external
+	}
+	DUP
+	EQINT -2
+	IFJMPREF {
+		.inline onTickTock
+	}
+	THROW 11
+}
+.blob xc_ ; data = just
+.cell { 
+	.inline-computed-cell default_data_cell, 0
+}
+.blob x4_ ; library = hme_empty

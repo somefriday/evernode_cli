@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# shellcheck source=../env.sh
+# shellcheck disable=SC2155,SC2031,SC2015
+
+# Copyright (C) 2019-2025 EverX
+
+# Disclaimer
+##################################################################################################################
+# Your use of this script/function indicates your acceptance of the following terms. 
+# The author(s) of this script/function shall not be held liable for any damage that its use may cause to your systems. 
+# This script/function is provided 'AS IS', without warranty of any kind. 
+# The entire risk as to the quality and performance of the script/function is with you. 
+# Should the script/function prove defective, you assume the cost of all necessary servicing, repair, or correction.
+# In no event will the author(s) be liable for any damages whatsoever including, but not limited to, 
+# loss of business profits, business interruption, loss of business information, 
+# or other pecuniary loss arising out of the use or inability to use the script/function. 
+# This script/function, including any modifications and derivatives, is licensed to you under the terms of the GPL-3.0 license. 
+# You are free to modify, distribute, and convey this script/function and its derivatives under the same license, 
+# provided that you also make the source code available under GPL-3.0. 
+# This disclaimer does not intend to restrict the rights granted by the GPL-3.0 license, 
+# including but not limited to the rights to use, modify, and distribute the script/function and its derivatives.
+# The author(s) reserve the right to change this disclaimer at any time.
+##################################################################################################################
+
+#**************************************************************************************************
+# NB! This script is a part of the main script and is called from there. It cannot be run separately.
+# Some variables are defined in the main script and are used here.
+#**************************************************************************************************
+
+function replenish_depool() {
+    local Depool_addr="$1"
+    local MSIG_NAME="$2"
+    local STAKE_AMOUNT=$3     # in tokens
+
+    #=================================================
+    # check if all variables are set
+    if [[ -z $Depool_addr ]] || [[ -z $MSIG_NAME ]] || [[ -z $STAKE_AMOUNT ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Not all input variables are set. Exiting..."
+        return 1
+    fi
+    local MSIG_addr=$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")
+
+    #=================================================
+    # check depool self balance
+    # shellcheck disable=SC2154
+    printf "\n%s\n" "Depool balanceThreshold: $(echo "scale=3; $((Depool_BalanceThreshold)) / 1000000000" | $CALL_BC) tokens"
+    # shellcheck disable=SC2154
+    printf "%s\n"   "Depool self balance:     $(echo "scale=3; $((Depool_Self_Balance)) / 1000000000" | $CALL_BC) tokens"
+    printf "%s\n\n" "Replenish amount:        $(echo "scale=3; $STAKE_AMOUNT" | $CALL_BC) tokens"
+
+    #=================================================
+    read -rp "### CHECK INFO TWICE!!! Are you sure you want to proceed? (y/n)? " </dev/tty answer
+    case ${answer} in
+        y|Y|yes|Yes|YES )
+            printf "%s\n" "Processing..."
+        ;;
+        * )
+            printf "%s\n" "Cancelled."
+            return 1
+        ;;
+    esac
+
+    #=================================================
+    # make replenish transaction
+    # OUTPUT="$($CALL_CLI -j depool --addr "$Depool_addr" stake ordinary --wallet "$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")" --sign "${INPL_KEYS_DIR}/${MSIG_NAME}_1.keys.json" --value $STAKE_AMOUNT)";then
+    STAKE_AMOUNT_NANO=$((STAKE_AMOUNT * 1000000000))
+    # shellcheck disable=SC2154
+    local PayLoad="$($CALL_CLI -j body --abi "${INPL_DePool_ABI}" receiveFunds "{}"|jq -r '.Message')"
+    # shellcheck disable=SC2154
+    $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/replenish.boc" \
+        --sign "${INPL_KEYS_DIR}/${MSIG_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+        --abi "${INPL_SafeC_Wallet_ABI}" \
+        "${MSIG_addr}" submitTransaction \
+        "{\"dest\":\"$Depool_addr\",\"value\":$STAKE_AMOUNT_NANO,\"bounce\":true,\"allBalance\":false,\"payload\":\"$PayLoad\"}" \
+        --lifetime 3600
+    # Decode BOC file
+    if ! Message_JSON="$($CALL_CLI -j decode msg --abi "${INPL_SafeC_Wallet_ABI}" "${INPL_ELECTIONS_WORK_DIR}/replenish.boc")";then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode message for replenish.boc. Exiting..."
+        echoerr "$Message_JSON"
+        return 1
+    fi
+    # Check the message body
+    # Convert the binary replenish.boc to base64
+    BodyBase64="$(jq -r '.Body' <<< "$Message_JSON")"
+    if ! OUTPUT="$($CALL_CLI decode body --abi "${INPL_SafeC_Wallet_ABI}" "${BodyBase64}")";then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode body for replenish.boc. Exiting..."
+        echoerr "$OUTPUT"
+        return 1
+    fi
+    #################
+    if ! New_Trans_ID=$(Send_Message "${MSIG_addr}" "${Depool_addr}" "${INPL_ELECTIONS_WORK_DIR}/replenish.boc");then
+    #################
+        return 1
+    else
+        # shellcheck disable=SC2154
+        if [[ $Required_Signs -gt 1 ]];then
+            printf "%s\n" "+++-INFO: Made transaction ID: $New_Trans_ID . You need to sign it with the remaining keys by run ${BoldText} ./Sign_Trans.sh $MSIG_NAME $New_Trans_ID ${NormText}"
+        else
+            printf "%s\n" "+++-INFO: Depool replenish successfull. You can check in the depool by ./dinfo.sh script."
+        fi
+    fi
+    return 0
+}

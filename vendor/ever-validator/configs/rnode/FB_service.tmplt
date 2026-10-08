@@ -1,0 +1,89 @@
+#!/bin/sh
+#
+# PROVIDE: ever-node
+# REQUIRE: NETWORKING SERVERS DAEMON
+# KEYWORD: nojail shutdown
+#
+
+. /etc/rc.subr
+
+name="evernode"
+desc="N_SERVICE_DESCRIPTION"
+rcvar="evernode_enable"
+evernode_user="N_USER"
+pidfile="N_NODE_LOGS_ARCH/daemon.pid"
+pidfile_child="N_NODE_LOGS_ARCH/${name}.pid"
+logfile="N_NODE_LOG_FILE"
+stderr_logfile="N_NODE_STDERR_LOG_FILE"
+stdout_logfile="N_NODE_STDOUT_LOG_FILE"
+command="N_COMMAND"
+command_args="N_ARGUMENTS"
+
+export STATSD_DOMAIN="127.0.0.1"
+export STATSD_PORT=9125
+
+start_cmd="evernode_start"
+stop_cmd="evernode_stop"
+status_cmd="evernode_status"
+restart_cmd="evernode_restart"
+
+evernode_start() {
+  rnode_pid=$(pgrep NODE_BIN_NAME)
+  if [ -z $rnode_pid ];then
+    Curr_Timestamp="$(date +%Y-%m-%d_%H-%M-%S)"
+    echo "Service started at ${Curr_Timestamp}" | su ${evernode_user} -c "tee -a ${stdout_logfile}"
+    echo "Service started at ${Curr_Timestamp}" | su ${evernode_user} -c "tee -a ${stderr_logfile}"
+    su ${evernode_user} -c "/usr/sbin/daemon -P ${pidfile} -p ${pidfile_child} -o ${logfile} -r ${command} ${command_args} >> ${stdout_logfile} 2>> ${stderr_logfile}"
+    sleep 2
+    evernode_status
+  else
+    echo "${name} already running at pid $rnode_pid"
+  fi
+}
+
+evernode_stop() {
+  if [ -e "${pidfile}" ]; then
+    echo -n "killing $(cat ${pidfile}) "
+    kill -s TERM $(cat ${pidfile})
+    for Try in $(seq 0 300);do
+      echo -n "."
+      sleep 1
+      [ -z "$(pgrep NODE_BIN_NAME)" ] && break
+    done
+    if [ -n "$(pgrep NODE_BIN_NAME)" ];then
+      kill -s KILL $(pgrep NODE_BIN_NAME)
+      echo -n " still work. Sent KILL signal. "
+    fi
+    for Try in $(seq 0 300);do
+      echo -n "-"
+      sleep 1
+      [ -z "$(pgrep NODE_BIN_NAME)" ] && break
+    done
+    if [ -n "$(pgrep NODE_BIN_NAME)" ];then
+      echo " still work. Give up.. "
+    else
+      echo -n " done"
+      echo
+    fi
+  else
+    echo "${name} is not running"
+  fi
+}
+
+evernode_restart(){
+  evernode_stop
+  sleep 5
+  evernode_start
+}
+evernode_status() {
+  if [ -e "${pidfile}" ]; then
+    echo "Daemon is running as pid $(cat ${pidfile})"
+    echo "${name} is running as pid $(cat ${pidfile_child})"
+  else
+    echo "${name} is not running"
+  fi
+}
+
+load_rc_config ${name}
+: ${evernode_enable:=no}
+run_rc_command "$1"

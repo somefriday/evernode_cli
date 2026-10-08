@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+# Copyright (C) 2019-2025 EverX
+
+# Disclaimer
+##################################################################################################################
+# Your use of this script/function indicates your acceptance of the following terms. 
+# The author(s) of this script/function shall not be held liable for any damage that its use may cause to your systems. 
+# This script/function is provided 'AS IS', without warranty of any kind. 
+# The entire risk as to the quality and performance of the script/function is with you. 
+# Should the script/function prove defective, you assume the cost of all necessary servicing, repair, or correction.
+# In no event will the author(s) be liable for any damages whatsoever including, but not limited to, 
+# loss of business profits, business interruption, loss of business information, 
+# or other pecuniary loss arising out of the use or inability to use the script/function. 
+# This script/function, including any modifications and derivatives, is licensed to you under the terms of the GPL-3.0 license. 
+# You are free to modify, distribute, and convey this script/function and its derivatives under the same license, 
+# provided that you also make the source code available under GPL-3.0. 
+# This disclaimer does not intend to restrict the rights granted by the GPL-3.0 license, 
+# including but not limited to the rights to use, modify, and distribute the script/function and its derivatives.
+# The author(s) reserve the right to change this disclaimer at any time.
+##################################################################################################################
+
+echo
+echo "############################# Check Validators Block Version ###################################"
+SelfScriptName=$(basename "$0")
+echo "INFO: $SelfScriptName BEGIN $(date +%s) / $(date  +'%F %T %Z')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if ! source "${SCRIPT_DIR}/env.sh"; then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Can't load env.sh"
+    exit 1
+fi
+source "${SCRIPT_DIR}/functions.shinc"
+
+#===========================================
+# Get validator list from P36 during elections
+
+elector_addr="$(Get_Elector_Address)"
+declare -i elections_id=$(Get_Current_Elections_ID)
+NetConfigP15="$(Get_NetConfig_P15)"
+declare -i EndBefore=$(echo $NetConfigP15|awk '{print $3}')
+declare -i CurrTime=$(date +%s)
+
+while true; do
+
+    # wait for elections
+    echo "$(date  +'%F %T %Z') - Wait for elections start"
+    while true; do
+        elections_id=$(Get_Current_Elections_ID)
+        if [[ $elections_id -gt 0 ]];then
+            echo "$(date  +'%F %T %Z') - Elections #$elections_id started"
+            break
+        fi
+        sleep 30
+    done
+    echo "INFO: Current Election ID: ${elections_id}"
+
+    echo "Now going to cycle to get validators info until elections closed"
+    while true; do
+        CurrTime=$(date +%s)
+        elections_id=$(Get_Current_Elections_ID)
+        if [[ $CurrTime -le $((elections_id - EndBefore - 120)) ]];then
+            Last_elections=$elections_id
+            Elector_Parts_List="$($CALL_CLI -j runget ${elector_addr} participant_list_extended)"
+            echo "$Elector_Parts_List" |jq '.value4'|grep -v '\[\|\]'|tr -d ' '|tr -d ','|tr -d '"'|sed 's/^0x//'  > ${ELECTIONS_HISTORY_DIR}/${elections_id}_val_list.txt
+        else
+            break
+        fi
+        sleep 30
+    done
+
+    readarray -t val_array < ${ELECTIONS_HISTORY_DIR}/${Last_elections}_val_list.txt
+    declare -i val_qty=$(( ${#val_array[@]} / 5))
+
+    Val_json="{}"
+
+    for (( i=0; i < val_qty; i++ )); do
+        val_pubkey="${val_array[$((i*5))]}"
+        val_stake_nt="${val_array[$((i*5+1))]}"
+        val_maxft="${val_array[$((i*5+2))]}"
+        val_addr="${val_array[$((i*5+3))]}"
+        val_ADNL="${val_array[$((i*5+4))]}"
+        Val_json=$( echo "${Val_json}" | jq " .\"${val_addr}\".addr = \"${val_addr}\" | .\"${val_addr}\".pubkey = \"${val_pubkey}\" | .\"${val_addr}\".stake_nt = \"${val_stake_nt}\" | .\"${val_addr}\".maxft = \"${val_maxft}\" | .\"${val_addr}\".ADNL = \"${val_ADNL}\" " )
+    done
+    echo "$Val_json" > ${ELECTIONS_HISTORY_DIR}/${Last_elections}_Validators_List.json
+
+    echo "INFO: Found validators in elector: $val_qty"
+
+    SafeC_Hash="80d6c47c4a25543c9b397b71716f3fae1e2c5d247174c52e2c19bd896442b105"
+    EverWallet_Hash="3ba6528ab2694c118180aa3bd10dd19ff400b909ab4dcf58fc69925b2c7b12a6"
+    Proxy_Hash="c05938cde3cee21141caacc9e88d3b8f2a4a4bc3968cb3d455d83cd0498d4375"
+    DepoolHash="14e20e304f53e6da152eb95fffc993dbd28245a775d847eed043f7c78a503885"
+    Proxy_V2_hash="481d7f583b458a1672ee602f66e8aa8d2f99d3cd9ece2eaa20e25c7ddf4c7f4a"
+    Depool_V2_hash="a46c6872712ec49e481a7f3fc1f42469d8bd6ef3fae906aa5b9927e5a3fb3b6b"
+    Proxy_ST_hash="435368efa80a95345edaec790c37957cd296fb0021071202fd90854641f5bb10"
+    Depool_ST_hash="533adf8a5680849177b9f213f61c48dfd8d730597078670d2367a5eef77251fe"
+
+    Validators_List=$(cat ${ELECTIONS_HISTORY_DIR}/${Last_elections}_Validators_List.json|jq)
+    Val_MSIG_List=$Validators_List
+
+    echo "INFO: Collect validator addresses... "
+
+    for (( i=0; i < val_qty; i++ ));do
+        echo -n " $i "
+        hex_val_addr="$(echo "${Validators_List}" | jq -r "[.[]][$i].addr")"
+        Curr_Val_Addr="-1:${hex_val_addr}"
+        Curr_Val_Addr_Hash=`curl -sS -X POST -g -H "$Auth_key_Head" -H "Content-Type: application/json" ${DApp_URL}/graphql -d '{"query": "query {accounts(filter:{id: {eq: \"'${Curr_Val_Addr}'\"}}) {code_hash}}"}' 2>/dev/null |jq -r '.data.accounts | .[].code_hash'`
+        if [[ "$Curr_Val_Addr_Hash" == "$SafeC_Hash" ]] || [[ "$Curr_Val_Addr_Hash" == "$EverWallet_Hash" ]];then
+            Val_MSIG_List=$(echo ${Val_MSIG_List}|jq ".\"${hex_val_addr}\".MSIG = \"${Curr_Val_Addr}\" | .\"${hex_val_addr}\".depool = \"0\" | .\"${hex_val_addr}\".proxy0 = \"0\" | .\"${hex_val_addr}\".proxy1 = \"0\"")
+            continue
+        fi
+        if [[ "$Curr_Val_Addr_Hash" == "$Proxy_Hash" ]] || [[ "$Curr_Val_Addr_Hash" == "$Proxy_V2_hash" ]] || [[ "$Curr_Val_Addr_Hash" == "$Proxy_ST_hash" ]];then
+            CounterParty_List=`curl -sS -X POST -g -H "$Auth_key_Head" -H "Content-Type: application/json" ${DApp_URL}/graphql -d '{"query": "query {counterparties(account: \"'${Curr_Val_Addr}'\") {counterparty}}"}' 2>/dev/null | jq -r '.data.counterparties'`
+            CounterParty_QTY=$(echo $CounterParty_List | jq 'length')
+            for (( cpi=0; cpi < CounterParty_QTY; cpi++ ));do
+                echo -n "."
+                curr_acc_addr=$(echo $CounterParty_List|jq -r ".[$cpi].counterparty")
+                curr_acc_hash=`curl -sS -X POST -g -H "$Auth_key_Head" -H "Content-Type: application/json" ${DApp_URL}/graphql -d '{"query": "query {accounts(filter:{id: {eq: \"'${curr_acc_addr}'\"}}) {code_hash}}"}' 2>/dev/null |jq -r '.data.accounts | .[].code_hash'`
+                if [[ "$curr_acc_hash" == "$DepoolHash" ]] || [[ "$curr_acc_hash" == "$Depool_V2_hash" ]] || [[ "$curr_acc_hash" == "$Depool_ST_hash" ]];then
+                    #===========================
+                    # Get depool info
+                    Curr_Depool_Addr=$curr_acc_addr
+                    Curr_DPinfo="$(Get_DP_Info "$Curr_Depool_Addr")"
+                    dp_boc_name=$(echo "$Curr_Depool_Addr"|cut -d ":" -f 2)
+                    [[ -n $dp_boc_name ]] && rm -f ${dp_boc_name}.boc
+                    Owner=$(echo "$Curr_DPinfo"|jq -r '.validatorWallet')
+                    curr_proxy0=$(echo "$Curr_DPinfo"|jq -r '.proxies[0]')
+                    curr_proxy1=$(echo "$Curr_DPinfo"|jq -r '.proxies[1]')
+                fi
+            done
+            Val_MSIG_List=$(echo ${Val_MSIG_List}|jq ".\"${hex_val_addr}\".MSIG = \"${Owner}\" | .\"${hex_val_addr}\".depool = \"${Curr_Depool_Addr}\" | .\"${hex_val_addr}\".proxy0 = \"${curr_proxy0}\" | .\"${hex_val_addr}\".proxy1 = \"${curr_proxy1}\"")
+            continue
+        fi
+        echo "ALARM!!! - Found no SefeMsig or proxy address in validator: $Curr_Val_Addr"
+    done
+    echo "${Val_MSIG_List}" > ${ELECTIONS_HISTORY_DIR}/${Last_elections}_AddrInfo_Validators_List.json
+
+    echo "$(date  +'%F %T %Z') - Wait for elections end"
+    while true; do
+        elections_id=$(Get_Current_Elections_ID)
+        if [[ $elections_id -eq 0 ]];then
+            echo "$(date  +'%F %T %Z') - Elections ended"
+            break
+        fi
+        sleep 30
+    done
+
+    echo
+done
+
+echo
+echo "+++INFO: $(basename "$0") FINISHED $(date +%s) / $(date)"
+echo "================================================================================================"
+
+exit 0

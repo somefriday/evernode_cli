@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# shellcheck source=../env.sh
+# shellcheck disable=SC2155,SC2031,SC2015
+
+# Copyright (C) 2019-2025 EverX
+
+# Disclaimer
+##################################################################################################################
+# Your use of this script/function indicates your acceptance of the following terms. 
+# The author(s) of this script/function shall not be held liable for any damage that its use may cause to your systems. 
+# This script/function is provided 'AS IS', without warranty of any kind. 
+# The entire risk as to the quality and performance of the script/function is with you. 
+# Should the script/function prove defective, you assume the cost of all necessary servicing, repair, or correction.
+# In no event will the author(s) be liable for any damages whatsoever including, but not limited to, 
+# loss of business profits, business interruption, loss of business information, 
+# or other pecuniary loss arising out of the use or inability to use the script/function. 
+# This script/function, including any modifications and derivatives, is licensed to you under the terms of the GPL-3.0 license. 
+# You are free to modify, distribute, and convey this script/function and its derivatives under the same license, 
+# provided that you also make the source code available under GPL-3.0. 
+# This disclaimer does not intend to restrict the rights granted by the GPL-3.0 license, 
+# including but not limited to the rights to use, modify, and distribute the script/function and its derivatives.
+# The author(s) reserve the right to change this disclaimer at any time.
+##################################################################################################################
+
+#**************************************************************************************************
+# NB! This script is a part of the main script and is called from there. It cannot be run separately.
+# Some variables are defined in the main script and are used here.
+#**************************************************************************************************
+
+function remove_stake() {
+    local Depool_addr="$1"
+    local MSIG_NAME="$2"
+    local STAKE_AMOUNT=$3     # in tokens
+
+    #=================================================
+    # check if all variables are set
+    if [[ -z $Depool_addr ]] || [[ -z $MSIG_NAME ]] || [[ -z $STAKE_AMOUNT ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Not all input variables are set. Exiting..."
+        return 1
+    fi
+    STAKE_AMOUNT_NANO=$(echo "$STAKE_AMOUNT * 1000000000" | $CALL_BC|cut -d '.' -f 1)
+    if [[ $STAKE_AMOUNT_NANO -lt 100000 ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Can't transfer too small amount of nanotokens! (${STAKE_AMOUNT_NANO})nt"
+        return 1
+    fi
+    # shellcheck disable=SC2154
+    if [[ $MSIG_AMOUNT -lt $((STAKE_AMOUNT_NANO  + 1000000000)) ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): The stake amount $STAKE_AMOUNT is more than the MSIG balance $MSIG_AMOUNT_Tk + 1. Exiting..."
+        return 1
+    fi
+    local MSIG_addr=$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")
+
+    #=================================================
+    # Get the current stake of the multisig in the depool
+    if ! MSIG_participant_Info="$(Get_DP_Part_Info "$Depool_addr" "$MSIG_addr")";then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot get participant info for $MSIG_NAME in the depool. Exiting..."
+        return 1
+    fi
+    printf "\n%s\n" "Depool participant raw info for the multisig $MSIG_NAME:"
+    printf "%s\n\n" "$(jq '.' <<< "$MSIG_participant_Info")"
+
+    # Check if the multisig has a ordinary stake in the depool
+    ST_QTY=$(jq -r '[.stakes[]] | length' <<< "$MSIG_participant_Info")
+    if [[ $ST_QTY -eq 0 ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): The multisig $MSIG_NAME has no ordinary stakes in the depool $Depool_addr. Exiting..."
+        return 1
+    fi
+    printf "\n%s\n" "Current ordinary stakes of the multisig $MSIG_NAME in the depool $Depool_addr:"
+    for (( i=0; i < ST_QTY; i++ ))
+    do
+        Curr_Round_Stake_nano=$(jq -r "[.stakes[]][$i]" <<< "$MSIG_participant_Info") # in nanotokens
+        Curr_Round_Stake=$(echo "scale=3; $((Curr_Round_Stake_nano)) / 1000000000" | $CALL_BC)
+        printf "You have stake in $i round: %s\n" "$(jq -r "[.stakes[]][$i]" <<< "${Curr_Round_Stake}")"
+    done
+
+    #=================================================
+    # check depool min stake
+    # shellcheck disable=SC2154
+    Depool_Min_Stake=$(jq -r '.minStake | tonumber / 1000000000' <<< "${Current_Depool_Info}")
+
+    printf "\n%s\n" "Depool min stake: $Depool_Min_Stake"
+    printf "\n%s\n" "You ready to withdraw ${STAKE_AMOUNT} from near round from the depool $Depool_addr"
+    printf "%s\n\n" "If a participant's ordinary stake falls below the depool's minStake due to this withdrawal, their entire stake will be withdrawn."
+
+    #=================================================
+    read -rp "### CHECK INFO TWICE!!! Are you sure you want to proceed? (y/n)? " </dev/tty answer
+    case ${answer} in
+        y|Y|yes|Yes|YES )
+            printf "%s\n" "Processing..."
+        ;;
+        * )
+            printf "%s\n" "Cancelled."
+            return 1
+        ;;
+    esac
+
+    #=================================================
+    # make ordinary stake
+    # shellcheck disable=SC2154
+    local PayLoad="$($CALL_CLI -j body --abi "${INPL_DePool_ABI}" withdrawFromPoolingRound "{\"stake\":$STAKE_AMOUNT_NANO}"|jq -r '.Message')"
+    # shellcheck disable=SC2154
+    $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc" \
+        --sign "${INPL_KEYS_DIR}/${MSIG_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+        --abi "${INPL_SafeC_Wallet_ABI}" \
+        "${MSIG_addr}" submitTransaction \
+        "{\"dest\":\"$Depool_addr\",\"value\":$((STAKE_AMOUNT_NANO + DEPOOL_STAKE_FEE_NANO)),\"bounce\":true,\"allBalance\":false,\"payload\":\"$PayLoad\"}" \
+        --lifetime 3600
+    # Decode BOC file
+    if ! Message_JSON="$($CALL_CLI -j decode msg --abi "${INPL_SafeC_Wallet_ABI}" "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc")";then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode message for withdrawFromPoolingRound.boc. Exiting..."
+        echoerr "$Message_JSON"
+        return 1
+    fi
+    # Check the message body
+    # Convert the binary withdrawFromPoolingRound.boc to base64
+    BodyBase64="$(jq -r '.Body' <<< "$Message_JSON")"
+    if ! OUTPUT="$($CALL_CLI decode body --abi "${INPL_SafeC_Wallet_ABI}" "${BodyBase64}")";then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode body for withdrawFromPoolingRound.boc. Exiting..."
+        echoerr "$OUTPUT"
+        return 1
+    fi
+    #################
+    if ! New_Trans_ID=$(Send_Message "${MSIG_addr}" "${Depool_addr}" "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc");then
+    #################
+        return 1
+    else
+        # shellcheck disable=SC2154
+        if [[ $Required_Signs -gt 1 ]];then
+            printf "%s\n" "+++-INFO: Made transaction ID: $New_Trans_ID . You need to sign it with the remaining keys by run ${BoldText} ./Sign_Trans.sh $MSIG_NAME $New_Trans_ID ${NormText}"
+        else
+            printf "%s\n" "+++-INFO: Remove stake successfull. You can check in the depool by ./dinfo.sh script."
+        fi
+    fi
+    return 0
+}

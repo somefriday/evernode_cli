@@ -1,0 +1,12 @@
+{
+	"ABI version": 2,
+	"version": "2.4",
+	"header": ["time", "expire"],
+	"functions": [
+		{
+			"name": "getABI",
+			"inputs": [],
+			"outputs": [{"name": "ABI_hex", "type": "string"}]
+		}
+    ]
+}

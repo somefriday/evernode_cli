@@ -1,0 +1,1414 @@
+#!/usr/bin/env bash
+# shellcheck source=env.sh
+# shellcheck disable=SC2155,SC2031,SC2015
+
+# Copyright (C) 2019-2025 EverX
+
+# Disclaimer
+##################################################################################################################
+# Your use of this script/function indicates your acceptance of the following terms. 
+# The author(s) of this script/function shall not be held liable for any damage that its use may cause to your systems. 
+# This script/function is provided 'AS IS', without warranty of any kind. 
+# The entire risk as to the quality and performance of the script/function is with you. 
+# Should the script/function prove defective, you assume the cost of all necessary servicing, repair, or correction.
+# In no event will the author(s) be liable for any damages whatsoever including, but not limited to, 
+# loss of business profits, business interruption, loss of business information, 
+# or other pecuniary loss arising out of the use or inability to use the script/function. 
+# This script/function, including any modifications and derivatives, is licensed to you under the terms of the GPL-3.0 license. 
+# You are free to modify, distribute, and convey this script/function and its derivatives under the same license, 
+# provided that you also make the source code available under GPL-3.0. 
+# This disclaimer does not intend to restrict the rights granted by the GPL-3.0 license, 
+# including but not limited to the rights to use, modify, and distribute the script/function and its derivatives.
+# The author(s) reserve the right to change this disclaimer at any time.
+##################################################################################################################
+
+#**************************************************************************************************
+# NB! This script use variables defined in env.sh. To function from this script in shell, you have to source env.sh first.
+# Some variables are defined in the main script and are used here.
+#**************************************************************************************************
+
+#========= Functions list ===========
+# DispEnvInfo()
+# Determine_Current_Network()
+# echoerr()
+# hex2dec()
+# dec2hex()
+# TD_unix2human()
+# Check_DApp_URL()
+# Get_SC_current_state()
+# Get_TimeDiff() 
+# Get_Elector_Address()
+# Get_Current_Elector_Type()
+# Get_Current_Elections_ID()
+# get_LastNodeInfo ()
+# Get_Supported_Blocks_Version()
+# Get_Account_Info()
+# Get_Account_Custodians_Info()
+# P34_ADNL_search()
+# P36_ADNL_search()
+# Get_DePool_elec_ID()
+# Get_Engine_ADNL()
+# Elector_ADNL_Search()
+# Get_NetConfig_P15()
+# Get_DP_Rounds()
+# Get_DP_Self_Balance()
+# Get_DP_Info()
+# Get_DP_Parts_List()
+# Get_DP_Part_Info()
+# Rounds_Sorting_by_ID()
+# Get_MSIG_Trans_List()
+# Send_MSIG_Trans_Confirmation()
+# Send_File_To_BC()
+# top_app_account
+# Send_msg_toTelBot
+# Ask_to_switch_to_dapp
+# Send_Message
+# NameToAddr
+# =====================================================
+##################################################################################################################
+FuncSelfScriptName=functions.shinc
+
+# =====================================================
+# Check if env.sh is sourced
+if ! $ENV_LOADED;then
+    printf "\e[31;1m%b\e[0m\n" "###-ERROR(${FuncSelfScriptName} line $LINENO): env.sh was not sourced successfully. Please, source env.sh first!"
+    return 1
+fi
+
+#=====================================================
+# Function to display error messages with stack trace
+function log_error_stack() {
+    local i max_src_index message
+    message=${1:-"An error occurred."}
+    max_src_index=${#BASH_SOURCE[@]}
+    echoerr "###-ERROR: $message"
+
+    for (( i=1; i<max_src_index; i++ )); do
+        local src="${BASH_SOURCE[$i]}"
+        local func="${FUNCNAME[$i]}"
+        # BASH_LINENO array is 1-based, but we want to display 1-based line numbers
+        # string number refers to the previous function in the call stack
+        local line="${BASH_LINENO[$i-1]}"
+        printf "  %d: In %s() at %s: %s\n" "$i" "$func" "$src" "$line"
+    done
+}
+
+# =====================================================
+# Check components installed
+CURR_CLI_BIN_VERSION="$($CALL_CLI version | head -1 | awk '{print $2}')"
+[[ -z $CURR_CLI_BIN_VERSION ]] && log_error_stack "${BoldText}${RedBack}Can not find \"ever-cli\"! Use upd_ever-cli.sh to download or update it or build all binaries by Nodes_Build.sh!!${NormText}" && \
+        if [[ "$(basename "$0")" == "bash" || "$(basename "$0")" == "-bash" ]]; then return 1; else exit 1; fi
+
+# =====================================================
+# check ever-cli version
+# it should be not less MIN_CLI_VERSION settled in env.sh
+declare -i CURR_CLI_BIN_VERSION_NUM="1$(echo "$CURR_CLI_BIN_VERSION" | awk -F'.' '{printf("%d%03d%03d%03d\n", $1,$2,$3,$4)}')"
+declare -i MIN_CLI_VER_NUM="1$(echo "$MIN_CLI_VERSION" | awk -F'.' '{printf("%d%03d%03d%03d\n", $1,$2,$3,$4)}')"
+if [[ ${CURR_CLI_BIN_VERSION_NUM} -lt ${MIN_CLI_VER_NUM#0} ]];then
+    echo -e "###-ERROR(${FUNCNAME[1]}-${FUNCNAME[0]} line $LINENO): ${BoldText}${RedBack}CLI version $CURR_CLI_BIN_VERSION is too old! It has to be updated to $MIN_CLI_VERSION at least (use upd_ever-cli.sh)!!!${NormText}"
+fi
+
+# =====================================================
+# Set appropriate endpoints according network settled in env.sh
+NetName="${NETWORK_TYPE%%.*}"
+case "$NetName" in
+    main | mainnet)
+        export DApp_URL="${Main_DApp_URL}/$DAPP_Project_id"
+        $CALL_CLI config endpoint reset &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't reset endpoint"
+        $CALL_CLI config endpoint add "$NETWORK_TYPE" "$MainNet_DApp_List"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't add endpoint"
+        $CALL_CLI config --url "$NETWORK_TYPE" &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set url"
+        [[ -n "$DAPP_Project_id" ]] && $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
+        [[ -n "$DAPP_access_key" ]] && $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
+        export ELECTOR_TYPE="${ELECTOR_TYPE:=fift}"                       # can be 'solidity' or 'fift'
+        export GLOBAL_CONFIG_SRC="${CONFIGS_DIR}/mainnet/$NET_GLOBAL_CFG_FILE_NAME"
+        ;;
+    net | devnet)
+        export DApp_URL="${DevNet_DApp_URL}/$DAPP_Project_id"
+        $CALL_CLI config endpoint reset &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't reset endpoint"
+        $CALL_CLI config endpoint add "$NETWORK_TYPE" "$DevNet_DApp_List"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't add endpoint"
+        $CALL_CLI config --url "$NETWORK_TYPE"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set url"
+        [[ -n "$DAPP_Project_id" ]] && $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
+        [[ -n "$DAPP_access_key" ]] && $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
+        export ELECTOR_TYPE="${ELECTOR_TYPE:=fift}"                          # can be 'solidity' or 'fift'
+        export GLOBAL_CONFIG_SRC="${CONFIGS_DIR}/devnet/$NET_GLOBAL_CFG_FILE_NAME"
+        ;;
+    *)
+        log_error_stack "Unknown NETWORK_TYPE (${NETWORK_TYPE})"
+        return 1
+        ;;
+esac
+$CALL_CLI config --lifetime 600 &>/dev/null || log_error_stack "Can't set lifetime in CLI config"
+
+#=================================================
+# Get network global id and set ever-cli option if CapSignatureWithId is enabled
+# Output: option for ever-cli:
+#       - epty string if CapSignatureWithId is disabled
+#       - "--signature_id auto" if CapSignatureWithId is enabled
+SIG_ID_OPTION=""
+NET_GLOBAL_ID=""
+# CapSignatureWithId="0x0004000000"
+CapSignatureWithId=67108864
+if $FORCE_USE_DAPP;then
+    if ! CLI_OUTPUT="$(${CALL_CLI} -j getconfig 8)"; then
+      log_error_stack " ever-cli getconfig 8 failed"
+      log_error_stack "CLI_OUTPUT: $CLI_OUTPUT"
+      return 1
+    fi
+    NetCaps=$(printf "%d" "0x$(echo "${CLI_OUTPUT}" | jq -r '.capabilities' | cut -d 'x' -f 2)")
+    # We cannot get global_id from ever-cli, so we will use auto
+    SIG_ID_OPTION="--signature_id auto"
+else
+    if ! NET_GLOBAL_ID=$(${CALL_CONS} -jc getstatsnew | jq .global_id); then
+      log_error_stack "console getstatsnew failed"
+      return 1
+    fi
+    if ! CONS_OUTPUT="$(${CALL_CONS} -jc 'getconfig 8')"; then
+      log_error_stack "console getconfig 8 failed"
+      log_error_stack "CONS_OUTPUT: $CONS_OUTPUT"
+      return 1
+    fi
+    NetCaps=$(echo "${CONS_OUTPUT}" | jq -r '.p8.capabilities_dec')
+    SIG_ID_OPTION="--signature_id=$NET_GLOBAL_ID"
+fi
+# Set SIG_ID_OPTION according to CapSignatureWithId
+if [[ $((NetCaps & CapSignatureWithId)) -eq 0 ]]; then
+  SIG_ID_OPTION=""
+  NET_GLOBAL_ID=""
+fi
+export NET_GLOBAL_ID
+export SIG_ID_OPTION
+
+# =====================================================
+# Determine current network
+function Determine_Current_Network() {
+    # get current network zerostate
+    case "${NETWORK_TYPE%%.*}" in
+        main)
+            CURR_NET_ID="$MAIN_NET_ROOT_HASH"
+            ;;
+        net | devnet)
+            CURR_NET_ID="$DEV_NET_ROOT_HASH"
+            ;;
+
+        *)
+            CURR_NET_ID="123456789ABCDEF0"
+            ;;
+    esac
+    case "${CURR_NET_ID}" in
+        "$MAIN_NET_ROOT_HASH")
+            CurrNetInfo="${BoldText}${BlueBack}You are in MAIN network${NormText}"
+            ;;
+        "$DEV_NET_ROOT_HASH")
+            CurrNetInfo="${BoldText}${GreenBack}You are in DEVNET network${NormText}"
+            ;;
+        *)
+            CurrNetInfo="${BoldText}${RedBlink}You are in UNKNOWN network${NormText} or you need to update 'env.sh'"
+            ;;
+    esac
+    echo "${CurrNetInfo}" 
+}
+# =====================================================
+function DispEnvInfo() {
+    Repo="$(git config --get remote.origin.url|sed 's/.*\///; s/.git//')"
+    echo "INFO from env: Repo: $Repo; Network: $NETWORK_TYPE; WC: $NODE_WC; Elector: $ELECTOR_TYPE; Staking mode: $STAKE_MODE; Access method: $(if $FORCE_USE_DAPP;then echo "DApp"; else  echo "console"; fi ); RUN mode: $RUN_MODE"
+}
+# =====================================================
+function hex2dec() {
+    local ival="$(echo "${1^^}"|tr -d '"')"
+    local ob=${2:-10}
+    local ib=${3:-16}
+    if [[ -z "$ival" ]] || ! [[ "$ival" =~ ^[0-9A-F]+$ ]]; then
+        log_error_stack "Invalid hexadecimal input."
+        echo ""
+        return 1
+    fi
+    if [[ "$OS_SYSTEM" == "Linux" ]];then
+        export BC_LINE_LENGTH=0
+        # set obase first before ibase -- or weird things happen.
+        printf "obase=%d; ibase=%d; %s\n" "$ob" "$ib" "$ival" | bc
+    else
+        dc -e "${ib}i ${ival} p" | tr -d "\\" | tr -d "\n"
+    fi
+}
+# =====================================================
+function dec2hex() {
+    local ival="${1^^}"
+    local ob=${2:-16}
+    local ib=${3:-10}
+    if [[ -z "$ival" ]] || ! [[ "$ival" =~ ^[0-9]+$ ]]; then
+        log_error_stack "Invalid decimal input."
+        echo ""
+        return 1
+    fi
+    if [[ "$OS_SYSTEM" == "Linux" ]];then
+        export BC_LINE_LENGTH=0
+        # set obase first before ibase -- or weird things happen.
+        printf "obase=%d; ibase=%d; %s\n" "$ob" "$ib" "$ival" | bc
+    else
+        dc -e "64z ${ib}i ${ob}o ${ival} p" | tr -d "\\" | tr -d '\n'
+    fi
+}
+# =====================================================
+function TD_unix2human() {
+    local ival="${1//\"/}"
+    if [[ -z $ival ]]; then
+        log_error_stack "Zero Time"
+        return 1
+    fi
+    if ! [[ "$ival" =~ ^[0-9]+$ ]]; then
+        log_error_stack "Invalid Unix timestamp."
+        return 1
+    fi
+    if [[ "$OS_SYSTEM" == "Linux" ]];then
+        date  +'%F %T %Z' -d "@$ival"
+    else
+        date -r "$ival" +'%F %T %Z'
+    fi
+}
+#=================================================
+# Get current Time Diff
+function Get_TimeDiff() { 
+    local RC_OUTPUT=$($CALL_CONS -jc "getstatsnew" 2>&1 | cat)
+    if echo "$RC_OUTPUT" | grep -q 'Connection refused\|panicked at'; then
+        echo "Node Down"
+        return 1
+    fi
+    if echo "$RC_OUTPUT" | grep -iq 'error'; then
+        echo "Error"
+        return 2
+    fi
+    # statuses:
+    # https://github.com/everx-labs/ever-node/blob/e1c321bf3aef765554c3caa43e0bd417bb4ba14d/src/network/control.rs#L183
+    local StatusKey="sync_status"
+    local STATUS="$(jq -r ".$StatusKey" <<< "$RC_OUTPUT"|cat)"
+    [[ "$STATUS" == "null" ]] && StatusKey="node_status"
+    STATUS="$(jq -r ".$StatusKey" <<< "$RC_OUTPUT"|cat)"
+
+    if [[ "$(jq -r ".$StatusKey" <<< "$RC_OUTPUT")" == "db_broken" ]];then
+        echo "db_broken"
+        return 3
+    fi
+    if echo "${RC_OUTPUT}" | grep -q 'timediff';then
+        local MC_TIME_DIFF SH_TIME_DIFF VALIDATION
+        MC_TIME_DIFF=$(jq -r '.timediff' <<< "$RC_OUTPUT")
+        SH_TIME_DIFF=$(jq -r '.shards_timediff' <<< "$RC_OUTPUT")
+        VALIDATION=$(jq -r '.validation_status' <<< "$RC_OUTPUT")
+        echo "$MC_TIME_DIFF $SH_TIME_DIFF $STATUS $VALIDATION"
+    else
+        echo "$STATUS"
+    fi
+} # Get_TimeDiff
+#=================================================
+# Get ellector address
+function Get_Elector_Address() {
+    local elector_addr=""
+    if $FORCE_USE_DAPP ;then
+        elector_addr="$($CALL_CLI -j getconfig 1 | tr -d '"')"
+    else
+        elector_addr="$($CALL_CONS -jc 'getconfig 1' | jq -r '.p1')"
+    fi
+    if [[ -z $elector_addr ]]; then
+        log_error_stack "Can not get Elector Address!!!"
+        return 1
+    fi
+    echo "-1:${elector_addr}"
+} # Get_Elector_Address
+#=================================================
+# Get Smart Contract current state by dowloading it & save to file
+function Get_SC_current_state() {
+    # Input: acc in form x:xxx...xxx
+    # result: file named xxx...xxx.boc in TMP_DIR or in current folder if TMP_DIR is not set
+    # return: Output of executing
+    local ACCOUNT="$1"
+    if [[ -z "$ACCOUNT" ]]; then
+        log_error_stack "Empty address"
+        return 1
+    fi
+    # account hex
+    local s_acc="${ACCOUNT##*:}"
+    # account workchain
+    local acc_wc="${ACCOUNT%%:*}"
+    if $FORCE_USE_DAPP; then
+        for (( Try=0; Try <= 5; Try++ )); do
+            rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
+            local LC_OUTPUT="$($CALL_CLI account "$ACCOUNT" --dumpboc "${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
+            [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
+            sleep 3
+        done
+    else
+        NODE_WC="0"
+        if [[ "${NODE_WC}" == "${acc_wc}" ]] || [[ "${acc_wc}" == "-1" ]];then
+            for (( Try=0; Try <= 5; Try++ ))
+            do
+                rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
+                local LC_OUTPUT="$($CALL_CONS -c "getaccountstate ${ACCOUNT} ${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
+                [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
+                sleep 3
+            done
+        else
+            # The node can only obtain acc status from WC where it is and master, so use ever-cli
+            for (( Try=0; Try <= 5; Try++ ))
+            do
+                rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
+                local LC_OUTPUT="$($CALL_CLI account "$ACCOUNT" --dumpboc "${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
+                [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
+                sleep 3
+            done
+        fi
+    fi
+    if [[ -z  $result ]]; then
+        log_error_stack "Cannot get account state $ACCOUNT."
+        echoerr "${LC_OUTPUT}"
+        return 1
+    else
+        echo "${result}"
+    fi
+}
+#=================================================
+# Detect current elector type in the network
+function Get_Current_Elector_Type() {
+    local elector_addr="$(Get_Elector_Address)"
+    result=$(Get_SC_current_state "${elector_addr}")
+    if [[  "$result" != "written StateInit of account" ]];then
+        log_error_stack "Cannot get Elector state!"
+        return 1
+    fi
+    local ELECTOR_TYPE="unknown"
+    FUNC_TC_OUT="$($CALL_CLI runget --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" active_election_id 2>&1| grep 'unknown error'|cat)"
+    SOL_TC_OUT="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" active_election_id '{}' --abi "${INPL_Elector_ABI}" 2>&1|grep 'unknown error'|cat)"
+    
+    if [[ -n $FUNC_TC_OUT ]] && [[ -z $SOL_TC_OUT ]];then
+        export ELECTOR_TYPE="solidity"
+    elif [[ -z $FUNC_TC_OUT ]] && [[ -n $SOL_TC_OUT ]];then
+        export ELECTOR_TYPE="fift"
+    fi
+    if [[ "$ELECTOR_TYPE" == "unknown" ]];then
+        log_error_stack "Cannot determine Elector type!"
+        return 2
+    fi
+    if ! $KEEP_TMP_DIR ;then rm -rf "${TMP_DIR}" &>/dev/null; fi
+    echo "$elector_addr $ELECTOR_TYPE"
+}
+#=================================================;;
+# Get current elections ID
+function Get_Current_Elections_ID() {
+    if result=$(Get_Current_Elector_Type);then
+        read -r elector_addr ELECTOR_TYPE <<< "$result"
+    else
+        log_error_stack "Cannot get Elector type!"
+        return 1
+    fi
+    local elections_id="0"
+    case "${ELECTOR_TYPE}" in
+        "fift")
+            if ! elections_id=$($CALL_CLI -j runget --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" active_election_id);then
+                log_error_stack "Error getting elections ID for fift Elector"
+                echo "$elections_id"
+                return 2
+            fi
+            elections_id=$(jq -r '.value0' <<< "$elections_id")
+            ;;
+        "solidity")
+            if ! elections_id=$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" active_election_id '{}' --abi "${INPL_Elector_ABI}");then
+                log_error_stack "Error getting elections ID for solidity Elector"
+                echo "$elections_id"
+                return 3
+            fi
+            elections_id=$(jq -r '.value0' <<< "$elections_id")
+            ;;
+        *)
+            log_error_stack "Unknown ELECTOR_TYPE (${ELECTOR_TYPE})"
+            return 4
+            ;;
+    esac
+    echo "${elections_id}"
+}
+#=================================================
+## @fn get_LastNodeInfo()
+## @brief Fetches the latest node information from a specified smart contract.
+## @details This function retrieves the last node information from the smart contract defined by LNIC_ADDRESS.
+## It verifies if the LNIC_ADDRESS is not empty and checks the account state to ensure it's "Active".
+## If the conditions are met, it proceeds to fetch and decode the smart contract's current state.
+## This includes retrieving the ABI for the contract to extract the last node information.
+##
+## Upon successful retrieval, the function prints the last node info extracted from the contract.
+## If any step fails, an error message is printed, indicating the failure reason.
+##
+## The function utilizes a temporary directory for storing intermediate files.
+## If the optional argument "keep TMP_DIR" is provided, the temporary files will not be deleted after execution.
+##
+## @param none No parameters are required directly, but LNIC_ADDRESS should be defined in env.sh.
+## @retval Prints the last node information on success or an error message on failure.
+function get_LastNodeInfo {
+    local LNI_JSON="none"
+    # check LNIC_ADDRESS
+    if [[ -z "$LNIC_ADDRESS" ]];then
+        log_error_stack "LNIC_ADDRESS is empty!"
+        echo "${LNI_JSON}"
+        return 1
+    fi
+    # check LNIC_ADDRESS state
+    if [[ "$(Get_Account_Info "$LNIC_ADDRESS" | awk '{print $1}')" != "Active" ]];then
+        log_error_stack "LNIC account not found."
+        echo "${LNI_JSON}"
+        return 2
+    fi
+    #
+    if ! Get_SC_current_state "$LNIC_ADDRESS" > /dev/null; then
+        log_error_stack "Error getting LNIC state."
+        echo "${LNI_JSON}"
+        return 3
+    fi
+
+    local ABI="${ELECTIONS_WORK_DIR}/LastNodeInfo.abi.json"
+    local INPL_ABI="${INPL_ELECTIONS_WORK_DIR}/LastNodeInfo.abi.json"
+
+    # Fixed ABI for getABI function
+    local GetABI=$(jq -n '{
+      "ABI version": 2,
+      "version": "2.2",
+      "header": ["time", "expire"],
+      "functions": [
+        {"name": "getABI", "inputs": [], "outputs": [{"name": "ABI_hex", "type": "string"}]},
+        {"name": "ABI", "inputs": [], "outputs": [{"name": "ABI_hex", "type": "string"}]}
+      ],
+      "data": [],
+      "events": [],
+      "fields": [{"name": "ABI_hex", "type": "string"}]
+    }')
+
+    local GetABIFile="${ELECTIONS_WORK_DIR}/Get_ABI.json"
+    local INPL_GetABIFile="${INPL_ELECTIONS_WORK_DIR}/Get_ABI.json"
+
+    # Создание файла Get_ABI.json на хосте
+    echo "$GetABI" > "${GetABIFile}"
+
+    local LNIC_ABI_hex="${ELECTIONS_WORK_DIR}/LNIC_ABI_hex.txt"
+    local LNIC_ABI_bin="${ELECTIONS_WORK_DIR}/LNIC_ABI.bin"
+
+    # get LNIC ABI HEX from contract state
+    $CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${LNIC_ADDRESS##*:}.boc" \
+        --abi "${INPL_GetABIFile}" getABI {} | \
+        jq -r '.ABI_hex' > "${LNIC_ABI_hex}"
+    # decode LNIC ABI from HEX to binary
+    if ! xxd -r -p "${LNIC_ABI_hex}" > "${LNIC_ABI_bin}"; then
+        log_error_stack "Failed to decode LNIC ABI from HEX to binary"
+        return 4
+    fi
+    # Read magic bytes to determine compression format
+    local MAGIC_BYTES
+    MAGIC_BYTES=$(head -c6 "${LNIC_ABI_bin}" | xxd -p)
+    # Determine compression format and extract ABI
+    if [[ "$MAGIC_BYTES" == "fd377a585a00" ]]; then
+        # xz compressed file
+        if ! xz -d "${LNIC_ABI_bin}" -c > "${ABI}"; then
+            log_error_stack "Failed to decompress LNIC ABI using xz"
+            return 5
+        fi
+    elif [[ "$MAGIC_BYTES" == "377abcaf271c" ]]; then
+        # 7z compressed file
+        if ! 7za x -y "${LNIC_ABI_bin}" -o"${ELECTIONS_WORK_DIR}" > /dev/null 2>&1; then
+            log_error_stack "Failed to decompress LNIC ABI using 7z"
+            return 5
+        fi
+    elif [[ "$MAGIC_BYTES" == "504b0304" ]]; then
+        # zip compressed file
+        if ! unzip -o "${LNIC_ABI_bin}" -d "${ELECTIONS_WORK_DIR}" > /dev/null 2>&1; then
+            log_error_stack "Failed to decompress LNIC ABI using unzip"
+            return 5
+        fi
+    elif [[ "$MAGIC_BYTES" == "1f8b0800" ]]; then
+        # gzip compressed file
+        if ! gzip -d -c "${LNIC_ABI_bin}" > "${ABI}"; then
+            log_error_stack "Failed to decompress LNIC ABI using gzip"
+            return 5
+        fi
+    elif [[ "$MAGIC_BYTES" == "425a68" ]]; then
+        # bzip2 compressed file
+        if ! bzip2 -d -c "${LNIC_ABI_bin}" > "${ABI}"; then
+            log_error_stack "Failed to decompress LNIC ABI using bzip2"
+            return 5
+        fi
+    elif [[ "$(head -c13 "${LNIC_ABI_bin}")xx" == '{"ABI versionxx' ]]; then
+        # none compressed file
+        cp "${LNIC_ABI_bin}" "${ABI}"
+    else
+        log_error_stack "Unknown compression format in LNIC ABI. Magic bytes: $MAGIC_BYTES"
+        return 6
+    fi
+    # check if ABI file exists
+    if [[ ! -e "${ABI}" ]]; then
+        log_error_stack "Cannot get LNIC ABI from contract boc"
+        echo "${LNI_JSON}"
+        return 7
+    fi
+    # get last node info from contract
+    LNI_JSON="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${LNIC_ADDRESS##*:}.boc" --abi "${INPL_ABI}" curr_node_info {})"
+    # Extract last node info from JSON
+    local LNI_Info
+    LNI_Info="$(jq -r '.curr_node_info' <<< "$LNI_JSON"  2>/dev/null)"
+    if [[ -z "$LNI_Info" ]] || [[ "$LNI_Info" == "null" ]]; then
+        log_error_stack "Last node info from contract is empty."
+        echo "${LNI_JSON}"
+        return 8
+    fi
+    echo "$LNI_Info"
+}
+
+#=================================================
+# Get supported blocks versions from node and network
+# Input: 
+# Return: Net_Min_Sup_Blk NodeGit_Sup_Blk NodeBin_Sup_Blk NodeRun_Version
+#   - Net_Min_Sup_Blk - from network config
+#   - NodeGit_Sup_Blk - from local git repo
+#   - NodeBin_Sup_Blk - from binary file ($CALL_NODE -V)
+#   - NodeRun_Version - Node version received from the running service via the console (in text - "0.51.27")
+function Get_Supported_Blocks_Version() {
+    local -i Net_Min_Sup_Blk=0
+    local -i NodeGit_Sup_Blk=0
+    local -i NodeBin_Sup_Blk=0
+    local NodeRun_Version="0"
+    # get net supported_block
+    if $FORCE_USE_DAPP ;then
+        Net_Min_Sup_Blk=$($CALL_CLI -j getconfig 8 | jq -r '.version'|cat)
+    else
+        Net_Min_Sup_Blk=$($CALL_CONS -jc 'getconfig 8' | jq '.p8.version'|cat)
+    fi
+    if [[ $Net_Min_Sup_Blk -le 0 ]];then
+        log_error_stack "Cannot get network supported block version!!!"
+        return 1
+    fi
+    # get Git supported_block
+    NodeGit_Sup_Blk=$(awk '/pub fn supported_version/ {getline;print $1}' "${NODE_SRC_DIR}/src/validating_utils.rs")
+    # get supported_block from binary
+    NodeBin_Sup_Blk=$(. ./env.sh && ${CALL_NODE%% *} -V | grep 'BLOCK_VERSION:' | awk '{print $2}')
+    local RC_OUT=$($CALL_CONS -jc getstats 2>/dev/null | cat | jq -r '.node_version' 2>/dev/null | cat)
+    if [[ -n $RC_OUT ]] && [[ "$RC_OUT" != "null" ]];then
+        NodeRun_Version=$RC_OUT
+    fi
+    echo "${Net_Min_Sup_Blk} ${NodeGit_Sup_Blk} ${NodeBin_Sup_Blk} ${NodeRun_Version}"
+}
+
+#=================================================
+# Get account INFO
+# Input: AccountHEX
+# Return: Active/Uninit/None nanoTokens LastOperTime
+function Get_Account_Info() {
+    local ACCOUNT=$(echo "$1"| tr '[:upper:]' '[:lower:]')
+    local acc_wc=${ACCOUNT%%:*}
+    local acc_hex=${ACCOUNT##*:}
+    if [[ ${#acc_hex} -ne 64 ]];then
+        log_error_stack "Wrong account address!"
+        echo "None 0 0" 
+        return 1
+    fi
+    if $FORCE_USE_DAPP ;then
+        local ACCOUNT_INFO=$($CALL_CLI -j account "${ACCOUNT}" 2>&1 | jq . 2>/dev/null)
+        if echo "$ACCOUNT_INFO" |grep -q '{}';then
+            echo "None 0 0"
+            return
+        fi
+        local AMOUNT_nt=$(jq -r ".balance" <<< "$ACCOUNT_INFO")
+        local LASTOP=$(jq -r ".last_paid" <<< "$ACCOUNT_INFO")
+        local STATUS=$(jq -r ".acc_type" <<< "$ACCOUNT_INFO")
+    else
+        if [[ "${NODE_WC}" == "${acc_wc}" ]] || [[ "${acc_wc}" == "-1" ]];then
+            local ACCOUNT_INFO=$($CALL_CONS -j -c "getaccount $ACCOUNT")
+            if echo "${ACCOUNT_INFO}" | grep -iq 'Nonexist' || echo "${ACCOUNT_INFO}" | grep -iq 'Error';then
+                echo "None 0 0"
+                return
+            fi
+        else
+            local ACCOUNT_INFO=$($CALL_CLI -j account "${ACCOUNT}" 2>&1 | jq .)
+            if echo "${ACCOUNT_INFO}" | grep -iq '{}';then
+                echo "None 0 0"
+                return
+            fi
+        fi
+        local AMOUNT_nt=$(jq -r '.balance' <<< "$ACCOUNT_INFO")
+        local LASTOP=$(jq -r '.last_paid' <<< "$ACCOUNT_INFO")
+        local STATUS=$(jq -r '.acc_type' <<< "$ACCOUNT_INFO")
+    fi
+    echo "${STATUS} ${AMOUNT_nt} ${LASTOP}"
+}
+#=================================================
+# Get account Custodians
+# Input: AccountHEX
+# Return: NumOfCustodians MinNumOfConfirmations
+function Get_Account_Custodians_Info() {
+    local ACCOUNT=$1
+    local Custod_QTY=0
+    local Confirms_QTY=0
+    if ! result="$(Get_SC_current_state "$ACCOUNT")";then
+        log_error_stack "Cannot get account state $ACCOUNT. Can't continue. Sorry."
+        return 1
+    fi
+    if [[ ! -f "${ELECTIONS_WORK_DIR}/${ACCOUNT##*:}.boc" ]];then
+        log_error_stack "Cannot find account boc file ${ELECTIONS_WORK_DIR}/${ACCOUNT##*:}.boc"
+        return 2
+    fi
+    local ACC_BOC="${INPL_ELECTIONS_WORK_DIR}/${ACCOUNT##*:}.boc"
+    Custod_QTY=$($CALL_CLI   -j run --boc "${ACC_BOC}" getCustodians '{}' --abi "${INPL_SafeC_Wallet_ABI}" | jq -r '.custodians|length')
+    Confirms_QTY=$($CALL_CLI -j run --boc "${ACC_BOC}" getParameters '{}' --abi "${INPL_SafeC_Wallet_ABI}" | jq -r '.requiredTxnConfirms')
+    echo "${Custod_QTY} ${Confirms_QTY}"
+}
+#=================================================
+# Search ADNL in Network config 34
+# Input: ADNL_HEX
+# Return: 
+#   "PUBKEY WEIGHT" - if ADNL found in p34 list
+#   "absent" - if not found
+#   "null" - if p34 is empty
+function P34_ADNL_search() {
+    local Result="absent"
+    local ADNL=$(echo "$1"| tr '[:upper:]' '[:lower:]')
+    if [[ ${#ADNL} -ne 64 ]];then
+        echo "${Result}"
+        return
+    fi
+    if $FORCE_USE_DAPP ;then
+        local P34_List="$($CALL_CLI -j getconfig 34)"
+        if echo "$P34_List" | grep -q '{}';then
+            echo "null"
+            return
+        fi
+    else
+        local P34_List="$($CALL_CONS -jc "getconfig 34")"
+        if echo "$P34_List" | grep -q '{}';then
+            echo "null"
+            return
+        fi
+    fi
+    local found="$(jq ".p34.list[]|select(.adnl_addr == \"$ADNL\")" <<< "${P34_List}")"
+    if [[ -n $found ]]; then
+        local pkey="$(jq -r .public_key <<< "${found}")"
+        local wght="$(jq -r .weight <<< "${found}")"
+        Result="${pkey} ${wght}"
+    fi
+    echo "${Result}"
+}
+#=================================================
+# Search ADNL in Network config 36
+# Input: ADNL_HEX
+# Return: 
+#   "PUBKEY WEIGHT" - if ADNL found in p36 list
+#   "absent" - if not found
+#   "null" - if p36 is empty
+function P36_ADNL_search() {
+    local Result="absent"
+    local ADNL=$(echo "$1"| tr '[:upper:]' '[:lower:]'| tr -d '"')
+    if [[ ${#ADNL} -ne 64 ]];then
+        echo "${Result}"
+        return
+    fi
+    if $FORCE_USE_DAPP ;then
+        local P36_List="$($CALL_CLI -j getconfig 36)"
+        if echo "$P36_List" | grep -q '{}';then
+            echo "null"
+            return
+        fi
+        local found=$(jq ".list[]|select(.adnl_addr == \"$ADNL\")" <<< "${P36_List}")
+    else
+        local P36_List="$($CALL_CONS -jc "getconfig 36")"   # | jq '.p36')"
+        if echo "$P36_List" | grep -q '{}';then
+            echo "null"
+            return
+        fi
+        local found=$(jq ".p36.list[]|select(.adnl_addr == \"$ADNL\")" <<< "${P36_List}")
+    fi
+    if [[ -n $found ]]; then
+        local pkey="$(jq -r .public_key <<< "${found}")"
+        local wght="$(jq -r .weight_dec <<< "${found}")"
+        Result="${pkey} ${wght}"
+    fi
+    echo "${Result}"
+}
+#=================================================
+# Get current Engine keys
+# Returns: 
+#   null    - if have not participated in any elections yet
+#   CurrADNL Curr_ID - if only one elections in engine (CPP node before elections or first elections for Rust node)
+#   CurrADNL Curr_ID Next_ADNL Next_ID - in other cases
+# Current - keys for current validating round
+# Next - keys for next validating round (after success bid for elections)
+function Get_Engine_ADNL() {
+    local Result="null"
+    if ! local Curr_Engine_Val_Keys="$(jq .validator_keys "${NODE_CFG_DIR}/config.json")";then
+        log_error_stack "Cannot get Engine keys from ${NODE_CFG_DIR}/config.json"
+        return 1
+    fi
+    [[ "$Curr_Engine_Val_Keys" == "null" ]] && echo "$Result" && return
+    local ADNL_0="$(jq -r .[0].validator_adnl_key_id <<< "$Curr_Engine_Val_Keys")"
+    local Elec_0="$(jq -r .[0].election_id <<< "$Curr_Engine_Val_Keys")"
+    local ADNL_1="$(jq -r .[1].validator_adnl_key_id <<< "$Curr_Engine_Val_Keys")"
+    local Elec_1="$(jq -r .[1].election_id <<< "$Curr_Engine_Val_Keys")"
+    if [[ "$ADNL_0" == "null" ]];then
+        echo "$Result"
+        return
+    fi
+    if [[ "$ADNL_1" == "null" ]];then
+        local Curr_Engine_ADNL="$(echo "$ADNL_0" | base64 -d | xxd -p | tr -d '\n')"
+        local Curr_Engine_Elec_ID=$Elec_0
+    else
+        local Next_Engine_Elec_ID="$((Elec_0 > Elec_1 ? Elec_0 : Elec_1))"
+        local Curr_Engine_Elec_ID="$((Elec_0 < Elec_1 ? Elec_0 : Elec_1))"
+        local Curr_Engine_ADNL="$(echo "$Curr_Engine_Val_Keys" | jq -r ".[]|select(.election_id == $Curr_Engine_Elec_ID)|.validator_adnl_key_id" \
+            | base64 -d|od -t xC -An|tr -d '\n'|tr -d ' ')"
+        local Next_Engine_ADNL="$(echo "$Curr_Engine_Val_Keys" | jq -r ".[]|select(.election_id == $Next_Engine_Elec_ID)|.validator_adnl_key_id" \
+            | base64 -d|od -t xC -An|tr -d '\n'|tr -d ' ')"
+    fi
+    if [[ -z $ADNL_1 ]] || [[ "$ADNL_1" == "null" ]];then
+        Result="${Curr_Engine_ADNL} ${Curr_Engine_Elec_ID}"
+    else
+        Result="${Curr_Engine_ADNL} ${Curr_Engine_Elec_ID} ${Next_Engine_ADNL} ${Next_Engine_Elec_ID}"
+    fi
+    echo "$Result"
+}
+#=================================================
+# Search ADNL in Elector during elections
+# Input: ADNL in HEX format
+# Return: 
+#   "absent" - if not found
+#   "null" - if elections closed
+#   "stake time max_factor addr" - if found
+function Elector_ADNL_Search() {
+    local ERR_WRONG_ADNL_LENGTH=1
+    local ERR_ELECTOR_TYPE=2
+    local ERR_ELECTIONS_CLOSED=3
+    local ERR_ADNL_ABSENT=4
+    local ERR_UNKNOWN_ELECTOR_TYPE=5
+    local Result="absent"
+    local Elector_Parts_List=""
+    local Elections_Open=""
+    local LC_OUTPUT=""
+    local ADNL=$(echo "$1"| tr '[:upper:]' '[:lower:]'| tr -d '"')
+    if [[ ${#ADNL} -ne 64 ]];then
+        echo "Wrong ADNL address"
+        return $ERR_WRONG_ADNL_LENGTH
+    fi
+    # boc file with current elector state will be saved in ${ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc
+    if result=$(Get_Current_Elector_Type);then
+        read -r elector_addr ELECTOR_TYPE <<< "$result"
+    else
+        log_error_stack "Cannot get Elector type!"
+        return $ERR_ELECTOR_TYPE
+    fi
+    NET_ELECTOR_BOC="${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc"
+    case "${ELECTOR_TYPE}" in
+        fift)
+            local Elector_Parts_List="$($CALL_CLI runget --boc "${NET_ELECTOR_BOC}" participant_list_extended | grep -i 'result:' | tr "]]" "\n" | tr '[' '\n' | awk 'NF > 0'| tr '","' ' ')"
+            local Elections_Open=$(echo "$Elector_Parts_List" | grep -F '0 0 0 0 null 0 0')
+            if [[ -n $Elections_Open ]];then
+                echo "null"
+                return $ERR_ELECTIONS_CLOSED
+            fi
+            local found=$(echo "${Elector_Parts_List}" | grep -i "0x${ADNL}")
+            if [[ -z $found ]];then
+                echo "absent"
+                return $ERR_ADNL_ABSENT
+            fi
+            local stake=$(echo "${found}" | awk '{print $1}')
+            local time=0
+            local max_factor=$(echo "${found}" | awk '{print $2}')
+            local addr="$(echo "${Elector_Parts_List}" | grep -B 1 "0x${ADNL}" | head -1|cut -d 'x' -f 2)"
+            Result="$stake $time $max_factor $addr"
+            ;;
+        solidity)
+            local Elector_Parts_List=$($CALL_CLI -j run --boc "${NET_ELECTOR_BOC}" get '{}' --abi "${INPL_Elector_ABI}")
+            local Elections_Open=$(jq -r .election_open <<< "${Elector_Parts_List}")
+            if [[ $Elections_Open -eq 0 ]]; then
+                echo "null"
+                return $ERR_ELECTIONS_CLOSED
+            fi
+            local found=$(jq ".cur_elect.members[]|select(.adnl_addr == \"0x${ADNL}\")" <<< "${Elector_Parts_List}")
+            if [[ -z $found ]];then
+                echo "absent"
+                return $ERR_ADNL_ABSENT
+            fi
+            local      stake="$(jq -r .stake <<< "${found}")"
+            local       time="$(jq -r .time <<< "${found}")"
+            local max_factor="$(jq -r .max_factor <<< "${found}")"
+            local       addr="$(jq -r .addr <<< "${found}" |cut -d 'x' -f 2)"
+            Result="$stake $time $max_factor $addr"
+            ;;
+        *)
+            log_error_stack "unknown ELECTOR_TYPE (${ELECTOR_TYPE})"
+            return $ERR_UNKNOWN_ELECTOR_TYPE
+            ;;
+    esac
+    echo "${Result}"
+}
+#=================================================
+# Get network config 15
+# Output:
+#   validators_elected_for elections_start_before elections_end_before stake_held_for
+#
+function Get_NetConfig_P15() {
+    local Result=""
+    if $FORCE_USE_DAPP ;then
+        if ! local CONFIG_PAR_15="$($CALL_CLI -j getconfig 15)"; then
+            log_error_stack "Get network election params (p15) FAILED!!!"
+            return 1
+        fi
+    else
+        if ! local CONFIG_PAR_15="$($CALL_CONS -j -c "getconfig 15" | jq '.p15')"; then
+            log_error_stack "Get network election params (p15) FAILED!!!"
+            return 2
+        fi
+    fi
+    local validators_elected_for="$(jq -r '.validators_elected_for'  <<< "$CONFIG_PAR_15")"
+    local elections_start_before="$(jq -r '.elections_start_before'  <<< "$CONFIG_PAR_15")"
+    local   elections_end_before="$(jq -r '.elections_end_before'    <<< "$CONFIG_PAR_15")"
+    local         stake_held_for="$(jq -r '.stake_held_for'          <<< "$CONFIG_PAR_15")"
+    if [[ -z $validators_elected_for ]] || [[ -z $elections_start_before ]] || [[ -z $elections_end_before ]] || [[ -z $stake_held_for ]];then
+        log_error_stack "Get network election params (p15) is empty!!!"
+        return 3
+    fi
+    Result="$validators_elected_for $elections_start_before $elections_end_before $stake_held_for"
+    echo "${Result}"
+}
+#=================================================
+# Get DePool rounds
+# Input: DePool_Addr
+# Output: DePool Rounds in json format
+function Get_DP_Rounds() {
+    local Result=""
+    local Depool_addr="$1"
+    if [[ ! -f $DePool_ABI ]];then
+        log_error_stack "Cannot find DePool ABI. Can't continue. Sorry."
+        return 1
+    fi
+    if ! Get_SC_current_state "$Depool_addr" | grep -iq "written StateInit of account";then
+        log_error_stack "Cannot get DePool state!! $Depool_addr"
+        return 2
+    fi
+    Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${Depool_addr##*:}.boc" getRounds '{}' --abi "$INPL_DePool_ABI")"
+
+    echo "${Result}"
+}
+#=================================================
+# echo "$(Rounds_Sorting_by_ID "$Curr_Rounds_Info")"
+# Input 
+#   "rounds_in_json"
+# Output
+#   "sorted_rounds_in_json"
+function Rounds_Sorting_by_ID() {
+    local Rounds_json=$1
+    local ID0=$(jq -r "[.rounds[]]|.[0].id" <<< "$Rounds_json")
+    local ID1=$(jq -r "[.rounds[]]|.[1].id" <<< "$Rounds_json")
+    local ID2=$(jq -r "[.rounds[]]|.[2].id" <<< "$Rounds_json")
+    local ID3=$(jq -r "[.rounds[]]|.[3].id" <<< "$Rounds_json")
+    declare -a rounds=($((ID0)) $((ID1)) $((ID2)) $((ID3)))
+    # shellcheck disable=SC918,SC2207
+    IFS=$'\n' Rounds_Sorted=($(sort -g <<<"${rounds[*]}")); unset IFS
+    local RS_0="$(jq -r "[.rounds[]]|.[]|select(.id == \"${Rounds_Sorted[0]}\")" <<< "$Rounds_json")"
+    local RS_1="$(jq -r "[.rounds[]]|.[]|select(.id == \"${Rounds_Sorted[1]}\")" <<< "$Rounds_json")"
+    local RS_2="$(jq -r "[.rounds[]]|.[]|select(.id == \"${Rounds_Sorted[2]}\")" <<< "$Rounds_json")"
+    local RS_3="$(jq -r "[.rounds[]]|.[]|select(.id == \"${Rounds_Sorted[3]}\")" <<< "$Rounds_json")"
+    echo "[${RS_0},${RS_1},${RS_2},${RS_3}]"
+}
+#=================================================
+# Get depool elections ID
+# Input: DePool_Addr
+# Output: DePool_elections_ID
+function Get_DePool_elec_ID() {
+    local Depool_addr="$1"
+    local Depool_Rounds_Info="$(Get_DP_Rounds "$Depool_addr")"
+    local Curr_Rounds_Info="$(Rounds_Sorting_by_ID "$Depool_Rounds_Info")"
+    local Curr_DP_Elec_ID=$(jq -r ".[1].supposedElectedAt" <<< "$Curr_Rounds_Info" | xargs printf "%10d\n")
+    echo "$Curr_DP_Elec_ID"
+}
+#=================================================
+# Get DePool Self balance
+#   Input: DePool_Addr
+#   Output: DePool self balance in Tokens XXX.XXX
+function Get_DP_Self_Balance() {
+    local Result=""
+    local Depool_addr="$1"
+    if ! Get_SC_current_state "$Depool_addr" | grep -iq "written StateInit of account";then
+        log_error_stack "Cannot get DePool state!! $Depool_addr"
+        return 1
+    fi
+    DP_balance_nT="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${Depool_addr##*:}.boc" getDePoolBalance '{}' --abi "${INPL_DePool_ABI}" | jq -r '.value0')"
+    Result="$(echo "scale=3; $((DP_balance_nT)) / 1000000000" | $CALL_BC)"
+    echo "${Result}"
+}
+#=================================================
+# Get DePool INFO
+# Input: DePool_Addr
+# Output: DePool Info in json format
+# see depool info in depool ABI in 
+#    contracts/EverX/depool/DePool.abi.json
+# or contracts/Broxus/StEver/DePool.abi.json
+function Get_DP_Info() {
+    local Result=""
+    local Depool_addr="$1"
+    if ! Get_SC_current_state "$Depool_addr" | grep -iq "written StateInit of account";then
+        log_error_stack "Cannot get DePool state!! $Depool_addr"
+        return 1
+    fi
+    Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${Depool_addr##*:}.boc" getDePoolInfo '{}' --abi "${INPL_DePool_ABI}")"
+    if echo "$Result" | grep -qi 'Failed';then
+        log_error_stack "Cannot get DePool info!!!"
+        echoerr "$Result"
+        echoerr "Do you have right path to  DePool's abi?"
+        return 2
+    fi
+    echo "${Result}"
+}
+#=================================================
+# Get DePool List of Partisipants 
+# Input: DePool_Addr
+# Output: DePool Info in json format
+function Get_DP_Parts_List() {
+    local Result=""
+    local Depool_addr="$1"
+    if ! Get_SC_current_state "$Depool_addr" | grep -iq "written StateInit of account";then
+        log_error_stack "Cannot get DePool state!! $Depool_addr"
+        return 1
+    fi
+    if Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${Depool_addr##*:}.boc" getParticipants '{}' --abi "${INPL_DePool_ABI}")";then
+        echo "${Result}"
+        return 0
+    else
+        log_error_stack "Cannot get DePool Partisipants list! It seems that DePool is empty."
+        echo "${Result}"
+        return 2
+    fi
+}
+#=================================================
+# Get DePool Partisipant Info
+# Input: DePool_Addr Part_Addr
+# Output: DePool Partisipant Info in json format
+function Get_DP_Part_Info() {
+    local Result=""
+    local Depool_addr="$1"
+    local Part_addr="$2"
+    if Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${Depool_addr##*:}.boc" getParticipantInfo "{\"addr\":\"${Part_addr}\"}" --abi "${INPL_DePool_ABI}")";then
+        echo "${Result}"
+        return 0
+    else
+        log_error_stack "Cannot get DePool Partisipant info! It seems that participant not found."
+        echo "${Result}"
+        return 1
+    fi
+}
+
+#=================================================
+# Get MSIG transactions List
+# Input: msig address
+# Output: transactions in json
+function Get_MSIG_Trans_List() {
+    local Result="{}"
+    local MSIG_ADDR="$1"
+    if [[ ! -f $SafeC_Wallet_ABI ]];then
+        log_error_stack "Cannot find SafeCodeWallet ABI. Can't continue. Sorry."
+        return 1
+    fi
+    if ! Get_SC_current_state "$MSIG_ADDR" | grep -iq "written StateInit of account";then
+        log_error_stack "Cannot get MSIG state!! $MSIG_ADDR"
+        return 2
+    fi
+    if Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${MSIG_ADDR##*:}.boc" getTransactions '{}' --abi "${INPL_SafeC_Wallet_ABI}")";then
+        echo "${Result}"
+        return 0
+    else
+        log_error_stack "Cannot get MSIG transactions list! It seems that MSIG is empty."
+        echo "${Result}"
+        return 3
+    fi
+}
+#=================================================
+# Sign MSIG transaction
+# !!! I don't check result here !!! Just send one confirmation.
+# Input: 
+#  - Trans_ID 
+#  - msig_address 
+#  - key_file in Keys directory or sid phrase
+# Output: 
+# - success or failed with error message and exit code
+function Send_MSIG_Trans_Confirmation() {
+    # Input:
+    # $1 - Transaction ID to confirm
+    # $2 - MSIG address
+    # $3 - Key file in Keys directory or seed phrase
+    local Result="failed"
+    local Trans_ID="$1"
+    local MSIG_ADDR="$2"
+    if [[ ! -f "$SafeC_Wallet_ABI" ]];then
+        log_error_stack "Cannot find SafeCodeWallet ABI. Can't continue. Sorry."
+        return 1
+    fi
+    # check if Trans_ID is not empty and valid
+    if [[ -z "$Trans_ID" ]] || [[ ! "$Trans_ID" =~ ^[0-9]+$ ]];then
+        log_error_stack "Trans_ID is empty or not valid!"
+        return 2
+    fi
+    # check if $3 is key file or seed phrase
+    if [[ $(echo "$3" | awk '{print NF}') -eq 12 ]];then 
+        # seed phrase
+        local signature="$3"
+    elif [[ -f "${KEYS_DIR}/${3}" ]];then
+        # key file name in Keys directory
+        local Keys_File="$3"
+        # key file for signature to use in $_CALL_CLI
+        local signature="${INPL_KEYS_DIR}/${Keys_File}" 
+        if [[ -z "$(jq -r '.public' "${KEYS_DIR}/${Keys_File}")" ]] || [[ -z "$(jq -r '.secret' "${KEYS_DIR}/${Keys_File}")" ]];then
+            log_error_stack "Can't find public and/or secret key in ${KEYS_DIR}/${Keys_File}!"
+            return 2
+        fi
+    elif [[ -f "${3}" ]];then
+        # key file name in Keys directory
+        local Keys_File="$3"
+        # key file for signature to use in $_CALL_CLI
+        local signature="${Keys_File}" 
+        if [[ -z "$(jq -r '.public' "${Keys_File}")" ]] || [[ -z "$(jq -r '.secret' "${Keys_File}")" ]];then
+            log_error_stack "Can't find public and/or secret key in ${Keys_File}!"
+            return 2
+        fi
+    else
+        log_error_stack "Argument 3 is not a key file or seed phrase!"
+        return 3
+    fi
+    # Create boc file for signature
+    # Use random name for boc file for multiple concurrent calls
+    local BOC_FileName="confirm-msg_$(head -c 8 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9').boc"
+    if ! result="$($CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/${BOC_FileName}" \
+            --sign "$signature" ${SIG_ID_OPTION} \
+            --abi "${INPL_SafeC_Wallet_ABI}" \
+            "$MSIG_ADDR" confirmTransaction \
+            "{\"transactionId\":$Trans_ID}")"
+    then
+        log_error_stack "CANNOT create boc file for signature!!!"
+        echoerr "$result"
+        rm -f "${ELECTIONS_WORK_DIR}/${BOC_FileName}" 2>/dev/null
+        return 4
+    fi
+    # Send message for confirmation
+    if $FORCE_USE_DAPP ;then
+        if ! result="$($CALL_CLI sendfile "${INPL_ELECTIONS_WORK_DIR}/${BOC_FileName}")"; then
+            # If 'exit code: 103' - then transaction already confirmed 
+            # or 'exit code: 102' (transaction does not exist) - means that transaction already confirmed and executed
+            # or 'exit code: 52' (Replay protection exception)
+            # then transaction already confirmed, in other case - error
+            if echo "$result" | grep -iq "exit code: 103" && \
+               echo "$result" | grep -iq "exit code: 102" && \
+               echo "$result" | grep -iq "exit code: 52" ;then
+                log_error_stack "Send message for confirmation FAILED!!!"
+                echoerr "$result"
+                rm -f "${ELECTIONS_WORK_DIR}/${BOC_FileName}"
+                return 5
+            fi
+        fi
+        rm -f "${ELECTIONS_WORK_DIR}/${BOC_FileName}"
+        Result="success"
+    else
+        if ! result="$($CALL_CONS -c "sendmessage ${INPL_ELECTIONS_WORK_DIR}/${BOC_FileName}")"; then
+            log_error_stack "Send message for confirmation FAILED!!!"
+            echoerr "$result"
+            rm -f "${ELECTIONS_WORK_DIR}/${BOC_FileName}"
+            return 6
+        fi
+        rm -f "${ELECTIONS_WORK_DIR}/${BOC_FileName}"
+        Result="success"
+    fi
+    echo "${Result}"
+} # Send_MSIG_Trans_Confirmation
+#=================================================
+# Send File - send external message serialized as bag of cells and stored in specified msg_file
+# Input: boc file
+# Output: result
+function Send_File_To_BC() {
+    local Result="failed"
+    local BOC_File="$1"
+    if $FORCE_USE_DAPP ;then
+        if ! result="$($CALL_CLI sendfile "$BOC_File")";then
+            log_error_stack "Error while send file to blockchain:"
+            echo "$result" >&2
+            return 1
+        fi
+        echo "$result" | grep -qi 'Succeded' && Result="success"
+    else
+        if ! result="$($CALL_CONS -c "sendmessage $BOC_File")";then
+            log_error_stack "Error while send file to blockchain:"
+            echo "$result" >&2
+            return 2
+        fi
+        sleep $LC_Send_MSG_Timeout
+        echo "$result" | grep -qi 'success' && Result="success"
+    fi
+    echo "${Result}"
+}
+#=================================================
+# top_app_account - send tokens to account. Mostly for use in prepare_elcetions.sh to topup Tik and proxy accounts
+# Input: account address, amount to topup, validator address
+# Output: result
+function top_app_account () {
+    local Account_Addr="$1"
+    local TopUpSum="$2"
+    local Validator_addr="$3"
+    # -------------------------------------------
+    # Check that the account is ready and there are enough tokens on it
+    local Acc_Info="$(Get_Account_Info "$Account_Addr")"
+    local Acc_Status="$(echo "$Acc_Info" | awk '{print $1}')"
+    local Old_LastTrans_Time_Unix=$(echo "$Acc_Info" | awk '{print $3}')
+        [[ "$Acc_Status" == "None" ]] && log_error_stack "Account does not exist! (no tokens, no code, nothing" && return 1
+    [[ "$Acc_Status" == "Uninit" ]] && log_error_stack "Account Uninited" && return 1
+    # -------------------------------------------
+    # Make BOC file to send
+    local Custodians="$(Get_Account_Custodians_Info "$Validator_addr")"
+    local Val_Confirm_QTY=$(echo "$Custodians" | awk '{print $2}')
+    local TOPUP_BOC_File="${ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
+    local INPL_TOPUP_BOC_File="${INPL_ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
+    rm -f "${TOPUP_BOC_File}"
+    local TC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_TOPUP_BOC_File}" \
+    --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+    --abi "${INPL_SafeC_Wallet_ABI}" \
+    "${Validator_addr}" submitTransaction \
+    "{\"dest\":\"${Account_Addr}\",\"value\":$((TopUpSum)),\"bounce\":true,\"allBalance\":false,\"payload\":\"\"}" \
+    --lifetime 600)"
+    if echo "$TC_OUTPUT" | grep -iq 'error';then
+        log_error_stack "Error while make topup message boc : ${TC_OUTPUT}"
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \
+            "${Tg_SOS_sign}###-ERROR(${FUNCNAME[0]} line $LINENO): Error while make topup message boc : ${TC_OUTPUT}"
+        return 1
+    fi
+    if [[ ! -f ${TOPUP_BOC_File} ]];then
+        log_error_stack "Failed to make BOC file ${TOPUP_BOC_File}."
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \
+            "${Tg_SOS_sign}###-ERROR(${FUNCNAME[0]} line $LINENO): Failed to make BOC file ${TOPUP_BOC_File} for topup account."
+        return 2
+    fi
+    # -------------------------------------------
+    local Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
+    local Before_Trans_QTY=$(jq -r ".transactions|length" <<< "$Trans_List")
+    Before_Trans_QTY=$((Before_Trans_QTY))
+    if [[ $Before_Trans_QTY -ne 0 ]];then
+        echoerr "+++WARNING(${FUNCNAME[0]} line $LINENO): You have $Before_Trans_QTY unsigned transactions already."
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \
+            "${Tg_Warn_sign} WARNING(${FUNCNAME[0]} line $LINENO): You have $Before_Trans_QTY unsigned transactions already."
+    fi
+    # -------------------------------------------
+    local Last_Trans_ID=""
+    for (( i=1; i <= 5; i++ )); do
+        local result=$(Send_File_To_BC "${INPL_TOPUP_BOC_File}")
+        if [[ "$result" == "failed" ]]; then
+            echo " FAIL"
+            echo "Now sleep $LC_Send_MSG_Timeout secs and will try again.."
+            echo "--------------"
+            sleep $LC_Send_MSG_Timeout
+            continue
+        fi
+       if [[ $Val_Confirm_QTY -le 1 ]];then
+            Acc_Info="$(Get_Account_Info "$Validator_addr")"
+            local Curr_LastTrans_Time_Unix=$(echo "$Acc_Info" |awk '{print $3}')
+            if [[ $Curr_LastTrans_Time_Unix -gt $Old_LastTrans_Time_Unix ]];then
+                echo -e "INFO: successfully sent $TRANSF_AMOUNT tokens."
+                break
+            fi
+       fi
+        local Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
+        local Trans_QTY=$(jq -r ".transactions|length" <<< "$Trans_List")
+        Trans_QTY=$((Trans_QTY))
+        if [[ $Trans_QTY -gt $Before_Trans_QTY ]] && [[ $Val_Confirm_QTY -gt 1 ]];then
+            Last_Trans_ID=$(jq -r .transactions[$((Trans_QTY - 1))].id <<< "$Trans_List")
+            echo -e "INFO: successfully created transaction # $Last_Trans_ID"
+            break
+       fi
+    done
+    if [[ -z $Last_Trans_ID ]] && [[ $Val_Confirm_QTY -gt 1 ]];then
+        echo "###-ERROR(line $LINENO): Cannot create transaction for topup account. Last_Trans_ID is empty."
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \
+            "${Tg_SOS_sign}###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot create transaction for topup account."
+        return 1
+    fi
+    if [[ $Val_Confirm_QTY -gt 1 ]];then
+        "${SCRIPT_DIR}/Sign_Trans.sh" "${VALIDATOR_NAME}" "$Last_Trans_ID"
+    fi
+    return 0
+} # top_app_account
+#=================================================
+# Send message to Telegram bot
+function Send_msg_toTelBot() {
+    Title="$1"
+    Message="$2"
+    URL_to_Val="$3"
+    if [[ -z ${TELEGRAM_BOT_TOKEN} ]] || [[ -z ${TELEGRAM_CHAT_ID} ]];then
+        echo "---WARNING(${FuncSelfScriptName} line $LINENO): Please set the TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID variables in env.sh file to recieve notifications"
+        return 1
+    fi
+    if [[ -n ${URL_to_Val} ]];then
+    MSG_JSON=$(jq -n \
+        --arg chat_id "$TELEGRAM_CHAT_ID" \
+        --arg text "*${Title}* \n${Message}" \
+        --arg url "$URL_to_Val" \
+        '{
+            chat_id: $chat_id,
+            text: $text,
+            parse_mode: "markdown",
+            reply_markup: {inline_keyboard: [
+                    [{
+                            text: "Open on ever.live",
+                            url: $url
+                     }]
+                ]
+            }
+        }')
+        # echo $MSG_JSON
+        curl -d "$MSG_JSON" \
+         -H "Content-Type: application/json" \
+         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
+    else 
+        curl -s \
+         --data parse_mode=HTML \
+         --data chat_id="${TELEGRAM_CHAT_ID}" \
+         --data text="<b>${Title}</b>%0A${Message}" \
+         --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+    fi
+}
+#=================================================
+# Ask to switch to dapp if node not syncronized
+function Ask_to_switch_to_dapp() {
+    # Check node sync status if not forced to use dapp
+    if ! $FORCE_USE_DAPP;then
+        NODE_SYNC_STATUS=$(Get_TimeDiff)
+        # Get time difference between the current machine and the node
+        # shellcheck disable=SC2046
+        read -r MC_TIME_DIFF SH_TIME_DIFF <<< $(echo "$NODE_SYNC_STATUS" | awk '{print $1, $2}')
+        # echo "---INFO: Node sync status: $MC_TIME_DIFF $SH_TIME_DIFF"
+        if ! [[ $MC_TIME_DIFF =~ ^[0-9]+$ && $SH_TIME_DIFF =~ ^[0-9]+$ ]] || [[ $MC_TIME_DIFF -gt 20 ]] || [[ $SH_TIME_DIFF -gt 20 ]];then
+            IFS= read -rp "### Access method: console, but your node is not synced!!! Do you want to use DAPP temporarily? (yes/no)? " </dev/tty answer
+            case ${answer} in
+                y|Y|yes|Yes|YES )
+                    return 0 ;;
+                * )
+                    return 2 ;;
+            esac
+        else
+            return 1
+        fi
+    else
+        return 1
+    fi
+}
+#=================================================
+function Send_Message() {
+    # This function sends message to destination address
+    # If the message sent to destination successfully, it returns 0
+    # If the message was not sent, it returns error code 1
+    # If the message was sent, but need to sign transaction, it returns transaction ID
+    # Input:
+    #   $1 - Source address
+    #   $2 - Destination address
+    #   $3 - File to send
+    # Output:
+    #   0 - if the message sent to destination successfully
+    #   Transactions ID - if need to sign transaction
+    local Trans_SRC_Addr=$1
+    local Trans_DST_Addr=$2
+    local File_to_send=$3
+    local Attempts_to_send=3
+    local SRC_Acc_Info="$(Get_Account_Info "${Trans_SRC_Addr}")"
+    declare -i SRC_Acc_LT=$(echo "$SRC_Acc_Info" | awk '{print $3}')
+    local Trans_List="$(Get_MSIG_Trans_List "${Trans_SRC_Addr}")"
+    if Custodians_Info=$(Get_Account_Custodians_Info "$Trans_SRC_Addr");then
+        # shellcheck disable=SC2034
+        read -r Total_Custodians Required_Signs <<< "$Custodians_Info"
+    else
+        log_error_stack "Cannot get custodians info for $Trans_SRC_Addr"
+        return 1
+    fi
+    declare -i NEW_SRC_Trans_ID=-1
+    declare -i New_Trans_Qty=0
+    declare -i Exist_Trans_Qty=0
+    declare -i Trans_QTY=$(jq -r ".transactions|length" <<< "$Trans_List")
+    [[ ${Trans_QTY} -gt 0 ]] && Exist_Trans_Qty=$(jq -r "[.transactions[]|select(.dest == \"${Trans_DST_Addr}\")]|length" <<< "$Trans_List")
+    while [[ $Attempts_to_send -gt 0 ]]; do
+        result=$(Send_File_To_BC "${File_to_send}")
+        if [[ "$result" == "failed" ]]; then
+            log_error_stack "Send message to $Trans_DST_Addr FAILED!!!"
+        fi
+        sleep $LC_Send_MSG_Timeout
+        # ===============================================================
+        # Verifying that a transaction has been created anyway
+        if [[ $Required_Signs -gt 1 ]];then
+            Trans_List="$(Get_MSIG_Trans_List "${Trans_SRC_Addr}")"
+            New_Trans_Qty=$(( $(jq -r "[.transactions[]|select(.dest == \"$Trans_DST_Addr\")]|length" <<< "$Trans_List") ))
+            if [[ $New_Trans_Qty -gt $Exist_Trans_Qty ]];then
+                NEW_SRC_Trans_ID=$(jq -r ".transactions[]|select(.dest == \"$Trans_DST_Addr\")|.id" <<< "$Trans_List" | tail -n 1)
+                # echo "Made transaction ID: $Elect_Trans_ID"
+                break
+            else
+                log_error_stack "Transaction does not made or timeout is too low! TransQTY=$New_Trans_Qty"
+                Attempts_to_send=$((Attempts_to_send - 1))
+            fi
+        else
+        # ===============================================================
+        # Verifying that a transaction has been sent (for 1 custodian acc) by checking change last transaction time
+            SRC_Acc_Info="$(Get_Account_Info "${Trans_SRC_Addr}")"
+            declare -i SRC_Acc_LT_Sent=$(echo "${SRC_Acc_Info}" | awk '{print $3}')
+            if [[ $SRC_Acc_LT_Sent -gt $SRC_Acc_LT ]];then
+                # echo "---INFO: Sending transaction  was done SUCCESSFULLY!" >> "${ELECTIONS_WORK_DIR}/${elections_id}.log"
+                NEW_SRC_Trans_ID=0
+                break
+            else
+                log_error_stack "Sending transaction FAILED!!!"
+                Attempts_to_send=$((Attempts_to_send - 1))
+            fi
+        fi
+    done
+    if [[ $Attempts_to_send -le 0 ]];then
+        log_error_stack "ALARM!!! Filed to make transaction from $Trans_SRC_Addr to $Trans_DST_Addr!!!" 
+        return 1
+    fi
+    echo "$NEW_SRC_Trans_ID"
+    return 0
+}
+#===============================================
+function NameToAddr() {
+    # If $1 is a name, return the address readed from the file $1.addr in keys directory defined in env.sh
+    # If $1 is an address, return it
+    # If $1 is empty or invalid or not found, return 0
+    MSIG_NAME="$1"
+    MSIG_ACCOUNT=0
+    if [[ -z $MSIG_NAME ]]; then
+        echo "$MSIG_ACCOUNT"
+        return 1
+    fi
+    MSIG_ACCOUNT="$(echo "$MSIG_NAME" |  awk -F ':' '{print $2}')"
+    # check if MSIG account is given in format "wc:addr" and addr is 64 hex symbols
+    if [[ -z $MSIG_ACCOUNT ]] || [[ ! ${#MSIG_ACCOUNT} -eq 64 ]] || [[ ! $MSIG_ACCOUNT =~ ^[0-9A-Fa-f]+$ ]];then
+        # assume that MSIG account is given as name and try to find it in the keys directory
+        if ! MSIG_ACCOUNT="$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")";then
+            log_error_stack "Given account is not in the format 'wc:addr' and name $1 not found in the keys directory"
+            MSIG_ACCOUNT=0
+            return 2
+        fi
+    fi
+    echo "$MSIG_ACCOUNT"
+    return 0
+}
+#=================================================
+# Get donor addresses for the beneficiary in the depool
+# Input: DePool address, Beneficiary address
+# Output: Lock donor address, Vesting donor address
+# Return: 0 - if success, 1 - if error
+function GetDonors(){
+    local Depool_addr=$1
+    local STAKE_BENEFICIARY=$2
+    local BENEFICIARY_Participant_Info="$(Get_DP_Part_Info "$Depool_addr" "$STAKE_BENEFICIARY")"
+    if [[ -z $BENEFICIARY_Participant_Info ]];then
+        echo
+        log_error_stack "Cannot get participant info for $STAKE_BENEFICIARY in the depool $Depool_addr"
+        return 1
+    fi
+    local LOCK_DONOR="$(jq -r .lockDonor <<< "$BENEFICIARY_Participant_Info")"
+    local VESTING_DONOR="$(jq -r .vestingDonor <<< "$BENEFICIARY_Participant_Info")"
+    if [[ $LOCK_DONOR == "0:0000000000000000000000000000000000000000000000000000000000000000" ]];then
+        LOCK_DONOR="0"
+    fi
+    if [[ $VESTING_DONOR == "0:0000000000000000000000000000000000000000000000000000000000000000" ]];then
+        VESTING_DONOR="0"
+    fi
+    echo "$LOCK_DONOR $VESTING_DONOR"
+}

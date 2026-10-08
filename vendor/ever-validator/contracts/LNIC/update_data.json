@@ -1,0 +1,20 @@
+{
+  "new_node_info": {
+    "NodeVersion": "000060005",
+    "PrevNodeVersion": "000060000",
+    "NodeRepository": "https://github.com/everx-labs/ever-node.git",
+    "NodeBranch": "master",
+    "LastCommit": "e05e92bb24388451674c1cecdb5e78cacb5c9cdf",
+    "PrevCommit": "fada18384f292ff2f2315f9cb34712d33c116f76",
+    "SupportedBlock": 58,
+    "PrevSupportedBlock": 56,
+    "DockerImageTAG": "custom-ever-node-502",
+    "DockerImageRepo": "everx/ever-node:custom-ever-node",
+    "UpdateByCron": false,
+    "UpdateStartTime": 0,
+    "UpdateDuration": 0,
+    "MinCLIversion": "000040000",
+    "DisableOldNodeValidate": false
+  },
+  "new_info_time": 1729491330
+}

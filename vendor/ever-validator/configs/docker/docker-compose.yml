@@ -1,0 +1,56 @@
+version: '3'
+services:
+  node:
+    environment:
+      RUST_VERSION:
+      YQ_VERSION:
+      MEM_LIMIT:
+      WORK_DOCKER_IMAGE:
+      CONTAINER_NAME:
+      STATSD_DOMAIN:
+      STATSD_PORT:
+      ADNL_PORT:
+      VALIDATOR_NAME:
+    image: "${WORK_DOCKER_IMAGE}"
+    container_name: ${CONTAINER_NAME}
+    init: true
+    hostname: ${VALIDATOR_NAME}
+    # build:
+    #   context: ./build
+    #   dockerfile: Dockerfile
+    #   args:
+    #     RUST_VERSION: ${RUST_VERSION}
+    #     YQ_VERSION: ${YQ_VERSION}
+    restart: "unless-stopped"
+    env_file:
+      - ./.env
+    ports:
+      - "${ADNL_PORT}:${ADNL_PORT}/udp"
+    networks:
+      - proxy_nw
+    volumes:
+      - ../../configs/:/ever-node/configs/
+      - ../../node_cfg/:/ever-node/node_cfg/
+      - ../../scripts/:/ever-node/scripts/
+      - ../../logs/:/ever-node/logs/
+      - ../../node_db/:/ever-node/node_db/
+      - ../../contracts/:/ever-node/contracts/
+      - ../../keys/:/ever-node/keys/
+      - ../../elections/:/ever-node/elections/
+      - ../../src/:/ever-node/src/
+      - /tmp/metrics/:/tmp/metrics/
+    entrypoint: /ever-node/scripts/init_scripts/entrypoint.sh
+    command: ["${CONTAINER_RUN_MODE}"]
+    mem_limit: "${MEM_LIMIT}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "1000m"
+        max-file: "100"
+    cap_add:
+      - SYS_PTRACE
+    extra_hosts:
+      - "parser.service:127.0.0.1"
+networks:
+  proxy_nw:
+    external: true
