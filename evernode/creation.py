@@ -250,24 +250,36 @@ def handle_node_creation(store, args):
         )
     config["image"] = record["image"]
     config["image_id"] = record["image_id"]
-    with store.acquire_operation_lock(name):
-        provisioning.provision_node_workspace(
-            store,
-            config,
-            args.project_source,
-            args.project_repo or configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
-            args.project_ref,
-        )
-        if importing:
-            phrases = [
-                getpass.getpass(f"Seed phrase {index}/{custodians}: ")
-                for index in range(1, custodians + 1)
-            ]
-            wallets.store_import_seeds(store, config, phrases)
-        nodes.start_node(store, config)
-        config = store.load_node_config(name)
-        config["setup_stage"] = "node-started"
-        store.save_node_config(config)
+    try:
+        with store.acquire_operation_lock(name):
+            provisioning.provision_node_workspace(
+                store,
+                config,
+                args.project_source,
+                args.project_repo or configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
+                args.project_ref,
+            )
+            if importing:
+                phrases = [
+                    getpass.getpass(f"Seed phrase {index}/{custodians}: ")
+                    for index in range(1, custodians + 1)
+                ]
+                wallets.store_import_seeds(store, config, phrases)
+            nodes.start_node(store, config)
+            config = store.load_node_config(name)
+            config["setup_stage"] = "node-started"
+            store.save_node_config(config)
+    except BaseException:
+        try:
+            nodes.discard_failed_creation(store, config)
+        except (OSError, process.OperationError) as cleanup_error:
+            print(
+                f"Could not fully remove failed setup for {name}: {cleanup_error}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Removed failed setup for {name}.", file=sys.stderr)
+        raise
     next_action = "wallet recover" if importing else "wallet create"
     print(f"Started {name}. Wait for sync, then run: evernode {next_action} -n {name}")
     return 0

@@ -424,6 +424,66 @@ class FocusedFeatureTests(unittest.TestCase):
                 creation.handle_node_creation(self.store, args)
         prompt.assert_called_once_with("Existing DePool address: ")
 
+    def test_failed_node_create_discards_its_partial_workspace(self):
+        args = build_argument_parser().parse_args(
+            [
+                "node",
+                "create",
+                "-n",
+                "validator",
+                "--image",
+                "local/ever-node:abc",
+                "--ip",
+                "203.0.113.5",
+                "--memory",
+                "40G",
+                "--network",
+                "main",
+                "--workchain",
+                "0",
+                "--cron-interval",
+                "10",
+                "--depool-type",
+                "EverX",
+                "--validator-assurance",
+                "50000",
+                "--min-stake",
+                "10",
+                "--reward-fraction",
+                "65",
+                "--balance-threshold",
+                "20",
+                "--custodians",
+                "3",
+                "--required-signatures",
+                "2",
+                "--yes",
+            ]
+        )
+        record = {"image": "local/ever-node:abc", "image_id": "sha256:" + "a" * 64}
+        with (
+            patch(
+                "evernode.creation.docker.select_container_names",
+                return_value=("ever-node-01", "statsd-01"),
+            ),
+            patch(
+                "evernode.creation.docker.select_available_node_port",
+                side_effect=(58888, 9102),
+            ),
+            patch("evernode.creation.images.find_image_record", return_value=record),
+            patch("evernode.creation.process.execute_command"),
+            patch(
+                "evernode.creation.provisioning.provision_node_workspace",
+                side_effect=process.OperationError("preparation failed"),
+            ),
+            patch("evernode.creation.nodes.discard_failed_creation") as discard,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            with self.assertRaisesRegex(process.OperationError, "preparation failed"):
+                creation.handle_node_creation(self.store, args)
+        discard.assert_called_once()
+
     def test_current_vendored_env_accepts_all_rendered_values(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:

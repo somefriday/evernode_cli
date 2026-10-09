@@ -130,6 +130,10 @@ Create the node from the image built above:
 sudo evernode node create -n validator01 --image IMAGE
 ```
 
+If a confirmed `node create` fails, the CLI removes the failed node's
+containers, database, keys, configuration and logs before returning the error.
+The shared image and other managed nodes are unchanged.
+
 The fresh-DePool flow uses these defaults when Enter is pressed:
 
 | Setting | Default |

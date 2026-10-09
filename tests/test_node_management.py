@@ -69,6 +69,24 @@ class ConfigTests(unittest.TestCase):
         ):
             self.assertFalse(nodes.is_node_synchronized(dict(good, **updates)))
 
+    def test_discard_failed_creation_removes_all_node_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = storage.NodeStateStore(Path(temporary) / "state")
+            directory = store.node_directory("node-01")
+            for item in ("node_db", "logs", "keys", "node_cfg", "scripts"):
+                (directory / item).mkdir(parents=True, exist_ok=True)
+            config = make_node_configuration()
+            store.save_node_config(config)
+            with (
+                patch("evernode.docker.inspect_container", return_value=None),
+                patch(
+                    "evernode.elections.node_election_cron_path",
+                    return_value=Path(temporary) / "evernode-node-01",
+                ),
+            ):
+                nodes.discard_failed_creation(store, config)
+            self.assertFalse(directory.exists())
+
     def test_port_selection_respects_saved_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             s = storage.NodeStateStore(tmp)

@@ -493,6 +493,47 @@ def remove_node(store, config, purge=False, timeout=30):
     store.save_node_config(config)
 
 
+def discard_failed_creation(store, config):
+    """Remove every artifact created by one failed ``node create`` call.
+
+    The caller has already established that the name was unused before the
+    create operation began. Container ownership labels are still verified
+    before anything is stopped or removed.
+    """
+    name = configuration.validate_node_name(config["name"])
+    directory = store.node_directory(name)
+    if not directory.exists():
+        return
+    with store.acquire_operation_lock(name):
+        storage.validate_private_path(directory)
+        errors = []
+        try:
+            elections.disable_node_election_schedule(name)
+        except process.OperationError as exc:
+            errors.append(str(exc))
+        for container in (configuration.node_container_name(config), config["statsd"]):
+            try:
+                item = docker.inspect_managed_container(container, name)
+                if item and item["State"]["Status"] in (
+                    "running",
+                    "restarting",
+                    "paused",
+                ):
+                    process.execute_command(
+                        ["docker", "stop", "--time", "30", container], timeout=60
+                    )
+                if item:
+                    process.execute_command(["docker", "rm", container])
+            except process.OperationError as exc:
+                errors.append(str(exc))
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            errors.append(f"cannot remove {directory}: {exc}")
+        if errors:
+            raise process.OperationError("; ".join(errors))
+
+
 def apply_node_lifecycle_operation(
     store, name, action, *, timeout=30, purge_data=False
 ):
