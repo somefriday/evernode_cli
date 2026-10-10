@@ -90,11 +90,12 @@ installed package; rerun the commands above before continuing.
 
 ## 3. Choose an image
 
-`node create` offers available managed images with their ever-node versions
-and a **Build a new image from source** option. Use Up/Down and Enter to
-select. A new build uses `everx-labs/ever-node` at `master` and
-`everx-labs/ever-cli` at `0.44.0`. The CLI records the resolved commits, Rust
-version and Dockerfile fingerprint.
+`node create` shows the latest `master` source first, version tags from newest
+to oldest, and available managed images. Use Up/Down and Enter to select.
+Press Tab to switch to other branches. Choosing a source ref builds a new image
+at the displayed commit; choosing a local image reuses it. The default source
+is `everx-labs/ever-node`, with `everx-labs/ever-cli` at `0.44.0`. The CLI
+records the resolved commits, Rust version and Dockerfile fingerprint.
 It also initializes required Git submodules from the selected ever-node
 revision before Docker receives the source tree.
 
@@ -108,8 +109,9 @@ sudo evernode image list
 The same image can be attached to multiple nodes. Node databases, keys and
 containers remain isolated. For noninteractive creation, pass `--image IMAGE`
 using a tag from `image list`, or pass `--build-new`, along with `--yes` and
-the required configuration flags. Source override flags on `node create`
-require `--build-new`.
+the required configuration flags. `--node-repo URL` changes the repository
+listed by the menu. To specify a source ref directly, use
+`--build-new --node-ref REF`. Source override flags affect new builds only.
 
 To build a particular ever-node revision, specify it explicitly:
 

@@ -10,24 +10,67 @@ from . import configuration, docker, images, nodes, process, provisioning, ui, w
 
 
 def choose_node_image(store, args):
-    """Return a managed record or select a fresh build at the terminal."""
+    """Return (managed record, source ref, selected in menu)."""
     if args.image:
-        return images.find_image_record(store, args.image), False
+        return images.find_image_record(store, args.image), None, False
     if args.build_new:
-        return None, False
+        return None, args.node_ref or images.DEFAULT_NODE_REF, False
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise process.OperationError(
             "Choose an image with --image IMAGE or --build-new in noninteractive mode"
         )
     available = images.list_available_managed_images(store)
-    labels = [
-        f"{version}  {record['image']}  "
-        f"(commit {record['inputs'].get('node_commit', 'unknown')[:7]})"
+    repository = args.node_repo or images.DEFAULT_NODE_REPOSITORY
+    if any(char.isspace() for char in repository):
+        raise process.OperationError("Invalid node repository")
+    try:
+        refs = images.list_remote_node_refs(repository)
+    except process.OperationError:
+        refs = {"branches": {}, "tags": []}
+        print(
+            "Could not list source refs; local images remain available.",
+            file=sys.stderr,
+        )
+
+    primary = []
+    default_branch = next(
+        (name for name in ("master", "main") if name in refs["branches"]), None
+    )
+    if default_branch is None and refs["branches"]:
+        default_branch = sorted(refs["branches"])[0]
+    if default_branch:
+        commit = refs["branches"][default_branch]
+        primary.append((f"{default_branch} (latest)  {commit[:7]}", (None, commit)))
+    elif not refs["branches"]:
+        primary.append(("master (fetch latest source)", (None, "master")))
+    primary.extend(
+        (f"tag {tag}  {commit[:7]}", (None, commit)) for tag, commit in refs["tags"]
+    )
+    primary.extend(
+        (
+            f"local {version}  {record['image']}  "
+            f"({record['inputs'].get('node_commit', 'unknown')[:7]})",
+            (record, None),
+        )
         for record, version in available
+    )
+    branches = [
+        (f"branch {name}  {commit[:7]}", (None, commit))
+        for name, commit in sorted(refs["branches"].items())
+        if name != default_branch
     ]
-    labels.append("Build a new image from source")
-    selected = ui.select_option("Choose an ever-node image:", labels)
-    return (available[selected][0] if selected < len(available) else None), True
+    alternate = (
+        ("Other branches (Tab: versions and images)", [label for label, _ in branches])
+        if branches
+        else None
+    )
+    page, index = ui.select_option(
+        f"{repository} — source versions and local images",
+        [label for label, _ in primary],
+        alternate=alternate,
+    )
+    record, node_ref = (primary if page == 0 else branches)[index][1]
+    return record, node_ref, True
 
 
 def handle_node_creation(store, args):
@@ -132,19 +175,12 @@ def handle_node_creation(store, args):
             reference.startswith("-") or any(ord(c) < 32 for c in reference)
         ):
             raise process.OperationError("Invalid repository, ref or image argument")
-    if (
-        any(
-            (
-                args.node_repo,
-                args.node_ref,
-                args.cli_repo,
-                args.cli_ref,
-                args.image_repo,
-            )
-        )
-        and not args.build_new
+    if args.node_ref and not args.build_new:
+        raise process.OperationError("--node-ref requires --build-new")
+    if args.image and any(
+        (args.node_repo, args.cli_repo, args.cli_ref, args.image_repo)
     ):
-        raise process.OperationError("Source options require --build-new")
+        raise process.OperationError("Source options cannot be used with --image")
     container_name, statsd_name = docker.select_container_names(store)
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
@@ -255,15 +291,15 @@ def handle_node_creation(store, args):
             "Seed import requires an interactive terminal; seed phrases are never accepted as command arguments"
         )
     if args.dry_run and args.image:
-        selected_image, menu_selected = {"image": args.image}, False
+        selected_image, selected_ref, menu_selected = {"image": args.image}, None, False
     else:
-        selected_image, menu_selected = choose_node_image(store, args)
+        selected_image, selected_ref, menu_selected = choose_node_image(store, args)
     image_plan = (
         selected_image["image"]
         if selected_image
         else {
             "node_repo": args.node_repo or images.DEFAULT_NODE_REPOSITORY,
-            "node_ref": args.node_ref or images.DEFAULT_NODE_REF,
+            "node_ref": selected_ref,
             "cli_repo": args.cli_repo or images.DEFAULT_CLI_REPOSITORY,
             "cli_ref": args.cli_ref or images.DEFAULT_CLI_REF,
             "image_repo": args.image_repo or images.DEFAULT_IMAGE_REPOSITORY,
@@ -286,7 +322,7 @@ def handle_node_creation(store, args):
         record, _ = images.build_managed_image(
             store,
             node_repo=args.node_repo or images.DEFAULT_NODE_REPOSITORY,
-            node_ref=args.node_ref or images.DEFAULT_NODE_REF,
+            node_ref=selected_ref,
             cli_repo=args.cli_repo or images.DEFAULT_CLI_REPOSITORY,
             cli_ref=args.cli_ref or images.DEFAULT_CLI_REF,
             image_repo=args.image_repo or images.DEFAULT_IMAGE_REPOSITORY,

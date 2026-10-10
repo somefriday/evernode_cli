@@ -17,6 +17,7 @@ DEFAULT_CLI_REF = "0.44.0"
 DEFAULT_IMAGE_REPOSITORY = "local/ever-node"
 DEFAULT_RUST_VERSION = "1.90.0"
 DEFAULT_NODE_FEATURES = "statsd"
+VERSION_TAG = re.compile(r"^[vV]?(\d+(?:\.\d+){1,3})(?:([-+].*))?$")
 
 
 def _safe_reference(value, label):
@@ -28,6 +29,48 @@ def _safe_reference(value, label):
     ):
         raise process.OperationError(f"Invalid {label}")
     return value
+
+
+def _version_tag_key(tag):
+    match = VERSION_TAG.fullmatch(tag)
+    if not match:
+        return (False, (), False, tag.lower())
+    parts = tuple(int(part) for part in match.group(1).split("."))
+    return (True, parts + (0,) * (4 - len(parts)), not match.group(2), tag.lower())
+
+
+def list_remote_node_refs(repository):
+    """List source commits without cloning; annotated tags use peeled commits."""
+    _safe_reference(repository, "node repository")
+    result = process.execute_command(
+        ["git", "ls-remote", "--heads", "--tags", repository], timeout=30
+    )
+    branches = {}
+    tags = {}
+    peeled_tags = {}
+    for line in result.stdout.splitlines():
+        try:
+            commit, name = line.split("\t", 1)
+        except ValueError:
+            continue
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+            continue
+        if name.startswith("refs/heads/"):
+            branches[name.removeprefix("refs/heads/")] = commit
+        elif name.startswith("refs/tags/"):
+            tag = name.removeprefix("refs/tags/")
+            if tag.endswith("^{}"):
+                peeled_tags[tag[:-3]] = commit
+            else:
+                tags[tag] = commit
+    tags.update(peeled_tags)
+    ordered_tags = sorted(
+        tags.items(), key=lambda pair: _version_tag_key(pair[0]), reverse=True
+    )
+    return {
+        "branches": branches,
+        "tags": ordered_tags,
+    }
 
 
 def _recipe_path():
@@ -206,6 +249,7 @@ def list_available_managed_images(store):
         except process.OperationError:
             match = None
         available.append((record, match.group(1) if match else "unknown"))
+    available.sort(key=lambda item: _version_tag_key(item[1]), reverse=True)
     return available
 
 

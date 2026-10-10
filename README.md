@@ -48,10 +48,15 @@ sudo evernode wallet --help
 
 ## Images
 
-`node create` lists available managed images with their ever-node versions.
-Use Up/Down and Enter to choose one, or select **Build a new image from source**.
-The same image can serve multiple validators. A new image build uses the
-default ever-node and ever-cli sources unless you specify source flags.
+`node create` shows the latest `master` source first, version tags from newest
+to oldest, and available managed images. Use Up/Down and Enter to select;
+press Tab to browse other branches. Selecting a source ref builds a new image
+at the commit shown in the menu. The same built image can serve multiple
+validators.
+
+The source list comes from the default ever-node repository, or from the
+repository passed with `--node-repo URL`. If the ref lookup fails, local images
+remain selectable. Use `--build-new --node-ref REF` to specify a ref directly.
 
 You can also build an image ahead of time:
 
