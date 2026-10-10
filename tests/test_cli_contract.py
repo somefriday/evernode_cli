@@ -46,6 +46,15 @@ class CommandContractTests(unittest.TestCase):
         self.assertTrue(resume.resume)
         self.assertIsNone(resume.image)
 
+    def test_create_image_choices_are_exclusive(self):
+        parser = arguments.build_argument_parser()
+        self.assertTrue(parser.parse_args(["node", "create", "--build-new"]).build_new)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(
+                    ["node", "create", "--image", "local/node:1", "--build-new"]
+                )
+
     def test_stop_keeps_explicit_all_and_default_grace_period(self):
         parser = arguments.build_argument_parser()
         args = parser.parse_args(["node", "stop", "--all"])

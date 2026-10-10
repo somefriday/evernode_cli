@@ -471,7 +471,9 @@ class FocusedFeatureTests(unittest.TestCase):
                 side_effect=(58888, 9102),
             ),
             patch("evernode.creation.images.find_image_record", return_value=record),
-            patch("evernode.creation.process.execute_command"),
+            patch(
+                "evernode.creation.images.inspect_recorded_image", return_value=record
+            ),
             patch(
                 "evernode.creation.provisioning.provision_node_workspace",
                 side_effect=process.OperationError("preparation failed"),

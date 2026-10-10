@@ -9,6 +9,27 @@ import urllib.request
 from . import configuration, docker, images, nodes, process, provisioning, ui, wallets
 
 
+def choose_node_image(store, args):
+    """Return a managed record or select a fresh build at the terminal."""
+    if args.image:
+        return images.find_image_record(store, args.image), False
+    if args.build_new:
+        return None, False
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise process.OperationError(
+            "Choose an image with --image IMAGE or --build-new in noninteractive mode"
+        )
+    available = images.list_available_managed_images(store)
+    labels = [
+        f"{version}  {record['image']}  "
+        f"(commit {record['inputs'].get('node_commit', 'unknown')[:7]})"
+        for record, version in available
+    ]
+    labels.append("Build a new image from source")
+    selected = ui.select_option("Choose an ever-node image:", labels)
+    return (available[selected][0] if selected < len(available) else None), True
+
+
 def handle_node_creation(store, args):
     if args.resume:
         if not args.name:
@@ -38,6 +59,7 @@ def handle_node_creation(store, args):
                 )
             )
             or args.import_wallet
+            or args.build_new
         ):
             raise process.OperationError(
                 "Resume uses saved inputs; do not supply configuration/source flags"
@@ -110,6 +132,19 @@ def handle_node_creation(store, args):
             reference.startswith("-") or any(ord(c) < 32 for c in reference)
         ):
             raise process.OperationError("Invalid repository, ref or image argument")
+    if (
+        any(
+            (
+                args.node_repo,
+                args.node_ref,
+                args.cli_repo,
+                args.cli_ref,
+                args.image_repo,
+            )
+        )
+        and not args.build_new
+    ):
+        raise process.OperationError("Source options require --build-new")
     container_name, statsd_name = docker.select_container_names(store)
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
@@ -219,26 +254,34 @@ def handle_node_creation(store, args):
         raise process.OperationError(
             "Seed import requires an interactive terminal; seed phrases are never accepted as command arguments"
         )
-    image_plan = args.image or {
-        "node_repo": args.node_repo or images.DEFAULT_NODE_REPOSITORY,
-        "node_ref": args.node_ref or images.DEFAULT_NODE_REF,
-        "cli_repo": args.cli_repo or images.DEFAULT_CLI_REPOSITORY,
-        "cli_ref": args.cli_ref or images.DEFAULT_CLI_REF,
-        "image_repo": args.image_repo or images.DEFAULT_IMAGE_REPOSITORY,
-    }
+    if args.dry_run and args.image:
+        selected_image, menu_selected = {"image": args.image}, False
+    else:
+        selected_image, menu_selected = choose_node_image(store, args)
+    image_plan = (
+        selected_image["image"]
+        if selected_image
+        else {
+            "node_repo": args.node_repo or images.DEFAULT_NODE_REPOSITORY,
+            "node_ref": args.node_ref or images.DEFAULT_NODE_REF,
+            "cli_repo": args.cli_repo or images.DEFAULT_CLI_REPOSITORY,
+            "cli_ref": args.cli_ref or images.DEFAULT_CLI_REF,
+            "image_repo": args.image_repo or images.DEFAULT_IMAGE_REPOSITORY,
+        }
+    )
     ui.print_json_result(
         {
-            "plan": "build/select image and prepare node; no startup, wallet creation or elections",
+            "plan": "select or build an image, then prepare and start the node",
             "image": image_plan,
             "configuration": config,
         }
     )
     if args.dry_run:
         return 0
-    ui.confirm_operation(args.yes, "Build/select image and prepare this node?")
-    if args.image:
-        record = images.find_image_record(store, args.image)
-        process.execute_command(["docker", "image", "inspect", record["image_id"]])
+    if not menu_selected:
+        ui.confirm_operation(args.yes, "Create this node?")
+    if selected_image:
+        record = images.inspect_recorded_image(selected_image)
     else:
         record, _ = images.build_managed_image(
             store,
@@ -247,6 +290,7 @@ def handle_node_creation(store, args):
             cli_repo=args.cli_repo or images.DEFAULT_CLI_REPOSITORY,
             cli_ref=args.cli_ref or images.DEFAULT_CLI_REF,
             image_repo=args.image_repo or images.DEFAULT_IMAGE_REPOSITORY,
+            rebuild=True,
         )
     config["image"] = record["image"]
     config["image_id"] = record["image_id"]

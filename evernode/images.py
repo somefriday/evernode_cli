@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import secrets
 import shutil
 import tempfile
@@ -157,6 +158,55 @@ def find_image_record(store, image):
     if len(matches) != 1:
         raise process.OperationError("Image is not a unique managed evernode image")
     return matches[0]
+
+
+def inspect_recorded_image(record):
+    """Require the recorded tag to still name the recorded immutable image."""
+    result = process.execute_command(["docker", "image", "inspect", record["image"]])
+    try:
+        image_id = json.loads(result.stdout)[0]["Id"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise process.OperationError("Docker returned invalid image metadata") from exc
+    if image_id != record["image_id"]:
+        raise process.OperationError("Image tag no longer points to its managed image")
+    return record
+
+
+def list_available_managed_images(store):
+    """Show only managed images whose recorded tag is still present."""
+    process.execute_command(
+        ["docker", "info", "--format", "{{.ServerVersion}}"], timeout=10
+    )
+    available = []
+    for record in list_managed_image_records(store):
+        try:
+            inspect_recorded_image(record)
+        except process.OperationError:
+            continue
+        try:
+            result = process.execute_command(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--entrypoint",
+                    "/usr/local/bin/ever-node",
+                    record["image_id"],
+                    "--help",
+                ],
+                timeout=30,
+                check=False,
+            )
+            match = re.search(
+                r"EVER Node, version\s+(\S+)", result.stdout + result.stderr
+            )
+        except process.OperationError:
+            match = None
+        available.append((record, match.group(1) if match else "unknown"))
+    return available
 
 
 def validate_node_image(image):

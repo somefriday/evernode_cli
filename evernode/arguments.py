@@ -31,9 +31,15 @@ def build_argument_parser():
         "create", help="Create a validator node from a managed image or source build"
     )
     c.add_argument("-n", "--name")
-    c.add_argument(
+    image_choice = c.add_mutually_exclusive_group()
+    image_choice.add_argument(
         "--image",
-        help="Existing managed image record/tag; omit to build or reuse from source",
+        help="Existing managed image record/tag; skips the interactive image menu",
+    )
+    image_choice.add_argument(
+        "--build-new",
+        action="store_true",
+        help="Build a new image from source; skips the interactive image menu",
     )
     c.add_argument("--ip")
     c.add_argument("--network", choices=["main", "devnet"])

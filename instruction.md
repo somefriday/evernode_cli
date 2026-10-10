@@ -88,23 +88,28 @@ The `wallet` and `depool` command groups are required for the setup stages
 below. If `wallet --help` fails, the virtual environment still has an older
 installed package; rerun the commands above before continuing.
 
-## 3. Build a shared base image
+## 3. Choose an image
 
-Build the Everscale node image once. The default sources are
-`everx-labs/ever-node` at `master` and `everx-labs/ever-cli` at `0.44.0`; the
-CLI records the resolved commits, Rust version and Dockerfile fingerprint.
+`node create` offers available managed images with their ever-node versions
+and a **Build a new image from source** option. Use Up/Down and Enter to
+select. A new build uses `everx-labs/ever-node` at `master` and
+`everx-labs/ever-cli` at `0.44.0`. The CLI records the resolved commits, Rust
+version and Dockerfile fingerprint.
 It also initializes required Git submodules from the selected ever-node
 revision before Docker receives the source tree.
+
+You may build an image ahead of time:
 
 ```bash
 sudo evernode image build --yes
 sudo evernode image list
 ```
 
-Copy the `image` value reported by `image list`, for example
-`local/ever-node:0123456789abcdef`. Call it `IMAGE` in the commands below.
-The same immutable image can be attached to multiple nodes. Node databases,
-keys and containers are still isolated.
+The same image can be attached to multiple nodes. Node databases, keys and
+containers remain isolated. For noninteractive creation, pass `--image IMAGE`
+using a tag from `image list`, or pass `--build-new`, along with `--yes` and
+the required configuration flags. Source override flags on `node create`
+require `--build-new`.
 
 To build a particular ever-node revision, specify it explicitly:
 
@@ -124,13 +129,13 @@ Fund the multisig wallet and DePool when the CLI asks you to do so. Keep a
 secure backup of the generated key material; it is stored root-only under
 `/var/lib/ever-validator/nodes/validator01/keys`.
 
-Create the node from the image built above:
+Create the node, then select an image from the menu:
 
 ```bash
-sudo evernode node create -n validator01 --image IMAGE
+sudo evernode node create -n validator01
 ```
 
-If a confirmed `node create` fails, the CLI removes the failed node's
+If node preparation fails, the CLI removes the failed node's
 containers, database, keys, configuration and logs before returning the error.
 The shared image and other managed nodes are unchanged.
 
@@ -209,7 +214,8 @@ sudo evernode election status -n validator01
 
 ## 5. Import an existing validator wallet and DePool
 
-This flow builds a new node instance from an existing managed image and
+Use this flow instead of Section 4 when `validator01` has an existing wallet.
+It creates a node from a selected image and
 recovers its Safe wallet using seed phrases. It does **not** restore the former
 node's ADNL, validator or console identity. Do not enable elections until the
 former validator instance is fenced and the intended node identity is in place.
@@ -220,8 +226,7 @@ terminal prompt. It never accepts phrases as command arguments, environment
 variables or standard input.
 
 ```bash
-sudo evernode node create -n validator02 \
-  --image IMAGE \
+sudo evernode node create -n validator01 \
   --import-wallet \
   --wallet-address 0:YOUR_64_HEX_WALLET_ADDRESS \
   --depool-address 0:YOUR_64_HEX_DEPOOL_ADDRESS \
@@ -242,12 +247,12 @@ operate that contract.
 Synchronize and verify the recovered wallet against chain state:
 
 ```bash
-sudo evernode node sync -n validator02 --wait
-sudo evernode wallet recover -n validator02
-sudo evernode wallet verify -n validator02
-sudo evernode depool verify -n validator02
-sudo evernode election start -n validator02
-sudo evernode election status -n validator02
+sudo evernode node sync -n validator01 --wait
+sudo evernode wallet recover -n validator01
+sudo evernode wallet verify -n validator01
+sudo evernode depool verify -n validator01
+sudo evernode election start -n validator01
+sudo evernode election status -n validator01
 ```
 
 `wallet recover` derives the wallet address from stored phrases and never
@@ -322,15 +327,17 @@ configuration, or wallet data.
 
 Review the checks without changing either node:
 
+Replace `SOURCE_NODE` with the name of a separate, synchronized local node.
+
 ```bash
-sudo evernode node lsync --from validator01 --to validator02 --dry-run
+sudo evernode node lsync --from SOURCE_NODE --to validator01 --dry-run
 ```
 
 Run the copy after reviewing the plan:
 
 ```bash
-sudo evernode node lsync --from validator01 --to validator02
-sudo evernode node sync -n validator02 --wait
+sudo evernode node lsync --from SOURCE_NODE --to validator01
+sudo evernode node sync -n validator01 --wait
 ```
 
 `lsync` refuses a running election schedule, a source in a current or next
@@ -363,34 +370,34 @@ checks managed nodes and Docker containers before deleting a record.
 
 ## Monitoring
 
-Replace `validator02` with the managed node name you want to inspect.
+Replace `validator01` with the managed node name you want to inspect.
 
 Check container health, console statistics, synchronization state, current
 block, time difference and restarts:
 
 ```bash
-sudo evernode node status -n validator02
+sudo evernode node status -n validator01
 ```
 
 Read the most recent node log entries. Use this for normal synchronization
 progress, peer activity, warnings and errors:
 
 ```bash
-sudo evernode node logs -n validator02 --component node --tail 200
+sudo evernode node logs -n validator01 --component node --tail 200
 ```
 
 Read only the node process's standard-error log. It is normally empty; output
 here usually identifies a startup failure, panic, or configuration problem:
 
 ```bash
-sudo evernode node logs -n validator02 --component stderr --tail 100
+sudo evernode node logs -n validator01 --component stderr --tail 100
 ```
 
 Show current CPU, memory, network and disk I/O for both the node and its
 StatsD exporter, including the node memory limit and OOM state:
 
 ```bash
-sudo evernode node resources -n validator02
+sudo evernode node resources -n validator01
 ```
 
 During initial sync, follow only persistent-state download progress. Increasing
@@ -398,6 +405,6 @@ During initial sync, follow only persistent-state download progress. Increasing
 masterchain block can remain unchanged until loading completes:
 
 ```bash
-sudo evernode node logs -n validator02 --component node --follow |
+sudo evernode node logs -n validator01 --component node --follow |
   grep --line-buffered 'download_persistent_state'
 ```

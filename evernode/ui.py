@@ -41,3 +41,63 @@ def prompt_integer(value, label, default):
         return int(raw)
     except (TypeError, ValueError) as exc:
         raise process.OperationError(f"{label} must be an integer") from exc
+
+
+def select_option(title, options):
+    """Select an option with arrow keys; use numbers on unsupported terminals."""
+    if not options or not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise process.OperationError("Image selection requires a terminal")
+
+    def numbered_choice():
+        print(title)
+        for index, option in enumerate(options, 1):
+            print(f"  {index}. {option}")
+        while True:
+            answer = input("Choose a number (blank to cancel): ").strip()
+            if not answer:
+                raise process.OperationError("Cancelled; no action taken")
+            if answer.isdigit() and 1 <= int(answer) <= len(options):
+                return int(answer) - 1
+
+    try:
+        import curses
+    except ImportError:
+        return numbered_choice()
+
+    try:
+
+        def choose(screen):
+            curses.curs_set(0)
+            screen.keypad(True)
+            selected = 0
+            while True:
+                screen.erase()
+                height, width = screen.getmaxyx()
+                if height < 4 or width < 20:
+                    raise curses.error("Terminal is too small for the image menu")
+                screen.addnstr(0, 0, title, width - 1)
+                first = max(
+                    0, min(selected - (height - 3) // 2, len(options) - (height - 2))
+                )
+                for row, index in enumerate(
+                    range(first, min(len(options), first + height - 2)), 1
+                ):
+                    label = ("▸ " if index == selected else "  ") + options[index]
+                    screen.addnstr(row, 0, label, width - 1)
+                screen.addnstr(
+                    height - 1, 0, "↑/↓ select  Enter confirm  Esc cancel", width - 1
+                )
+                screen.refresh()
+                key = screen.getch()
+                if key == curses.KEY_UP:
+                    selected = (selected - 1) % len(options)
+                elif key == curses.KEY_DOWN:
+                    selected = (selected + 1) % len(options)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    return selected
+                elif key == 27:
+                    raise process.OperationError("Cancelled; no action taken")
+
+        return curses.wrapper(choose)
+    except (OSError, curses.error):
+        return numbered_choice()

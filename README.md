@@ -46,24 +46,30 @@ sudo evernode --version
 sudo evernode wallet --help
 ```
 
-## Build an image
+## Images
 
-Build the shared image once, then copy its `image` value.
+`node create` lists available managed images with their ever-node versions.
+Use Up/Down and Enter to choose one, or select **Build a new image from source**.
+The same image can serve multiple validators. A new image build uses the
+default ever-node and ever-cli sources unless you specify source flags.
+
+You can also build an image ahead of time:
 
 ```bash
 sudo evernode image build --yes
 sudo evernode image list
 ```
 
-Use that value as `IMAGE` below, for example
-`local/ever-node:0123456789abcdef`.
+For scripted creation, use `--image IMAGE` or `--build-new` with `--yes` and
+the required configuration flags; the menu requires a terminal. `--image`
+accepts a tag from `image list`.
 
 ## New validator
 
 Create and synchronize the node:
 
 ```bash
-sudo evernode node create -n validator01 --image IMAGE
+sudo evernode node create -n validator01
 sudo evernode node sync -n validator01 --wait
 ```
 
@@ -84,13 +90,12 @@ sudo evernode election start -n validator01
 
 ## Import an existing Safe wallet and DePool
 
-Create a new node from the shared image and provide the existing on-chain
+Create a new node from a selected image and provide the existing on-chain
 addresses. Phrases are requested through hidden terminal prompts and saved as
 root-only files.
 
 ```bash
 sudo evernode node create -n validator02 \
-  --image IMAGE \
   --import-wallet \
   --wallet-address 0:YOUR_64_HEX_WALLET_ADDRESS \
   --depool-address 0:YOUR_64_HEX_DEPOOL_ADDRESS \
