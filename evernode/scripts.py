@@ -1,5 +1,8 @@
 """Run explicitly supported upstream adapters in controlled node contexts."""
 
+import json
+import os
+
 from . import docker, process, storage
 
 HOST_SCRIPTS = {
@@ -98,33 +101,64 @@ def _import_verification_context(store, config):
 
 
 def verify_imported_safe(store, config, wallet_address, timeout=300):
-    """Read an imported Safe's on-chain custodian settings only."""
+    """Read an imported Safe's on-chain custodian keys and threshold."""
     scripts_dir = _import_verification_context(store, config)
-    program = 'set -euo pipefail; source ./env.sh; source ./functions.shinc; Get_Account_Custodians_Info "$EVERNODE_WALLET"'
-    import os
+    program = """set -euo pipefail
+source ./env.sh
+source ./functions.shinc
+Get_SC_current_state "$EVERNODE_WALLET" >/dev/null
+boc="${INPL_ELECTIONS_WORK_DIR}/${EVERNODE_WALLET##*:}.boc"
+custodians="$($CALL_CLI -j run --boc "$boc" getCustodians '{}' --abi "$INPL_SafeC_Wallet_ABI")"
+parameters="$($CALL_CLI -j run --boc "$boc" getParameters '{}' --abi "$INPL_SafeC_Wallet_ABI")"
+jq -cn --argjson c "$custodians" --argjson p "$parameters" \
+  '{custodians: $c.custodians, required_signatures: $p.requiredTxnConfirms}'
+"""
 
     environment = os.environ.copy()
     environment["EVERNODE_WALLET"] = wallet_address
     result = process.execute_command(
         ["bash", "-c", program], cwd=scripts_dir, env=environment, timeout=timeout
     )
-    fields = result.stdout.strip().split()
-    if len(fields) < 2 or not all(item.isdigit() for item in fields[-2:]):
+    try:
+        value = json.loads(result.stdout.strip().splitlines()[-1])
+        keys = value["custodians"]
+        if not isinstance(keys, list) or not keys:
+            raise ValueError("No custodians")
+        public_keys = []
+        for item in keys:
+            raw_key = str(item["pubkey"])
+            public = int(raw_key, 16 if raw_key.lower().startswith("0x") else 10)
+            if not 0 <= public < 2**256:
+                raise ValueError("Invalid custodian key")
+            public_keys.append(f"{public:064x}")
+        signatures = int(value["required_signatures"])
+        if not 1 <= signatures <= len(public_keys):
+            raise ValueError("Invalid signature threshold")
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
         raise process.OperationError(
-            "Could not read imported wallet custodian settings"
-        )
-    return {"custodians": int(fields[-2]), "required_signatures": int(fields[-1])}
+            "Could not read imported wallet custodians and signature threshold"
+        ) from exc
+    return {
+        "custodians": len(public_keys),
+        "required_signatures": signatures,
+        "public_keys": public_keys,
+    }
 
 
 def verify_imported_depool(store, config, depool_address, timeout=300):
-    """Read an imported DePool with the selected local ABI only."""
+    """Read an imported DePool and check which wallet it uses."""
     scripts_dir = _import_verification_context(store, config)
-    program = 'set -euo pipefail; source ./env.sh; source ./functions.shinc; Get_DP_Info "$EVERNODE_DEPOOL" >/dev/null'
-    import os
+    program = """set -euo pipefail
+source ./env.sh
+source ./functions.shinc
+info="$(Get_DP_Info "$EVERNODE_DEPOOL")"
+jq -er '.validatorWallet' <<< "$info"
+"""
 
     environment = os.environ.copy()
     environment["EVERNODE_DEPOOL"] = depool_address
-    process.execute_command(
+    result = process.execute_command(
         ["bash", "-c", program], cwd=scripts_dir, env=environment, timeout=timeout
     )
-    return {"address": depool_address, "checked": True}
+    wallet_address = result.stdout.strip().splitlines()[-1]
+    return {"address": depool_address, "validator_wallet": wallet_address}

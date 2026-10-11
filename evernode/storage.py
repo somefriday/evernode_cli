@@ -33,6 +33,27 @@ def write_json_atomically(path, value):
             os.unlink(tmp)
 
 
+def write_private_text_atomically(path, value):
+    """Replace a root-private text file without exposing a partial write."""
+    path = Path(path)
+    descriptor, tmp = tempfile.mkstemp(prefix=".write-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        parent_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def validate_private_path(path):
     """Check managed files without following symlinks; CLI operations run as root."""
     info = path.lstat()

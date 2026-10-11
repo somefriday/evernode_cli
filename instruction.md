@@ -257,11 +257,13 @@ sudo evernode election start -n validator01
 sudo evernode election status -n validator01
 ```
 
-`wallet recover` derives the wallet address from stored phrases and never
-prints them again. `wallet verify` checks its custodian count and
-required-signature threshold. `depool verify` checks the supplied DePool
-through the reference helper. These commands do not deploy contracts or make a
-stake.
+`wallet recover` derives local key files from the stored phrases and checks
+that their public keys are the wallet's on-chain custodians. The key that
+originally determined the wallet address need not be among its current
+custodians. `wallet verify` rechecks the custodians and signature threshold.
+`depool verify` checks that the DePool names this wallet and installs the
+address file used by election scripts. These commands never print phrases,
+deploy contracts or make a stake.
 
 ## 6. Update one validator to a rebuilt image
 

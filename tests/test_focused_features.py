@@ -643,14 +643,24 @@ class FocusedFeatureTests(unittest.TestCase):
         verified = make_node_configuration(
             "validator", wallet=dict(profile), setup_stage="wallet-verified"
         )
+        keys = self.store.node_directory("validator") / "keys"
+        keys.mkdir(parents=True)
+        for index, public in enumerate(("1" * 64, "2" * 64, "3" * 64), 1):
+            (keys / f"validator_{index}.keys.json").write_text(
+                json.dumps({"public": public, "secret": "private"})
+            )
         with (
             patch(
                 "evernode.wallets.scripts.verify_imported_safe",
-                return_value={"custodians": 3, "required_signatures": 2},
+                return_value={
+                    "custodians": 3,
+                    "required_signatures": 2,
+                    "public_keys": ["1" * 64, "2" * 64, "3" * 64],
+                },
             ) as safe,
             patch(
                 "evernode.wallets.scripts.verify_imported_depool",
-                return_value={"checked": True},
+                return_value={"validator_wallet": profile["wallet_address"]},
             ) as depool,
         ):
             self.assertEqual(
@@ -663,6 +673,211 @@ class FocusedFeatureTests(unittest.TestCase):
             )
         safe.assert_called_once()
         depool.assert_called_once()
+        self.assertEqual(
+            (keys / "depool.addr").read_text().strip(), profile["depool_address"]
+        )
+
+    def test_imported_wallet_uses_verified_custodians_not_deployment_key(self):
+        profile = {
+            "mode": "import",
+            "custodians": 3,
+            "required_signatures": 2,
+            "wallet_address": "0:" + "a" * 64,
+            "depool_address": "0:" + "b" * 64,
+        }
+        config = make_node_configuration(
+            "validator", wallet=profile, setup_stage="node-started"
+        )
+        keys = self.store.node_directory("validator") / "keys"
+        source = keys / "MSKeys_validator"
+        source.mkdir(parents=True)
+        for index, public in enumerate(("1" * 64, "2" * 64, "3" * 64), 1):
+            (source / f"validator_{index}.keys.json").write_text(
+                json.dumps({"public": public, "secret": "private"})
+            )
+        (keys / "validator.addr").write_text("0:" + "c" * 64 + "\n")
+        details = {
+            "address": profile["wallet_address"],
+            "public_keys": ["1" * 64, "2" * 64, "3" * 64],
+            "key_directory": str(source),
+        }
+        observed = {
+            "custodians": 3,
+            "required_signatures": 2,
+            "public_keys": ["3" * 64, "1" * 64, "2" * 64],
+        }
+        with (
+            patch("evernode.wallets.prepare_wallet", return_value=details),
+            patch(
+                "evernode.wallets.scripts.verify_imported_safe", return_value=observed
+            ),
+        ):
+            updated, result = wallets.wallet_recover(self.store, config)
+        self.assertEqual(updated["setup_stage"], "wallet-recovered")
+        self.assertEqual(result["wallet"]["address"], profile["wallet_address"])
+        self.assertEqual(
+            (keys / "validator.addr").read_text().strip(), profile["wallet_address"]
+        )
+        self.assertEqual(
+            json.loads((keys / "validator_1.keys.json").read_text())["public"], "1" * 64
+        )
+
+    def test_wallet_verifier_parses_decimal_on_chain_custodian_keys(self):
+        config = make_node_configuration("validator")
+        output = json.dumps(
+            {
+                "custodians": [
+                    {
+                        "index": "2",
+                        "pubkey": "15093806633510367186719388192793368257920671216233184067238754526642486242420",
+                    },
+                    {
+                        "index": "1",
+                        "pubkey": "19086442550313926316359400052600843615723821204819734974451688910555339614790",
+                    },
+                    {
+                        "index": "0",
+                        "pubkey": "49076393504541418186784131125560371494484552085723361103046486474514097973445",
+                    },
+                ],
+                "required_signatures": "2",
+            }
+        )
+        with (
+            patch(
+                "evernode.scripts._import_verification_context",
+                return_value=self.store.root,
+            ),
+            patch(
+                "evernode.scripts.process.execute_command",
+                return_value=SimpleNamespace(stdout=output),
+            ),
+        ):
+            observed = scripts.verify_imported_safe(self.store, config, "0:" + "a" * 64)
+        self.assertEqual(observed["required_signatures"], 2)
+        self.assertEqual(
+            observed["public_keys"],
+            [
+                "215ecab405e57627be949d3ebf50a9cc27838f3f67b8f474ea222ae195cdec74",
+                "2a328b2d060eeda22426d9488d67be96c6b00930aa2e3a536426bb6fc4f4ea46",
+                "6c80411e67f06e5a966ca501ef8879e3c7d3d4efb3cbe0d500fc9195646f28c5",
+            ],
+        )
+
+    def test_recovery_refuses_missing_seed_before_reference_script(self):
+        profile = {
+            "mode": "import",
+            "custodians": 3,
+            "required_signatures": 2,
+            "wallet_address": "0:" + "a" * 64,
+            "depool_address": "0:" + "b" * 64,
+        }
+        config = make_node_configuration(
+            "validator", wallet=profile, setup_stage="node-started"
+        )
+        with (
+            patch("evernode.wallets.scripts.execute_validator_script") as execute,
+            self.assertRaisesRegex(
+                process.OperationError, "Missing imported seed file 1"
+            ),
+        ):
+            wallets.wallet_recover(self.store, config)
+        execute.assert_not_called()
+
+    def test_imported_wallet_preparation_accepts_another_deployment_key(self):
+        profile = {
+            "mode": "import",
+            "custodians": 3,
+            "required_signatures": 2,
+            "wallet_address": "0:" + "a" * 64,
+            "depool_address": "0:" + "b" * 64,
+        }
+        config = make_node_configuration("validator", wallet=profile)
+        keys = self.store.node_directory("validator") / "keys"
+        seed_dir = keys / "MSKeys_validator"
+        seed_dir.mkdir(parents=True)
+        (keys / "validator.addr").write_text("0:" + "c" * 64 + "\n")
+        for index in range(1, 4):
+            (seed_dir / f"validator_seed_{index}.txt").write_text("one " * 12)
+            (seed_dir / f"validator_{index}.keys.json").write_text(
+                json.dumps({"public": str(index) * 64, "secret": "private"})
+            )
+        with patch("evernode.wallets.scripts.execute_validator_script"):
+            details = wallets.prepare_wallet(self.store, config, imported=True)
+        self.assertEqual(details["address"], profile["wallet_address"])
+        self.assertEqual(details["public_keys"], ["1" * 64, "2" * 64, "3" * 64])
+
+    def test_new_wallet_rejects_stale_root_address_or_keys_before_funding(self):
+        profile = {
+            "mode": "new",
+            "custodians": 2,
+            "required_signatures": 2,
+            "wallet_address": None,
+            "depool_address": None,
+        }
+        config = make_node_configuration("validator", wallet=profile)
+        keys = self.store.node_directory("validator") / "keys"
+        generated = keys / "MSKeys_validator"
+        generated.mkdir(parents=True)
+        address = "0:" + "a" * 64
+        (generated / "validator.addr").write_text(address + "\n")
+        (keys / "validator.addr").write_text(address + "\n")
+        for index in (1, 2):
+            key = json.dumps({"public": str(index) * 64, "secret": "private"})
+            (generated / f"validator_{index}.keys.json").write_text(key)
+            (keys / f"validator_{index}.keys.json").write_text(key)
+        with patch("evernode.wallets.scripts.execute_validator_script"):
+            self.assertEqual(
+                wallets.prepare_wallet(self.store, config)["address"], address
+            )
+            (keys / "validator.addr").write_text("0:" + "b" * 64)
+            with self.assertRaisesRegex(process.OperationError, "address differs"):
+                wallets.prepare_wallet(self.store, config)
+            (keys / "validator.addr").write_text(address)
+            (keys / "validator_2.keys.json").write_text(
+                json.dumps({"public": "c" * 64, "secret": "private"})
+            )
+            with self.assertRaisesRegex(process.OperationError, "key 2 differs"):
+                wallets.prepare_wallet(self.store, config)
+
+    def test_import_rejects_unrelated_custodian_and_depool(self):
+        profile = {
+            "mode": "import",
+            "custodians": 3,
+            "required_signatures": 2,
+            "wallet_address": "0:" + "a" * 64,
+            "depool_address": "0:" + "b" * 64,
+        }
+        config = make_node_configuration(
+            "validator", wallet=profile, setup_stage="node-started"
+        )
+        details = {"address": profile["wallet_address"], "public_keys": ["1" * 64] * 3}
+        observed = {
+            "custodians": 3,
+            "required_signatures": 2,
+            "public_keys": ["2" * 64, "3" * 64, "4" * 64],
+        }
+        with (
+            patch("evernode.wallets.prepare_wallet", return_value=details),
+            patch(
+                "evernode.wallets.scripts.verify_imported_safe", return_value=observed
+            ),
+            self.assertRaisesRegex(process.OperationError, "do not match"),
+        ):
+            wallets.wallet_recover(self.store, config)
+        self.assertEqual(config["setup_stage"], "node-started")
+
+        config["setup_stage"] = "wallet-verified"
+        with (
+            patch(
+                "evernode.wallets.scripts.verify_imported_depool",
+                return_value={"validator_wallet": "0:" + "c" * 64},
+            ),
+            self.assertRaisesRegex(
+                process.OperationError, "different validator wallet"
+            ),
+        ):
+            wallets.depool_verify(self.store, config)
 
     def test_setup_status_reports_one_next_command(self):
         config = make_node_configuration(

@@ -100,24 +100,25 @@ addresses. Phrases are requested through hidden terminal prompts and saved as
 root-only files.
 
 ```bash
-sudo evernode node create -n validator02 \
+sudo evernode node create -n validator01 \
   --import-wallet \
   --wallet-address 0:YOUR_64_HEX_WALLET_ADDRESS \
   --depool-address 0:YOUR_64_HEX_DEPOOL_ADDRESS \
   --custodians 3 \
   --required-signatures 2
 
-sudo evernode node sync -n validator02 --wait
-sudo evernode wallet recover -n validator02
-sudo evernode wallet verify -n validator02
-sudo evernode depool verify -n validator02
-sudo evernode election start -n validator02
+sudo evernode node sync -n validator01 --wait
+sudo evernode wallet recover -n validator01
+sudo evernode wallet verify -n validator01
+sudo evernode depool verify -n validator01
+sudo evernode election start -n validator01
 ```
 
-`wallet recover` uses the phrases entered during node creation and does not
-print them again. Wallet phrases restore the Safe wallet only. They do not
-restore the former node's ADNL, consensus, or console keys. Fence the former
-validator before starting elections on a replacement.
+`wallet recover` uses the phrases entered during node creation, verifies their
+public keys against the wallet's on-chain custodians, and does not print the
+phrases again. `depool verify` checks that the DePool links to that wallet.
+Wallet phrases do not restore the former node's ADNL, consensus, or console
+keys. Fence the former validator before starting elections on a replacement.
 
 ## Operate a node
 

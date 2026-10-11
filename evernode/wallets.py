@@ -116,9 +116,54 @@ def _public_key_summary(directory, name):
     return values
 
 
-def prepare_wallet(store, config):
+def _check_new_wallet_files(keys, name, custodians):
+    """Catch stale root files before presenting an address to fund."""
+    generated = keys / f"MSKeys_{name}"
+    for path in (generated, generated / f"{name}.addr"):
+        if not path.exists():
+            raise process.OperationError(f"Missing prepared wallet file: {path.name}")
+        storage.validate_private_path(path)
+    root_address = (keys / f"{name}.addr").read_text().strip()
+    generated_address = (generated / f"{name}.addr").read_text().strip()
+    if root_address.lower() != generated_address.lower():
+        raise process.OperationError(
+            "Prepared wallet address differs from the root address file"
+        )
+    for index in range(1, custodians + 1):
+        filename = f"{name}_{index}.keys.json"
+        root_key = keys / filename
+        generated_key = generated / filename
+        for path in (root_key, generated_key):
+            if not path.is_file():
+                raise process.OperationError(f"Missing prepared wallet key {index}")
+            storage.validate_private_path(path)
+        try:
+            same_key = json.loads(root_key.read_text()) == json.loads(
+                generated_key.read_text()
+            )
+        except ValueError as exc:
+            raise process.OperationError(
+                f"Invalid prepared wallet key {index}"
+            ) from exc
+        if not same_key:
+            raise process.OperationError(
+                f"Prepared wallet key {index} differs from the root key file"
+            )
+
+
+def prepare_wallet(store, config, *, imported=False):
     """Use the reference generator and return only non-secret wallet facts."""
     profile = validate_wallet_profile(config["wallet"])
+    if imported:
+        directory = seed_directory(store, config)
+        if not directory.is_dir():
+            raise process.OperationError("Missing imported seed file 1")
+        storage.validate_private_path(directory)
+        for index in range(1, profile["custodians"] + 1):
+            seed = directory / f"{config['name']}_seed_{index}.txt"
+            if not seed.is_file():
+                raise process.OperationError(f"Missing imported seed file {index}")
+            storage.validate_private_path(seed)
     scripts.execute_validator_script(
         store,
         config,
@@ -138,19 +183,70 @@ def prepare_wallet(store, config):
         raise process.OperationError(
             "Msig-prep.sh did not create a valid wallet address"
         )
+    if not imported:
+        _check_new_wallet_files(keys, config["name"], profile["custodians"])
     if (
-        profile["wallet_address"]
+        not imported
+        and profile["wallet_address"]
         and address.lower() != profile["wallet_address"].lower()
     ):
         raise process.OperationError(
             "Recovered wallet address does not match the supplied address"
         )
+    if imported:
+        address = profile["wallet_address"]
+        key_directory = seed_directory(store, config)
+    else:
+        key_directory = keys
     ensure_unassigned(store, config, address, profile["depool_address"])
     return {
         "address": address,
-        "public_keys": _public_key_summary(keys, config["name"]),
-        "key_directory": str(keys),
+        "public_keys": _public_key_summary(key_directory, config["name"]),
+        "key_directory": str(key_directory),
     }
+
+
+def _check_imported_wallet(profile, local_public_keys, observed):
+    if (observed["custodians"], observed["required_signatures"]) != (
+        profile["custodians"],
+        profile["required_signatures"],
+    ):
+        raise process.OperationError(
+            "Imported wallet custodians or signature threshold do not match the supplied profile"
+        )
+    try:
+        local = {int(key.removeprefix("0x"), 16) for key in local_public_keys}
+        remote = {int(key.removeprefix("0x"), 16) for key in observed["public_keys"]}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not compare imported custodian keys"
+        ) from exc
+    if len(local) != profile["custodians"] or local != remote:
+        raise process.OperationError(
+            "Imported seed public keys do not match the on-chain wallet custodians"
+        )
+
+
+def _install_imported_wallet_files(store, config, address):
+    """Replace provisional script outputs only after on-chain key verification."""
+    name = config["name"]
+    keys = store.node_directory(name) / "keys"
+    source = seed_directory(store, config)
+    storage.validate_private_path(keys)
+    storage.validate_private_path(source)
+    for index in range(1, config["wallet"]["custodians"] + 1):
+        path = source / f"{name}_{index}.keys.json"
+        storage.validate_private_path(path)
+        try:
+            keypair = json.loads(path.read_text())
+            if not isinstance(keypair, dict) or not all(
+                isinstance(keypair.get(field), str) for field in ("public", "secret")
+            ):
+                raise ValueError("Invalid keypair")
+        except ValueError as exc:
+            raise process.OperationError(f"Invalid imported keypair {index}") from exc
+        storage.write_json_atomically(keys / path.name, keypair)
+    storage.write_private_text_atomically(keys / f"{name}.addr", address + "\n")
 
 
 def _require_stage(config, mode, stage):
@@ -210,7 +306,10 @@ def wallet_create(store, config):
 
 def wallet_recover(store, config):
     profile = _require_stage(config, "import", "node-started")
-    details = prepare_wallet(store, config)
+    details = prepare_wallet(store, config, imported=True)
+    observed = scripts.verify_imported_safe(store, config, profile["wallet_address"])
+    _check_imported_wallet(profile, details["public_keys"], observed)
+    _install_imported_wallet_files(store, config, profile["wallet_address"])
     config["setup_stage"] = "wallet-recovered"
     return config, {
         "stage": config["setup_stage"],
@@ -242,13 +341,10 @@ def wallet_deploy(store, config):
 def wallet_verify(store, config):
     profile = _require_stage(config, "import", "wallet-recovered")
     observed = scripts.verify_imported_safe(store, config, profile["wallet_address"])
-    if (observed["custodians"], observed["required_signatures"]) != (
-        profile["custodians"],
-        profile["required_signatures"],
-    ):
-        raise process.OperationError(
-            "Imported wallet custodians or signature threshold do not match the supplied profile"
-        )
+    local_public_keys = _public_key_summary(
+        store.node_directory(config["name"]) / "keys", config["name"]
+    )
+    _check_imported_wallet(profile, local_public_keys, observed)
     config["setup_stage"] = "wallet-verified"
     return config, {
         "stage": config["setup_stage"],
@@ -319,7 +415,15 @@ def depool_stake_initial(store, config):
 
 def depool_verify(store, config):
     profile = _require_stage(config, "import", "wallet-verified")
-    scripts.verify_imported_depool(store, config, profile["depool_address"])
+    observed = scripts.verify_imported_depool(store, config, profile["depool_address"])
+    if observed["validator_wallet"].lower() != profile["wallet_address"].lower():
+        raise process.OperationError(
+            "Imported DePool is linked to a different validator wallet"
+        )
+    storage.write_private_text_atomically(
+        store.node_directory(config["name"]) / "keys" / "depool.addr",
+        profile["depool_address"] + "\n",
+    )
     config["setup_stage"] = "imported"
     return config, {
         "stage": config["setup_stage"],
