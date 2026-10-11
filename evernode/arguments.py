@@ -94,8 +94,17 @@ def build_argument_parser():
         "sync",
         "resources",
     ):
-        q = node.add_parser(command)
-        if command != "list":
+        if command == "resources":
+            q = node.add_parser(
+                command,
+                help="Show a resource snapshot for one node or all managed nodes",
+            )
+            q.add_argument(
+                "-n", "--name", help="Node name; omit to show all managed nodes"
+            )
+        else:
+            q = node.add_parser(command)
+        if command not in ("list", "resources"):
             q.add_argument("-n", "--name")
         if command in ("stop", "remove"):
             q.add_argument("--all", action="store_true")
@@ -109,8 +118,17 @@ def build_argument_parser():
         if command == "logs":
             q.add_argument(
                 "--component",
-                choices=["node", "stderr", "stdout", "startup", "statsd", "elections"],
+                choices=[
+                    "node",
+                    "stderr",
+                    "stdout",
+                    "startup",
+                    "statsd",
+                    "elections",
+                    "election-cron",
+                ],
                 default="node",
+                help="Log source; election-cron includes scheduled election output and errors",
             )
             q.add_argument("--follow", action="store_true")
             q.add_argument("--tail", type=int, default=100)

@@ -674,14 +674,13 @@ def build_node_log_command(store, config, component="node", *, tail=100, follow=
             + [container]
         )
     else:
-        relative = (
-            "logs/validator/validator.log"
-            if component == "elections"
-            else "logs/node/"
-            + {"node": "node.log", "stderr": "stderr.log", "stdout": "stdout.log"}[
-                component
-            ]
-        )
+        relative = {
+            "node": "logs/node/node.log",
+            "stderr": "logs/node/stderr.log",
+            "stdout": "logs/node/stdout.log",
+            "elections": "logs/validator/validator.log",
+            "election-cron": "logs/validator/election-cron.log",
+        }[component]
         command = (
             ["tail", "-n", str(tail)]
             + (["-F"] if follow else [])

@@ -397,12 +397,29 @@ here usually identifies a startup failure, panic, or configuration problem:
 sudo evernode node logs -n validator01 --component stderr --tail 100
 ```
 
+Follow scheduled election runs, including output and errors from
+`prepare_elections.sh` and `take_part_in_elections.sh`:
+
+```bash
+sudo evernode node logs -n validator01 --component election-cron --tail 100 --follow
+```
+
+This log appears on the first scheduled run. `--follow` waits for it if absent;
+Ctrl+C stops viewing the log. For the scripts' separate `validator.log`, use
+`--component elections`.
+
 Show current CPU, memory, network and disk I/O for both the node and its
 StatsD exporter, including the node memory limit and OOM state:
 
 ```bash
+sudo evernode node resources
 sudo evernode node resources -n validator01
 ```
+
+Without `-n`, the command shows all managed nodes in name order. Stopped or
+missing containers show their status. If a node cannot be inspected, the command
+reports the error, continues with the others, and exits with a nonzero status.
+This is a read-only snapshot; it does not start or stop containers.
 
 During initial sync, follow only persistent-state download progress. Increasing
 `got part offset` values mean the node is receiving the snapshot; the reported

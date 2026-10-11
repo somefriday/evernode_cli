@@ -346,11 +346,11 @@ class FocusedFeatureTests(unittest.TestCase):
         )
         with (
             patch(
-                "evernode.cli.docker.select_container_names",
+                "evernode.creation.docker.select_container_names",
                 return_value=("ever-node-01", "statsd-01"),
             ),
             patch(
-                "evernode.cli.docker.select_available_node_port",
+                "evernode.creation.docker.select_available_node_port",
                 side_effect=(58888, 9102),
             ),
             patch("evernode.cli.sys.stdin.isatty", return_value=True),

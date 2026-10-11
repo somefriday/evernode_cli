@@ -10,12 +10,12 @@ from . import (
     arguments,
     configuration,
     creation,
-    docker,
     elections,
     host,
     images,
     nodes,
     process,
+    resources,
     setup_actions,
     storage,
     ui,
@@ -175,6 +175,8 @@ def main(argv=None):
         store = storage.NodeStateStore(args.state_dir)
         if args.group == "node" and args.action == "create":
             return creation.handle_node_creation(store, args)
+        if args.group == "node" and args.action == "resources":
+            return resources.show_node_resources(store, args.name)
         if args.group in ("wallet", "depool"):
             return setup_actions.handle_setup_action(store, args)
         if args.group == "node" and args.action == "lsync":
@@ -311,26 +313,6 @@ def main(argv=None):
                 ui.print_json_result(config)
             elif args.action == "status":
                 ui.print_json_result(nodes.get_node_status(config))
-            elif args.action == "resources":
-                for container in (
-                    configuration.node_container_name(config),
-                    config["statsd"],
-                ):
-                    obj = docker.inspect_managed_container(container, name)
-                    if obj:
-                        print(
-                            process.execute_command(
-                                ["docker", "stats", "--no-stream", container]
-                            ).stdout,
-                            end="",
-                        )
-                        ui.print_json_result(
-                            {
-                                "container": container,
-                                "memory_limit_bytes": obj["HostConfig"]["Memory"],
-                                "oom_killed": obj["State"]["OOMKilled"],
-                            }
-                        )
             elif args.action == "sync":
                 previous = False
                 while True:

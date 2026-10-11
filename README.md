@@ -133,6 +133,8 @@ sudo evernode node stop -n validator01 --timeout 30
 sudo evernode node start -n validator01
 ```
 
+Use `sudo evernode node resources` without `-n` to show resources for all managed nodes.
+
 For image maintenance, local database seeding, rollback, monitoring, and the
 complete setup flow, read the [operator runbook](instruction.md). The
 [command reference](documentation.md) describes each workflow, and

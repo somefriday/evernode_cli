@@ -152,6 +152,31 @@ class CommandContractTests(unittest.TestCase):
                 "/logs/validator/validator.log"
             )
         )
+        args = arguments.build_argument_parser().parse_args(
+            [
+                "node",
+                "logs",
+                "-n",
+                config["name"],
+                "--component",
+                "election-cron",
+                "--tail",
+                "25",
+                "--follow",
+            ]
+        )
+        self.assertEqual(
+            nodes.build_node_log_command(
+                store, config, args.component, tail=args.tail, follow=args.follow
+            ),
+            [
+                "tail",
+                "-n",
+                "25",
+                "-F",
+                "/var/lib/ever-validator/nodes/node-01/logs/validator/election-cron.log",
+            ],
+        )
         with patch.object(
             docker, "inspect_managed_container", return_value={"owned": True}
         ):
