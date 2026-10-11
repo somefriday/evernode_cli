@@ -103,7 +103,9 @@ def _import_verification_context(store, config):
 def verify_imported_safe(store, config, wallet_address, timeout=300):
     """Read an imported Safe's on-chain custodian keys and threshold."""
     scripts_dir = _import_verification_context(store, config)
-    program = """set -euo pipefail
+    program = """set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
 source ./env.sh
 source ./functions.shinc
 Get_SC_current_state "$EVERNODE_WALLET" >/dev/null
@@ -148,7 +150,9 @@ jq -cn --argjson c "$custodians" --argjson p "$parameters" \
 def verify_imported_depool(store, config, depool_address, timeout=300):
     """Read an imported DePool and check which wallet it uses."""
     scripts_dir = _import_verification_context(store, config)
-    program = """set -euo pipefail
+    program = """set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
 source ./env.sh
 source ./functions.shinc
 info="$(Get_DP_Info "$EVERNODE_DEPOOL")"
