@@ -409,7 +409,7 @@ Ctrl+C stops viewing the log. For the scripts' separate `validator.log`, use
 `--component elections`.
 
 Show current CPU, memory, network and disk I/O for both the node and its
-StatsD exporter, including the node memory limit and OOM state:
+StatsD exporter, followed by disk space used by the node workspace:
 
 ```bash
 sudo evernode node resources
@@ -420,6 +420,24 @@ Without `-n`, the command shows all managed nodes in name order. Stopped or
 missing containers show their status. If a node cannot be inspected, the command
 reports the error, continues with the others, and exits with a nonzero status.
 This is a read-only snapshot; it does not start or stop containers.
+
+Resource output is plain text. An OOM warning appears only when Docker reports
+that a container was OOM-killed; this is not a complete history of OOM events.
+
+The disk table shows allocated space for `node_db/` (DATABASE), `logs/` (LOGS),
+everything else in the workspace (OTHER), and their TOTAL. OTHER includes any
+temporary local-sync copies. Filesystem capacity and available space are shown
+once per filesystem encountered at the workspace or its top-level directories.
+Shared images, build cache, container writable layers and Docker-managed logs
+outside the workspace are excluded. Docker's BLOCK I/O measures transferred
+bytes, not occupied space.
+
+Each node uses one directory scan, limited to 120 seconds. Disk usage is still
+reported when containers are stopped or Docker is unavailable. Failed scans are
+reported as unavailable, with a nonzero exit status; other nodes are still shown.
+Live measurements can change during the scan. Sparse allocation is respected;
+filesystem snapshots, compression and shared extents can make these figures
+differ from exclusive physical SSD usage.
 
 During initial sync, follow only persistent-state download progress. Increasing
 `got part offset` values mean the node is receiving the snapshot; the reported

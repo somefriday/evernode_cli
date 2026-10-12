@@ -134,6 +134,8 @@ sudo evernode node start -n validator01
 ```
 
 Use `sudo evernode node resources` without `-n` to show resources for all managed nodes.
+Each report includes allocated workspace disk space (database, logs, other and
+total). OOM warnings appear only when Docker reports an OOM kill.
 
 For image maintenance, local database seeding, rollback, monitoring, and the
 complete setup flow, read the [operator runbook](instruction.md). The
