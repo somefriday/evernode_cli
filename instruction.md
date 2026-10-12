@@ -412,6 +412,10 @@ This log appears on the first scheduled run. `--follow` waits for it if absent;
 Ctrl+C stops viewing the log. For the scripts' separate `validator.log`, use
 `--component elections`.
 
+If scheduled runs do not submit an application, see
+[Election troubleshooting](election-troubleshooting.md) for pending transactions,
+DePool rounds and the reference script's transaction-ID logging fix.
+
 Show current CPU, memory, network and disk I/O for both the node and its
 StatsD exporter together in one table per node, followed by disk space used by
 the node workspace:

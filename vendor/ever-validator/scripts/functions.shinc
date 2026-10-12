@@ -89,7 +89,7 @@ function log_error_stack() {
         # BASH_LINENO array is 1-based, but we want to display 1-based line numbers
         # string number refers to the previous function in the call stack
         local line="${BASH_LINENO[$i-1]}"
-        printf "  %d: In %s() at %s: %s\n" "$i" "$func" "$src" "$line"
+        printf "  %d: In %s() at %s: %s\n" "$i" "$func" "$src" "$line" >&2
     done
 }
 

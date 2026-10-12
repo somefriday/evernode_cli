@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -140,3 +141,49 @@ else:
             process.OperationError, "environment is not configured"
         ):
             scripts.verify_imported_safe(self.store, self.config, self.address)
+
+    def _send_message(self, successful_poll):
+        """Run the reference retry loop without sending a blockchain message."""
+        program = r"""source ./env.sh >/dev/null
+source ./functions.shinc >/dev/null
+Get_Account_Info() { echo 'Active 100 1'; }
+Get_Account_Custodians_Info() { echo '3 2'; }
+Send_File_To_BC() { echo success; }
+sleep() { :; }
+Get_MSIG_Trans_List() {
+    local poll
+    poll=$(cat polls)
+    echo "$((poll + 1))" > polls
+    if (( poll >= SUCCESSFUL_POLL )); then
+        echo '{"transactions":[{"dest":"destination","id":"7695634054725582017"}]}'
+    else
+        echo '{"transactions":[]}'
+    fi
+}
+echo 0 > polls
+Send_Message source destination unused.boc
+"""
+        environment = dict(os.environ, SUCCESSFUL_POLL=str(successful_poll))
+        caller = self.script_dir / "send-message-test.sh"
+        caller.write_text(program)
+        return subprocess.run(
+            ["bash", str(caller)],
+            cwd=self.script_dir,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_send_message_retry_returns_only_transaction_id(self):
+        result = self._send_message(successful_poll=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "7695634054725582017\n")
+        self.assertIn("TransQTY=0", result.stderr)
+        self.assertIn("In Send_Message()", result.stderr)
+
+    def test_send_message_exhausted_retries_leave_stdout_empty(self):
+        result = self._send_message(successful_poll=99)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("In Send_Message()", result.stderr)
