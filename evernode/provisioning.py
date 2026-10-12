@@ -163,9 +163,9 @@ def provision_node_workspace(
             raise process.OperationError(
                 "Node directory already exists; use node create --resume -n NAME for an interrupted preparation"
             )
-        for name in (configuration.node_container_name(config), config["statsd"]):
-            if docker.inspect_container(name):
-                raise process.OperationError(f"Container name already exists: {name}")
+        docker.ensure_container_names_available(
+            store, (configuration.node_container_name(config), config["statsd"])
+        )
         process.execute_command(["docker", "image", "inspect", config["image_id"]])
         for field, protocol in (("adnl_port", "udp"), ("metrics_port", "tcp")):
             docker.select_available_node_port(

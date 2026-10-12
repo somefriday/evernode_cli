@@ -122,6 +122,10 @@ keys. Fence the former validator before starting elections on a replacement.
 
 ## Operate a node
 
+New nodes use `evernode-<validator-name>` and `statsd-<validator-name>` as their
+Docker container names. Existing nodes keep their saved names when upgrading.
+Use the validator name with CLI commands in either case.
+
 ```bash
 sudo evernode node list
 sudo evernode node status -n validator01

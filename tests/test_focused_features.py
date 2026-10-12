@@ -37,7 +37,7 @@ class FocusedFeatureTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def test_container_pair_skips_docker_and_saved_names(self):
+    def test_named_container_pair_coexists_with_older_numeric_names(self):
         directory = self.store.node_directory("validator")
         directory.mkdir(parents=True)
         config = make_node_configuration(
@@ -46,8 +46,8 @@ class FocusedFeatureTests(unittest.TestCase):
         self.store.save_node_config(config)
         with patch("evernode.docker.process.execute_command") as command:
             command.return_value.stdout = "ever-node-02\nstatsd-03\n"
-            node, statsd = docker.select_container_names(self.store)
-        self.assertEqual((node, statsd), ("ever-node-04", "statsd-04"))
+            node, statsd = docker.select_container_names(self.store, "validator03")
+        self.assertEqual((node, statsd), ("evernode-validator03", "statsd-validator03"))
 
     def test_managed_image_record_is_found_by_tag_and_short_key(self):
         inputs = {

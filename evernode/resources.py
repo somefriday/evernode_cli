@@ -6,24 +6,42 @@ import sys
 from . import configuration, disk_usage, docker, process
 
 
-def print_container_resources(container, node):
-    obj = docker.inspect_managed_container(container, node)
-    if obj is None:
-        print(f"{container}: absent")
-        return
-
-    status = obj["State"]["Status"]
-    if obj["State"].get("OOMKilled") is True:
-        print(f"WARNING: {container} was OOM-killed.", flush=True)
-    if status == "running":
-        print(
-            process.execute_command(
-                ["docker", "stats", "--no-stream", container]
-            ).stdout,
-            end="",
-        )
-    else:
-        print(f"{container}: {status}")
+def print_container_resources(config):
+    """Print both running containers in one Docker table with a shared header."""
+    node = config["name"]
+    running = []
+    failed = False
+    for container in (configuration.node_container_name(config), config["statsd"]):
+        try:
+            obj = docker.inspect_managed_container(container, node)
+            if obj is None:
+                print(f"{container}: absent")
+                continue
+            status = obj["State"]["Status"]
+            if obj["State"].get("OOMKilled") is True:
+                print(f"WARNING: {container} was OOM-killed.", flush=True)
+            if status == "running":
+                running.append(container)
+            else:
+                print(f"{container}: {status}")
+        except (process.OperationError, OSError, ValueError) as exc:
+            print(f"Error: {node}/{container}: {exc}", file=sys.stderr)
+            failed = True
+    if running:
+        try:
+            print(
+                process.execute_command(
+                    ["docker", "stats", "--no-stream", *running]
+                ).stdout,
+                end="",
+            )
+        except (process.OperationError, OSError, ValueError) as exc:
+            print(
+                f"Error: {node}: container statistics unavailable: {exc}",
+                file=sys.stderr,
+            )
+            failed = True
+    return failed
 
 
 def print_workspace_resources(directory, node, seen_filesystems):
@@ -77,12 +95,8 @@ def show_node_resources(store, name=None):
             print(f"Error: {node}: {exc}", file=sys.stderr)
             failed = True
             continue
-        for container in (configuration.node_container_name(config), config["statsd"]):
-            try:
-                print_container_resources(container, node)
-            except (process.OperationError, OSError, ValueError) as exc:
-                print(f"Error: {node}/{container}: {exc}", file=sys.stderr)
-                failed = True
+        if print_container_resources(config):
+            failed = True
         try:
             print_workspace_resources(
                 store.node_directory(node), node, seen_filesystems

@@ -8,8 +8,8 @@ from . import configuration, process
 NODE_OWNERSHIP_LABEL = "org.evernode.manager"
 
 
-def select_container_names(store):
-    """Return a globally unused node/exporter pair with one numeric suffix."""
+def ensure_container_names_available(store, proposed):
+    """Reject names owned by any Docker container or saved node configuration."""
     names = set(
         process.execute_command(
             ["docker", "ps", "-a", "--format", "{{.Names}}"]
@@ -19,12 +19,21 @@ def select_container_names(store):
         config = store.load_node_config(node)
         names.add(configuration.node_container_name(config))
         names.add(config["statsd"])
-    for index in range(1, 10000):
-        suffix = f"{index:02d}"
-        node, statsd = "ever-node-" + suffix, "statsd-" + suffix
-        if node not in names and statsd not in names:
-            return node, statsd
-    raise process.OperationError("No free Docker node/container suffix is available")
+    conflicts = names.intersection(proposed)
+    if conflicts:
+        raise process.OperationError(
+            "Container name already in use or reserved: "
+            + ", ".join(sorted(conflicts))
+            + ". Choose a different validator name."
+        )
+
+
+def select_container_names(store, name):
+    """Derive names for a new node; existing nodes always use saved names."""
+    name = configuration.validate_node_name(name)
+    proposed = ("evernode-" + name, "statsd-" + name)
+    ensure_container_names_available(store, proposed)
+    return proposed
 
 
 def inspect_container(name):
@@ -78,7 +87,7 @@ def is_host_port_available(port, protocol):
 def select_available_node_port(store, proposed, protocol, explicit=None):
     field = "adnl_port" if protocol == "udp" else "metrics_port"
     reserved = {store.load_node_config(n)[field] for n in store.list_node_names()}
-    for port in ([explicit] if explicit is not None else range(proposed, 65536)):
+    for port in [explicit] if explicit is not None else range(proposed, 65536):
         if not 1024 <= port <= 65535:
             raise process.OperationError("Ports must be between 1024 and 65535")
         if port not in reserved and is_host_port_available(port, protocol):

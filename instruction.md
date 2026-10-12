@@ -155,9 +155,13 @@ The fresh-DePool flow uses these defaults when Enter is pressed:
 | Multisig custodians / required signatures | `3` / `2` |
 
 The tool discovers a public IPv4 as a proposed value, but confirm that it is
-the address actually forwarded to this server. It also allocates the first free
-container pair (`ever-node-01`, `statsd-01`, then `02`, and so on), an unused
-ADNL UDP port starting at `58888`, and a loopback metrics port starting at
+the address actually forwarded to this server. New nodes use container names
+derived from their validator name: `validator03` gets `evernode-validator03`
+and `statsd-validator03`. Names already used by Docker or reserved in saved node
+configurations are rejected; choose another validator name if they conflict.
+Existing nodes retain their saved container names after upgrades, restarts and
+image updates. The tool also allocates an unused ADNL UDP port starting at
+`58888`, and a loopback metrics port starting at
 `9102`. Provide a measured memory limit when prompted; it is a Docker ceiling,
 not a reservation.
 
@@ -409,7 +413,8 @@ Ctrl+C stops viewing the log. For the scripts' separate `validator.log`, use
 `--component elections`.
 
 Show current CPU, memory, network and disk I/O for both the node and its
-StatsD exporter, followed by disk space used by the node workspace:
+StatsD exporter together in one table per node, followed by disk space used by
+the node workspace:
 
 ```bash
 sudo evernode node resources

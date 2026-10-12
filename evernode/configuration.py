@@ -60,8 +60,7 @@ def validate_saved_node_config(value, name):
         raise process.OperationError("Invalid or unsupported node configuration")
     validate_node_name(name)
     if value.get("statsd") != "statsd-" + name:
-        # Version one used statsd-<validator-name>; new installations use a
-        # numeric Docker-global name. Both remain readable for safe migration.
+        # Preserve saved exporter names, including older numeric names.
         statsd = value.get("statsd")
         if not isinstance(statsd, str) or not CONTAINER_NAME_PATTERN.fullmatch(statsd):
             raise process.OperationError("Invalid exporter name in node configuration")

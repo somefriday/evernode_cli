@@ -181,7 +181,7 @@ def handle_node_creation(store, args):
         (args.node_repo, args.cli_repo, args.cli_ref, args.image_repo)
     ):
         raise process.OperationError("Source options cannot be used with --image")
-    container_name, statsd_name = docker.select_container_names(store)
+    container_name, statsd_name = docker.select_container_names(store, name)
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
         importing = input(

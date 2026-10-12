@@ -54,7 +54,8 @@ class ResourceTests(unittest.TestCase):
             patch("evernode.resources.process.execute_command")
         )
         self.execute.side_effect = lambda args: SimpleNamespace(
-            stdout=f"{args[-1]} CPU MEMORY\n"
+            stdout="CONTAINER ID NAME CPU MEMORY\n"
+            + "".join(f"{container} CPU MEMORY\n" for container in args[3:])
         )
 
     def run_cli(self, *args):
@@ -74,13 +75,8 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(
             self.execute.call_args_list,
             [
-                call(["docker", "stats", "--no-stream", c])
-                for c in (
-                    "validator01",
-                    "statsd-validator01",
-                    "validator02",
-                    "statsd-validator02",
-                )
+                call(["docker", "stats", "--no-stream", node, f"statsd-{node}"])
+                for node in ("validator01", "validator02")
             ],
         )
         self.assertEqual(
@@ -91,6 +87,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(self.disk.call_count, 2)
         self.filesystem.assert_called_once()
         self.assertEqual(output.count("1.0 TiB capacity, 1.0 GiB available"), 1)
+        self.assertEqual(output.count("CONTAINER ID"), 2)
 
     def test_explicit_node_shows_stats_and_disk_without_json_or_false_oom(self):
         self.assertEqual(self.run_cli("-n", "validator02"), 0)
@@ -100,6 +97,8 @@ class ResourceTests(unittest.TestCase):
         self.assertNotIn("===", output)
         self.assertNotIn('"status"', output)
         self.assertIn("validator02 CPU MEMORY", output)
+        self.assertIn("statsd-validator02 CPU MEMORY", output)
+        self.assertEqual(output.count("CONTAINER ID"), 1)
         self.assertNotIn("memory_limit_bytes", output)
         self.assertNotIn("OOM", output)
         self.assertNotIn("{", output)
@@ -140,7 +139,7 @@ class ResourceTests(unittest.TestCase):
         self.assertIn(
             "validator01: Cannot read node configuration", self.stderr.getvalue()
         )
-        self.assertEqual(self.execute.call_count, 2)
+        self.assertEqual(self.execute.call_count, 1)
         self.assertIn("validator02 CPU MEMORY", self.stdout.getvalue())
 
     def test_inspection_failure_continues_with_exporter_and_other_nodes(self):
@@ -152,7 +151,11 @@ class ResourceTests(unittest.TestCase):
             running,
         ]
         self.assertEqual(self.run_cli(), 1)
-        self.assertEqual(self.execute.call_count, 3)
+        self.assertEqual(self.execute.call_count, 2)
+        self.assertEqual(
+            self.execute.call_args_list[0],
+            call(["docker", "stats", "--no-stream", "statsd-validator01"]),
+        )
         self.assertIn(
             "validator01/validator01: Docker unavailable", self.stderr.getvalue()
         )
@@ -161,10 +164,10 @@ class ResourceTests(unittest.TestCase):
     def test_stats_failure_during_container_exit_does_not_abort_batch(self):
         self.execute.side_effect = [
             process.OperationError("Container stopped"),
-            *[SimpleNamespace(stdout="stats\n")] * 3,
+            SimpleNamespace(stdout="stats\n"),
         ]
         self.assertEqual(self.run_cli(), 1)
-        self.assertEqual(self.execute.call_count, 4)
+        self.assertEqual(self.execute.call_count, 2)
         self.assertIn("Container stopped", self.stderr.getvalue())
 
     def test_container_ownership_is_still_checked(self):
@@ -193,7 +196,7 @@ class ResourceTests(unittest.TestCase):
         self.assertIn("du timed out", self.stderr.getvalue())
         self.assertEqual(self.stdout.getvalue().count("DATABASE"), 1)
         self.assertIn("Node data on disk — validator02", self.stdout.getvalue())
-        self.assertEqual(self.execute.call_count, 4)
+        self.assertEqual(self.execute.call_count, 2)
 
     def test_disk_report_still_works_when_docker_is_unavailable(self):
         self.inspect.side_effect = process.OperationError("Docker unavailable")
