@@ -44,8 +44,8 @@ def print_container_resources(config):
     return failed
 
 
-def print_workspace_resources(directory, node, seen_filesystems):
-    print(f"\nNode data on disk — {node} (scanning...)", flush=True)
+def print_workspace_resources(directory, node, filesystems):
+    print(f"\n{node} disk utilization", flush=True)
     sizes = disk_usage.measure_workspace(directory)
     total = sizes[directory]
     database = sizes.get(directory / "node_db", 0)
@@ -62,15 +62,8 @@ def print_workspace_resources(directory, node, seen_filesystems):
     # Include top-level directories so a separately mounted database is reported.
     for path in sorted(sizes):
         device = path.stat().st_dev
-        if device in seen_filesystems:
-            continue
-        usage = shutil.disk_usage(path)
-        print(
-            f"Filesystem containing {path}: "
-            f"{disk_usage.format_bytes(usage.total)} capacity, "
-            f"{disk_usage.format_bytes(usage.free)} available"
-        )
-        seen_filesystems.add(device)
+        if device not in filesystems:
+            filesystems[device] = shutil.disk_usage(path)
 
 
 def show_node_resources(store, name=None):
@@ -85,7 +78,8 @@ def show_node_resources(store, name=None):
         return 0
 
     failed = False
-    seen_filesystems = set()
+    disk_failed = False
+    filesystems = {}
     for node in names:
         if name is None:
             print(f"\n=== {node} ===", flush=True)
@@ -94,17 +88,26 @@ def show_node_resources(store, name=None):
         except (process.OperationError, OSError, ValueError) as exc:
             print(f"Error: {node}: {exc}", file=sys.stderr)
             failed = True
+            disk_failed = True
             continue
         if print_container_resources(config):
             failed = True
         try:
-            print_workspace_resources(
-                store.node_directory(node), node, seen_filesystems
-            )
+            print_workspace_resources(store.node_directory(node), node, filesystems)
         except (process.OperationError, OSError, ValueError) as exc:
             print(
                 f"Error: {node}: disk report incomplete or unavailable: {exc}",
                 file=sys.stderr,
             )
             failed = True
+            disk_failed = True
+    if disk_failed or not filesystems:
+        print("\nDisk summary: unavailable (incomplete measurement)")
+    else:
+        capacity = sum(usage.total for usage in filesystems.values())
+        available = sum(usage.free for usage in filesystems.values())
+        print(
+            f"\nDisk summary: {disk_usage.format_bytes(capacity)} capacity, "
+            f"{disk_usage.format_bytes(available)} available"
+        )
     return 1 if failed else 0

@@ -431,8 +431,10 @@ that a container was OOM-killed; this is not a complete history of OOM events.
 
 The disk table shows allocated space for `node_db/` (DATABASE), `logs/` (LOGS),
 everything else in the workspace (OTHER), and their TOTAL. OTHER includes any
-temporary local-sync copies. Filesystem capacity and available space are shown
-once per filesystem encountered at the workspace or its top-level directories.
+temporary local-sync copies. A single `Disk summary` at the end shows capacity
+and available space, counting each filesystem encountered at the selected
+workspaces or their top-level directories once. Multiple filesystem capacities
+are added together; incomplete measurements show an unavailable summary.
 Shared images, build cache, container writable layers and Docker-managed logs
 outside the workspace are excluded. Docker's BLOCK I/O measures transferred
 bytes, not occupied space.

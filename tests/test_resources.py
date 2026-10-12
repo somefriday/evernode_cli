@@ -88,6 +88,11 @@ class ResourceTests(unittest.TestCase):
         self.filesystem.assert_called_once()
         self.assertEqual(output.count("1.0 TiB capacity, 1.0 GiB available"), 1)
         self.assertEqual(output.count("CONTAINER ID"), 2)
+        self.assertEqual(output.count("Disk summary:"), 1)
+        self.assertEqual(
+            output.splitlines()[-1], "Disk summary: 1.0 TiB capacity, 1.0 GiB available"
+        )
+        self.assertNotIn(str(self.store.node_directory("validator01")), output)
 
     def test_explicit_node_shows_stats_and_disk_without_json_or_false_oom(self):
         self.assertEqual(self.run_cli("-n", "validator02"), 0)
@@ -102,8 +107,13 @@ class ResourceTests(unittest.TestCase):
         self.assertNotIn("memory_limit_bytes", output)
         self.assertNotIn("OOM", output)
         self.assertNotIn("{", output)
-        self.assertIn("Node data on disk — validator02", output)
+        self.assertIn("validator02 disk utilization", output)
         self.assertIn("3.0 KiB", output)
+        self.assertEqual(output.count("Disk summary:"), 1)
+        self.assertEqual(
+            output.splitlines()[-1], "Disk summary: 1.0 TiB capacity, 1.0 GiB available"
+        )
+        self.assertNotIn(str(self.store.node_directory("validator02")), output)
         self.disk.assert_called_once_with(self.store.node_directory("validator02"))
 
     def test_no_nodes_needs_no_docker_calls(self):
@@ -128,7 +138,7 @@ class ResourceTests(unittest.TestCase):
         self.assertIn("validator01: exited", output)
         self.assertIn("statsd-validator01: absent", output)
         self.assertEqual(output.count("was OOM-killed"), 1)
-        self.assertIn("Node data on disk — validator01", output)
+        self.assertIn("validator01 disk utilization", output)
 
     def test_invalid_node_metadata_does_not_hide_remaining_nodes(self):
         self.store.load_node_config.side_effect = [
@@ -195,7 +205,7 @@ class ResourceTests(unittest.TestCase):
         )
         self.assertIn("du timed out", self.stderr.getvalue())
         self.assertEqual(self.stdout.getvalue().count("DATABASE"), 1)
-        self.assertIn("Node data on disk — validator02", self.stdout.getvalue())
+        self.assertIn("validator02 disk utilization", self.stdout.getvalue())
         self.assertEqual(self.execute.call_count, 2)
 
     def test_disk_report_still_works_when_docker_is_unavailable(self):
@@ -216,7 +226,11 @@ class ResourceTests(unittest.TestCase):
         ):
             self.assertEqual(self.run_cli(), 0)
         self.assertEqual(self.filesystem.call_count, 2)
-        self.assertIn(f"Filesystem containing {database}", self.stdout.getvalue())
+        output = self.stdout.getvalue()
+        self.assertEqual(output.count("Disk summary:"), 1)
+        self.assertEqual(
+            output.splitlines()[-1], "Disk summary: 2.0 TiB capacity, 2.0 GiB available"
+        )
 
     def test_filesystem_failure_does_not_hide_later_node(self):
         self.filesystem.side_effect = [
@@ -226,3 +240,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(self.run_cli(), 1)
         self.assertIn("Filesystem unavailable", self.stderr.getvalue())
         self.assertEqual(self.stdout.getvalue().count("DATABASE"), 2)
+        self.assertEqual(
+            self.stdout.getvalue().splitlines()[-1],
+            "Disk summary: unavailable (incomplete measurement)",
+        )
