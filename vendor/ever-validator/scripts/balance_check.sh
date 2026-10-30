@@ -39,24 +39,9 @@ echo -e "$(Determine_Current_Network)"
 echo
 
 #=================================================
-# Check node sync status if not forced to use dapp
-if ! $FORCE_USE_DAPP;then
-    NODE_SYNC_STATUS=$(Get_TimeDiff)
-    # Get time difference between the current machine and the node
-    # shellcheck disable=SC2046
-    read -r MC_TIME_DIFF SH_TIME_DIFF <<< $(echo "$NODE_SYNC_STATUS" | awk '{print $1, $2}')
-    # echo "---INFO: Node sync status: $MC_TIME_DIFF $SH_TIME_DIFF"
-    if ! [[ $MC_TIME_DIFF =~ ^[0-9]+$ && $SH_TIME_DIFF =~ ^[0-9]+$ ]] || [[ $MC_TIME_DIFF -gt 20 ]] || [[ $SH_TIME_DIFF -gt 20 ]];then
-        IFS= read -rp "### Access method: console, but your node is not synced!!! Do you want to use DAPP temporarily? (yes/no)? " </dev/tty answer
-        case ${answer:0:1} in
-            y|Y|yes|Yes|YES )
-            export FORCE_USE_DAPP=true
-                echo "Processing....." ;;
-            * )
-                echo "Cancelled."; exit 1 ;;
-        esac
-    fi
-fi
+# The node's own console is the only transport; an unusable node refuses the
+# operation here rather than routing around it. See functions.shinc.
+Require_Node_Console || exit 1
 
 #=================================================
 # Check if the account is specified

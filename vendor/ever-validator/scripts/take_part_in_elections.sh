@@ -154,27 +154,13 @@ if [[ -z $msig_public ]] || [[ -z $msig_secret ]];then
 fi
 
 #=================================================
-# Check node sync
-# masterchain timediff
-MC_TIME_DIFF=$(Get_TimeDiff|awk '{print $1}')
-if [[ $MC_TIME_DIFF -gt $TIMEDIFF_MAX ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced with MC. Wait until MC sync (<$TIMEDIFF_MAX) Current MC timediff: $MC_TIME_DIFF"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
-        "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced. Wait until MC sync (<$TIMEDIFF_MAX) Current MC timediff: $MC_TIME_DIFF" > /dev/null 2>&1
-    exit 1
-fi
-echo "---INFO: Current MC TimeDiff: $MC_TIME_DIFF"
-
-# shards timediff (by worst shard)
-SH_TIME_DIFF=$(Get_TimeDiff|awk '{print $2}')
-if [[ $SH_TIME_DIFF -gt $TIMEDIFF_MAX ]];then
-    echo -e "${YellowBack}${BoldText}###-WARNING(${SelfScriptName} line $LINENO): Your node is not synced with WORKCHAIN. Wait for all shards to sync or your accounts may not be accessible (<$TIMEDIFF_MAX) Current shards (by worst shard) timediff: $SH_TIME_DIFF${NormText}"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
-        "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced with WORKCHAIN. Wait for all shards to sync or your accounts may not be accessible (<$TIMEDIFF_MAX) Current shards (by worst shard) timediff: $SH_TIME_DIFF" > /dev/null 2>&1
-    # exit 1
-else
-    echo "---INFO: Current WC TimeDiff: $SH_TIME_DIFF"
-fi
+# The node's own console is the only transport, so an unsynced or unreachable
+# node refuses the attempt here. One check covers both chains and both ways of
+# being unusable: the earlier masterchain test read Get_TimeDiff's error text
+# ("Node Down") as a number, which bash evaluates to 0, so a dead node passed
+# it; and shard lag was reported as a warning and then ignored, although a
+# lagging shard is exactly the one that cannot show whether the bid landed.
+Require_Node_Console "$TIMEDIFF_MAX" || exit 1
 #=================================================
 # Get Elector address, Elector type, and elector boc file in ${ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc
 if result=$(Get_Current_Elector_Type);then
@@ -315,19 +301,21 @@ if [[ "$Engine_ADNLs" != "null" ]];then
     [[ -z $Next_ADNL_Key ]] && Next_ADNL_Key=$(echo "$Engine_ADNLs"|awk '{print $1}') # in case it has not prev keys
     # Looking for ADNL in Elector's participants list
     #   "stake time max_factor ElPubKey" - if found
-    if ! ADNL_Found="$(Elector_ADNL_Search "$Next_ADNL_Key")";then
+    if ADNL_Found="$(Elector_ADNL_Search "$Next_ADNL_Key")";then
+        read -r ADNL_Stake ADNL_Time ADNL_Max_Factor You_PubKey <<< "$ADNL_Found"
+    else
         error_code=$?
         # Parse error code
         case $error_code in
             1) echo "###-ERROR(${SelfScriptName} line $LINENO): Wrong ADNL key: $Next_ADNL_Key." ;;
             2) echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot get Elector type!" ;;
             3) echo "###-ERROR(${SelfScriptName} line $LINENO): Elections is closed" ;;
-            4) echo "###-ERROR(${SelfScriptName} line $LINENO): ADNL not found in Elector's participants list" ;;
+            4) echo "---INFO: ADNL not found in Elector's participants list; preparing a new bid" ;;
             5) echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown Elector type: $ELECTOR_TYPE" ;;
         esac
-    else
-        # shellcheck disable=SC2034     
-        read -r ADNL_Stake ADNL_Time ADNL_Max_Factor You_PubKey <<< "$ADNL_Found"
+        if [[ $error_code -ne 4 ]] || [[ $ADNL_Found != "absent" ]]; then
+            exit 1
+        fi
     fi
     if [[ "$ADNL_Found" != "absent" ]];then
         echo
@@ -516,6 +504,7 @@ declare -i New_Trans_Qty=0
 # ===============================================================
 # make boc for sending
 if ! LC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc" \
+    --lifetime "$MSG_LIFETIME" \
     --sign "${INPL_KEYS_DIR}/${MSIG_KEY_FILES_ARRAY[0]##*/}" ${SIG_ID_OPTION} \
     --abi "$INPL_SafeC_Wallet_ABI" \
     "$Validator_addr" submitTransaction \
@@ -532,75 +521,126 @@ echo "$LC_OUTPUT"
 echo -e "-----------------------------------------------------------\n"
 
 #=================================================
-# Send request to Elector
-## 5x3 attempts to make trasaction
-for (( TryToSetEl=0; TryToSetEl <= 5; TryToSetEl++ ));do
-    echo -n "---INFO: Send query to Elector... "
-    #################
-    if ! New_Elect_Trans_ID=$(Send_Message "${Validator_addr}" "${Stake_DST_Addr}" "${INPL_CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc");then
-    #################
-        echo "###-ERROR(${SelfScriptName} line $LINENO): ALARM!!! Cannot make transaction for elections!!!"
-    else
-        echo " DONE"
-        echo "+++-INFO: Made transaction ID: $New_Elect_Trans_ID"
-        break
-    fi
-done
-
+# Send the request to the Elector
 #=================================================
-# Final checking
-#=================================================
-# Verifying that a transaction has been created 
-if [[ $Required_Signs -gt 1 ]];then
-    Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-    New_Trans_Qty=$(( $(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$Stake_DST_Addr\")]|length") ))
-    if [[ $New_Trans_Qty -gt $Initial_Tx_Qty ]];then
-        Elect_Trans_ID=$(echo "$Trans_List" | jq -r ".transactions[]|select(.dest == \"$Stake_DST_Addr\")|.id"|tail -n 1)
-        if [[ $New_Elect_Trans_ID -ne $Elect_Trans_ID ]];then
-            echo "###-WARNING(${SelfScriptName} line $LINENO): Transaction from Send_Message function ($New_Elect_Trans_ID) is not equal to last transaction from list ($Elect_Trans_ID)"
-        fi
-        echo "---INFO: Making transaction for elections was done SUCCESSFULLY! Trnasaction ID: $Elect_Trans_ID You have to sign this transaction!!"| tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-        echo "Made transaction ID: $Elect_Trans_ID" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-        
-        # Sign transaction by all keys which we have
-        # $LocalKeysQty  $Required_Signs
-        for (( i=0; i < LocalKeysQty; i++ )); do
-            echo "---INFO: Sign transaction for participate in elections $elections_id with ${MSIG_KEY_FILES_ARRAY[$i]}..."
-            Send_MSIG_Trans_Confirmation "$Elect_Trans_ID" "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[$i]##*/}"
-            sleep $LC_Send_MSG_Timeout
-        done
-        Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-        if ! $RemoteSign;then
-            # Check TransID is signed by all keys and send it to elector
-            if [[ -z $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")") ]];then
-                echo "+++-INFO: Transaction for elections was signed by all keys and sent successfully!"
-            else
-                echo "Signs required: $Required_Signs"
-                echo "Signs made: $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")|.signsReceived")"
-                echo "###-ERROR(${SelfScriptName} line $LINENO): Transaction for participate in elections $elections_id was NOT signed by all keys!!!"
-            fi
-        else
-            echo "Signs required: $Required_Signs"
-            echo "Signs made: $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")|.signsReceived")"
-            echo "+++WARNING: You have NOT enough keys to sign transaction $Elect_Trans_ID locally, so you have to sign it remotely"
-        fi
-    else
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Transaction does not made or timeout is too low!" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-    fi
-else
-    #=================================================
-    # Verifying that a transaction has been sent (for 1 custodian acc) by cheching change last transaction time
-    Validator_Acc_Info="$(Get_Account_Info "${Validator_addr}")"
-    declare -i Validator_Acc_LT_Sent=$(echo "$Validator_Acc_Info" | awk '{print $3}')
-    if [[ $Validator_Acc_LT_Sent -gt $Validator_Acc_LT ]];then
-        echo "---INFO: Sending transaction for participate in elections $elections_id was done SUCCESSFULLY!"| tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log" 
-    else
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Sending transaction for participate in elections $elections_id FAILED!!!" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-        Send_msg_toTelBot "$VALIDATOR_NAME Server" \
-            "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): Sending transaction for for participate in elections $elections_id FAILED!!!" > /dev/null 2>&1
+# A retry must finish the bid an earlier attempt already submitted, never add
+# a second one. Submission and confirmation are separate on-chain messages, so
+# an attempt that died between them left a real transaction holding one
+# signature; submitting again would put another half-signed bid in the queue,
+# and five of those from one custodian fill it and stop the node bidding at
+# all. The six DePool operations have resumed like this for a while; this path
+# was the one that still did not.
+New_Elect_Trans_ID=""
+if [[ ${Required_Signs} -gt 1 ]];then
+    New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Stake_DST_Addr" \
+        "$NANOSTAKE" "$validator_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}") || exit 1
+    if [[ -n $New_Elect_Trans_ID ]];then
+        echo "---INFO: Resuming the matching bid $New_Elect_Trans_ID already in the wallet."
     fi
 fi
+if [[ -z $New_Elect_Trans_ID && ${Required_Signs} -gt 1 ]];then
+    # A sixth live transaction from this custodian would be rejected with 113
+    # before tvm.accept(), leaving nothing on chain to explain itself.
+    Require_Queue_Space "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[0]}" || exit 1
+fi
+if [[ -z $New_Elect_Trans_ID ]];then
+    # Send_Message counted the pending entries addressed to the destination and
+    # returned the newest by position, so a transfer another custodian had just
+    # submitted to the same address could be the one it handed back - and the
+    # signatures below would then have gone to someone else's transaction.
+    if ! New_Elect_Trans_ID=$(Submit_And_Identify "${Validator_addr}" "${Stake_DST_Addr}" \
+            "${INPL_CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc" \
+            "$NANOSTAKE" "$validator_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}");then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The bid for elections $elections_id was not accepted by the wallet, so nothing was signed and nothing was staked." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        exit 1
+    fi
+    echo "+++-INFO: Made transaction ID: $New_Elect_Trans_ID"
+fi
+
+#=================================================
+# Final checking: wait until the elector lists this node as a participant.
+#=================================================
+# Nothing short of that says the bid worked. Reading the wallet's pending list
+# cannot: the wallet checks every require() before tvm.accept(), so a bid it
+# rejected is recorded in no block at all, and an entry that has gone may have
+# executed, expired, or never existed. A single read of that list also loses
+# the race with inclusion, which is how a bid that did reach the DePool came to
+# be reported as never signed.
+#
+# The deadline is when the elections close. A bid that registers after that
+# cannot be elected, so waiting the wallet's full hour would turn a clean
+# failure into a missed round, and waiting less would call a slow success a
+# failure.
+declare -i Elections_Close=$(( elections_id - elections_end_before ))
+# Waiting is useful at least until every message this attempt sent is dead,
+# whatever the election calendar says. A network that has stalled keeps its
+# election open long past this nominal close - the local test network sat four
+# hours past it with the set unfilled - and the elector still accepts bids
+# there, which is how such a network recovers. Reporting a failure the instant
+# after submitting, because a date in the past said so, would be Fault A again
+# with a different cause: the bid in flight would land seconds later.
+declare -i Bid_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+if [[ $Elections_Close -gt $Bid_Deadline ]];then
+    Bid_Deadline=$Elections_Close
+fi
+Elect_Trans_ID="$New_Elect_Trans_ID"
+if [[ $Required_Signs -gt 1 ]];then
+    echo "---INFO: Made transaction ID: $Elect_Trans_ID" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    # One signature at a time, each one waited for before the next is sent, and
+    # each key taken from the wallet's own confirmation mask rather than
+    # guessed from a count. Sending them all and reading the result once is
+    # what reported a bid that had reached the chain as unsigned.
+    declare -i Sign_Deadline=$Bid_Deadline
+    Bid_Expires_At="$(Trans_Expires_At "$Validator_addr" "$Elect_Trans_ID")"
+    if [[ $Bid_Expires_At =~ ^[0-9]+$ ]] && [[ $((Bid_Expires_At - 5)) -lt $Sign_Deadline ]];then
+        Sign_Deadline=$((Bid_Expires_At - 5))
+    fi
+    Sign_To_Execution "$Validator_addr" "$VALIDATOR_NAME" "$Elect_Trans_ID" "$Sign_Deadline" \
+        "The bid in elections $elections_id"
+    Sign_Status=$?
+    if [[ $Sign_Status -eq 3 ]] && $RemoteSign;then
+        echo "+++WARNING: This node holds $LocalKeysQty of the $Required_Signs keys this wallet requires, so transaction $Elect_Trans_ID has to be signed elsewhere before the elections close at $(TD_unix2human "$Elections_Close")." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        exit 0
+    fi
+    if [[ $Sign_Status -ne 0 ]];then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The bid for elections $elections_id could not be signed through to execution." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        exit 1
+    fi
+fi
+# The ADNL this bid registers under is the key console generated for it, so it
+# is read now rather than reused from the participation check above, which ran
+# before the request existed.
+if ! Bid_ADNL=$(Get_Engine_ADNL_For_Election "$elections_id");then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot find this node's validator key for elections $elections_id in ${NODE_CFG_DIR}/config.json, so the bid cannot be verified." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    exit 1
+fi
+if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
+        "$LC_Send_MSG_Timeout" Effect_Elector_Has_Our_ADNL "$Bid_ADNL";then
+    echo "+++-INFO: The elector lists this node as a participant of elections $elections_id." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    echo
+    echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
+    echo "================================================================================================"
+    exit 0
+fi
+# Say why, when the DePool itself can say it. A round elected with no stake
+# cannot produce a bid however well the wallet transaction was signed, so a
+# retry cannot help; the operator needs to know where the stake actually is.
+Round_Stake="$(Get_DP_Round_Stake_For_Election "$Stake_DST_Addr" "$elections_id" 2>/dev/null)"
+if [[ $Round_Stake =~ ^0+$ ]];then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector: the DePool holds no stake in the round being elected, so it had nothing to bid with. This is not a failure of this attempt and a retry cannot change it. A stake bids in the round that was collecting when it was made, and is then locked until that round completes, so the rounds collecting after it are empty until it returns. To bid in consecutive elections, add a stake to each round while it is the collecting one, at least as large as the validator assurance. Read 'evernode depool info' for which round is collecting and what each round holds; staking now does not move a locked stake into the round being elected." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+else
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector and the elections have closed.${Round_Stake:+ The DePool holds $Round_Stake nanotokens in that round.}" \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+fi
+Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+    "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector." > /dev/null 2>&1
 echo
 echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
 echo "================================================================================================"
-exit 0
+exit 1

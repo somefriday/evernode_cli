@@ -331,6 +331,9 @@ def wallet_deploy(store, config):
         timeout=600,
         sensitive=True,
     )
+    scripts.wait_for_active_account(
+        store, config, profile["wallet_address"], "Safe wallet"
+    )
     config["setup_stage"] = "wallet-deployed"
     return config, {
         "stage": config["setup_stage"],
@@ -381,9 +384,12 @@ def depool_prepare(store, config):
 
 
 def depool_deploy(store, config):
-    _require_stage(config, "new", "depool-prepared")
+    profile = _require_stage(config, "new", "depool-prepared")
     scripts.execute_validator_script(
         store, config, "DePool_deploy.sh", timeout=600, sensitive=True
+    )
+    scripts.wait_for_active_account(
+        store, config, profile["depool_address"], "DePool"
     )
     config["setup_stage"] = "depool-deployed"
     return config, {
@@ -405,11 +411,164 @@ def depool_stake_initial(store, config):
         assurance,
         timeout=600,
         sensitive=True,
+        # Setup may be retried; do not transfer the assurance twice.
+        variables={"EVERNODE_INITIAL_STAKE": "yes"},
     )
     config["setup_stage"] = "ready-for-elections"
     return config, {
         "stage": config["setup_stage"],
         "next": f"Run: evernode election start -n {config['name']}",
+    }
+
+
+OPERATIONAL_STAGES = ("ready-for-elections", "imported")
+
+
+def _require_operational_depool(config):
+    """Stake operations need a deployed or imported DePool, in either mode."""
+    profile = validate_wallet_profile(config["wallet"])
+    if config.get("setup_stage") not in OPERATIONAL_STAGES:
+        raise process.OperationError(
+            "Complete wallet/DePool setup before running DePool stake operations"
+        )
+    if not profile["depool_address"]:
+        raise process.OperationError("This node has no DePool address")
+    return profile
+
+
+def depool_info(store, config):
+    """Read the DePool, its rounds and this node's own participant stake."""
+    profile = _require_operational_depool(config)
+    observed = scripts.read_depool_state(
+        store, config, profile["depool_address"], profile["wallet_address"]
+    )
+    return config, {
+        "depool_address": profile["depool_address"],
+        "wallet_address": profile["wallet_address"],
+        **observed,
+    }
+
+
+def depool_stake(store, config, *, amount):
+    """Add an ordinary stake to this node's DePool from its own Safe.
+
+    A DePool v3 round pipeline holds four rounds, and a completed round's stake
+    is reinvested into the current pooling round rather than the next one being
+    elected. One stake tranche therefore funds alternating rounds; funding every
+    round needs a second tranche.
+    """
+    profile = _require_operational_depool(config)
+    if amount < 1:
+        raise process.OperationError("Stake amount must be at least one token")
+    scripts.execute_validator_script(
+        store,
+        config,
+        "stake_to_depool.sh",
+        "ordinary",
+        "--",
+        "--",
+        str(amount),
+        timeout=600,
+        sensitive=True,
+    )
+    return config, {
+        "operation": "ordinary",
+        "depool_address": profile["depool_address"],
+        "requested_tokens": amount,
+        "note": "The stake joins the DePool's current pooling round",
+    }
+
+
+def depool_confirm(store, config, *, transaction_id):
+    """Add the remaining signatures to one explicitly named Safe transaction.
+
+    A multisig transaction that keeps fewer than its required signatures never
+    executes and blocks later DePool operations, which is the stuck state an
+    interrupted election attempt leaves behind. The reference script refuses to
+    sign a list, so the operator must name the transaction it reviewed in
+    ``depool info``.
+    """
+    profile = _require_operational_depool(config)
+    if not re.fullmatch(r"[0-9]{1,30}", str(transaction_id)):
+        raise process.OperationError("Transaction id must be a decimal number")
+    scripts.execute_validator_script(
+        store,
+        config,
+        "Sign_Trans.sh",
+        config["name"],
+        str(transaction_id),
+        timeout=600,
+        sensitive=True,
+    )
+    return config, {
+        "operation": "confirm",
+        "wallet_address": profile["wallet_address"],
+        "transaction_id": str(transaction_id),
+        "next": f"Check: evernode depool info -n {config['name']}",
+    }
+
+
+def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=False):
+    """Withdraw this node's own ordinary stake, or cancel a pending withdrawal.
+
+    DePool withdrawals are not immediate: the contract releases a stake when
+    the round holding it completes, so the Safe balance changes later.
+    """
+    profile = _require_operational_depool(config)
+    if sum((amount is not None, withdraw_all, cancel)) != 1:
+        raise process.OperationError("Choose exactly one of --amount, --all, --cancel")
+    if amount is not None and amount < 1:
+        raise process.OperationError("Withdrawal amount must be at least one token")
+    if withdraw_all:
+        operation, extra = "WD-all", ()
+    elif cancel:
+        operation, extra = "cancelWithdrawal", ()
+    else:
+        operation, extra = "WD-part", (str(amount),)
+    scripts.execute_validator_script(
+        store,
+        config,
+        "stake_to_depool.sh",
+        operation,
+        "--",
+        "--",
+        *extra,
+        timeout=600,
+        sensitive=True,
+    )
+    return config, {
+        "operation": operation,
+        "depool_address": profile["depool_address"],
+        "requested_tokens": amount,
+        "note": (
+            "Reinvestment resumed for the next round"
+            if cancel
+            else "The DePool releases a withdrawn stake when its round completes; "
+            "check evernode depool info for the pending withdrawValue"
+        ),
+    }
+
+
+def depool_replenish(store, config, *, amount):
+    """Top up the DePool's own operating balance from this node's Safe."""
+    profile = _require_operational_depool(config)
+    if amount < 1:
+        raise process.OperationError("Replenish amount must be at least one token")
+    scripts.execute_validator_script(
+        store,
+        config,
+        "stake_to_depool.sh",
+        "replenish",
+        "--",
+        "--",
+        str(amount),
+        timeout=600,
+        sensitive=True,
+    )
+    return config, {
+        "operation": "replenish",
+        "depool_address": profile["depool_address"],
+        "requested_tokens": amount,
     }
 
 

@@ -33,10 +33,8 @@
 #   use: Sign_Trans.sh [AccName] [TransactionID]
 # ------------------------------------------------------------------------
 
-####################
-SLEEP_TIMEOUT=10
-SEND_ATTEMPTS=10
-###################
+# The signing budget is no longer a count of attempts: it is the transaction's
+# own expiry, read from its id and the wallet's own lifetime.
 function sgn_usage(){
 echo
 echo " use: Sign_Trans.sh [AccName]"
@@ -83,21 +81,10 @@ echo -e "$(Determine_Current_Network)"
 echo
 
 #==================================================
-# Check if the node is running and set DAPP mode accordingly
-if pgrep ${NODE_BIN_NAME} > /dev/null; then
-    echo "---WARNING(${SelfScriptName} line $LINENO): Node is running. "
-    # If the access mode is set to console and the node is not synchronized, prompt the user to switch to dapp mode temporarily
-    if Ask_to_switch_to_dapp;then
-        echo "Proceeding..."
-        export FORCE_USE_DAPP=true
-    elif [[ $? -gt 1 ]];then
-        echo "Cancelled."
-        exit 1
-    fi
-else
-    echo "---WARNING(${SelfScriptName} line $LINENO):Node is NOT running. Set DAPP mode."
-    export FORCE_USE_DAPP=true
-fi
+# The node's own console is the only transport, so what matters is whether the
+# node answers it - not whether a node process happens to be visible in this
+# process table, which it is not when the scripts run outside the container.
+Require_Node_Console || exit 1
 
 #==================================================
 # Acc by name or default 
@@ -129,109 +116,85 @@ echo "MSIG_ADDR = ${MSIG_ADDR}"
 echo "WorkChain:  $workchain"
 
 ##############################################################################
-# Get and check Transaction ID to sign
+# Resolve exactly which transaction to sign.
+#
+# The id is looked up as an id, not searched for as text: every entry carries a
+# 77-digit creator, so a truncated or coincidentally embedded id would pass a
+# textual search, and a confirmation for an id this wallet does not hold is
+# rejected before tvm.accept() - leaving nothing in any block to explain why
+# the command failed.
 Trans_List="$(Get_MSIG_Trans_List "${MSIG_ADDR}")"
 Trans_QTY=$(echo "$Trans_List" | jq -r ".transactions|length")
 Trans_QTY=$((Trans_QTY))
-if [[ $Trans_QTY -eq 0 ]];then
-    echo
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Trans_QTY=$Trans_QTY. NO transactions to sign. Exit."
-    echo
-    exit 0
+if [[ -z ${TrID_force} ]];then
+    if [[ $Trans_QTY -eq 0 ]];then
+        echoerr "###-ERROR(${SelfScriptName} line $LINENO): wallet ${MSIG_ADDR} holds no pending transaction, so there is nothing to sign."
+        exit 1
+    fi
+    if [[ $Trans_QTY -gt 1 ]];then
+        echo "$Trans_List" | jq
+        echoerr "###-ERROR(${SelfScriptName} line $LINENO): the wallet holds ${Trans_QTY} pending transactions and signing one executes the transfer it carries, so the id has to be named: './Sign_Trans.sh ${KeyFileName} <TransID>'"
+        exit 1
+    fi
+    Trans_ID=$(echo "$Trans_List" | jq -r '.transactions[0].id')
+else
+    Trans_ID="${TrID_force}"
 fi
-if [[ $Trans_QTY -gt 1 ]] && [[ -z ${TrID_force} ]];then
-    echo "$Trans_List"
-    echo
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Trans_QTY=$Trans_QTY. Multi transaction bulk signing not allowed!"
-    echo "To force confirm one transaction, use './Sign_Trans.sh AccName TransID' "
-    echo
+if [[ ! $Trans_ID =~ ^[0-9]+$ ]];then
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): '${Trans_ID}' is not a transaction id."
     exit 1
 fi
 
-Trans_ID=$(echo "$Trans_List" | jq -r '.transactions[].id')
-if [[ -z ${Trans_ID} ]] || [[ "${Trans_ID}" == "0" ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Error getting transaction ID: '${Trans_ID}'. Exit."
-    echo
+Trans_Entry="$(Get_Pending_Entry "${MSIG_ADDR}" "${Trans_ID}")"
+if [[ $? -ne 0 ]];then
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): the wallet ${MSIG_ADDR} could not be read, so it is unknown whether it holds transaction ${Trans_ID}. Nothing was sent."
+    exit 1
+fi
+if [[ -z $Trans_Entry ]];then
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): wallet ${MSIG_ADDR} does not hold a pending transaction ${Trans_ID}. It may have executed already, or expired - this wallet keeps a pending transaction for $(Get_MSIG_Expiration_Time "${MSIG_ADDR}")s. Read the current list with 'evernode depool info'. Nothing was sent."
     exit 1
 fi
 
-if [[ -n ${TrID_force} ]];then
-    Trans_ID=${TrID_force}
-    echo "Set TransID to ${Trans_ID}"
-fi
-
-if ! echo "$Trans_List" | grep -q "${Trans_ID}";then
-    echo
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Transaction # ${Trans_ID} not found in list. Exit."
-    echo
-    exit 1
-fi
-echo "Found $Trans_QTY transaction. Will sign transaction with ID: $Trans_ID"
-
-##############################################################################
-# Get Required number of confirmations
-Confirms_QTY=$(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Trans_ID\")|.signsRequired")
-Confirms_QTY=$((Confirms_QTY))
-# Get Received number of confirmations
-Conf_Recv_QTY=$(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Trans_ID\")|.signsReceived")
-Conf_Recv_QTY=$((Conf_Recv_QTY))
-
-echo "Required number of confirmations: $Confirms_QTY. Received confirmations: $Conf_Recv_QTY"
+Trans_Dest=$(jq -r '.dest' <<< "$Trans_Entry")
+Trans_Value=$(jq -r '.value' <<< "$Trans_Entry")
+Confirms_QTY=$(jq -r '.signsRequired' <<< "$Trans_Entry")
+Conf_Recv_QTY=$(jq -r '.signsReceived' <<< "$Trans_Entry")
+echo "Transaction ${Trans_ID}: ${Trans_Value} nanotokens to ${Trans_Dest}, holding ${Conf_Recv_QTY} of ${Confirms_QTY} required signatures."
 echo "******************************"
 
 ##############################################################################
-# Send signatures one by one with checks 
-# Assume that transaction was made and already signed by custodian with pubkey index # 0x0
-# other custodians has keys in files in ${KEYS_DIR}
-Confirmed_Flag=false
-for (( i=$((Conf_Recv_QTY + 1)); i <= Confirms_QTY; i++ )); do
-    Signed_Flag=false
-    for (( Attempts_to_send=1;  Attempts_to_send <= SEND_ATTEMPTS;  Attempts_to_send++ )); do
-        #======================================================================
-        # Send confirmations signature
-        echo "Try #${Attempts_to_send} to send confirmations signature #${i} from file ${KeyFileName}_${i}.keys.json"
-        Send_MSIG_Trans_Confirmation "${Trans_ID}" "${MSIG_ADDR}" "${KeyFileName}_${i}.keys.json" # All keys files in ${KEYS_DIR} only
-        sleep $SLEEP_TIMEOUT
-        Trans_List="$(Get_MSIG_Trans_List "${MSIG_ADDR}")"
-        CurrTransInfo=$(echo "${Trans_List}" | jq ".transactions[]|select(.id == \"$Trans_ID\")")
-        if [[ -z ${CurrTransInfo} ]];then
-            echo "\$\$\$-SUCCESS: Transaction # $Trans_ID signed and send"
-            Confirmed_Flag=true
-            Signed_Flag=true
-            break
-        fi
-        RcvQTY=$(echo "${CurrTransInfo}" | jq -r ".signsReceived")
-        RcvQTY=$((RcvQTY))
-        if [[ $RcvQTY -gt $Conf_Recv_QTY ]];then
-            echo "Signing transaction $Trans_ID by custodian ${i} was done SUCCESSFULLY!"
-            echo
-            Conf_Recv_QTY=$RcvQTY
-            Signed_Flag=true
-            break
-        fi
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Confirmation try # ${i} FAILED!!! Will try again..."
-        echo
-    done
-    ########################################
-    if ! $Signed_Flag;then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): CANNOT sign transaction $Trans_ID by key # ${i} from file: ${KEYS_DIR}/${KeyFileName}_${i}.keys.json"
+# Sign it through to execution.
+#
+# The deadline is the transaction's own expiry, which is computable: the id
+# carries the second it was created in its high 32 bits and the wallet reports
+# how long it keeps a pending transaction. Staying strictly inside that window
+# is what lets the entry's disappearance mean "it executed" rather than "it
+# expired", and it replaces a fixed attempt budget that used to give up with
+# most of the transaction's valid life still ahead of it.
+declare -i Now=$(date +%s)
+declare -i Sign_Deadline=$(( Now + 2 * ${MSG_LIFETIME:-60} ))
+Expires_At="$(Trans_Expires_At "${MSIG_ADDR}" "${Trans_ID}")"
+if [[ $Expires_At =~ ^[0-9]+$ ]];then
+    if [[ $Expires_At -le $Now ]];then
+        echoerr "###-ERROR(${SelfScriptName} line $LINENO): transaction ${Trans_ID} expired at $(TD_unix2human "$Expires_At") and can no longer be signed. Nothing was sent."
+        exit 1
     fi
-    #======================================================================
-    # Chech transaction signed and leaved
-    if $Confirmed_Flag;then
-        echo "\$\$\$-SUCCESS: Transaction # $Trans_ID signed and send"
-        break
+    # Stop short of the expiry itself, so a verdict is never read in the second
+    # the transaction is being removed.
+    if [[ $(( Expires_At - 5 )) -lt $Sign_Deadline ]];then
+        Sign_Deadline=$(( Expires_At - 5 ))
     fi
-done
+    echo "---INFO: transaction ${Trans_ID} is signable until $(TD_unix2human "$Expires_At")."
+fi
 
-if  ! $Confirmed_Flag;then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): CANNOT sign transaction $Trans_ID by key # ${i} from file: ${KEYS_DIR}/${KeyFileName}_${i}.keys.json"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ALARM!!! Signing transaction $Trans_ID for election FAILED!!!" > /dev/null 2>&1
+if ! Sign_To_Execution "${MSIG_ADDR}" "${KeyFileName}" "${Trans_ID}" "${Sign_Deadline}" \
+        "Transaction ${Trans_ID}";then
+    Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ALARM!!! Signing transaction $Trans_ID FAILED!!!" > /dev/null 2>&1
     exit 1
 fi
 
-# Send_msg_toTelBot "$VALIDATOR_NAME Server" "Transaction $Trans_ID for election confirmed." /dev/null 2>&1
-
+echo "\$\$\$-SUCCESS: transaction ${Trans_ID} executed; ${Trans_Value} nanotokens were sent to ${Trans_Dest}."
+echo "---INFO: the transfer is an internal message the destination can still refuse. Check the result with 'evernode depool info'."
 echo "+++INFO: $(basename "$0") FINISHED $(date +%s) / $(date  +'%F %T %Z')"
 echo "================================================================================================"
 

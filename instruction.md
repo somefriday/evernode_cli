@@ -362,8 +362,19 @@ sudo evernode image list
 sudo evernode election list
 sudo evernode doctor -n validator01
 
+# DePool state: rounds and their steps, this node's stake, any pending
+# withdrawal, the pool's operating balance and any unsigned Safe transaction.
+sudo evernode depool info -n validator01
+
+# After pulling a newer checkout, refresh this node's saved scripts. Installing
+# the package alone does not replace them.
+sudo evernode node sync-scripts -n validator01 --dry-run
+sudo evernode node sync-scripts -n validator01
+
 # Stop one node with a 30-second graceful shutdown. Its owned election schedule
-# is disabled automatically.
+# is disabled automatically. The command refuses while the node is in the
+# current or next validator set; check with election status and wait for the set
+# to expire, or add --force when fencing a replaced validator.
 sudo evernode node stop -n validator01 --timeout 30
 
 sudo evernode node start -n validator01
@@ -409,12 +420,16 @@ sudo evernode node logs -n validator01 --component election-cron --tail 100 --fo
 ```
 
 This log appears on the first scheduled run. `--follow` waits for it if absent;
-Ctrl+C stops viewing the log. For the scripts' separate `validator.log`, use
-`--component elections`.
+Ctrl+C stops viewing the log. `--component elections` shows the election
+scripts' own record of outstanding transactions.
 
-If scheduled runs do not submit an application, see
-[Election troubleshooting](election-troubleshooting.md) for pending transactions,
-DePool rounds and the reference script's transaction-ID logging fix.
+If scheduled runs do not submit an application, read `election status` first: an
+installed schedule with no running cron daemon never executes, and `chain`
+reports whether the node is actually in a validator set. Then read `depool
+info`: an interrupted attempt leaves a Safe transaction holding fewer
+signatures than it needs, which executes nothing and stops later DePool
+operations until `depool confirm --transaction-id` completes it. A round elected
+with no stake had nothing to bid with, and no retry changes that.
 
 Show current CPU, memory, network and disk I/O for both the node and its
 StatsD exporter together in one table per node, followed by disk space used by

@@ -64,13 +64,59 @@ def is_node_synchronized(value):
     )
 
 
+VALIDATOR_SET_FIELDS = (
+    ("in_current_vset_p34", "current"),
+    ("in_next_vset_p36", "next"),
+)
+# Only these answers prove the node owes nothing. Anything else - including a
+# field this node version does not report - leaves its duties unproven.
+OUTSIDE_VALIDATOR_SET = (False, 0, "0", "false", "False", "no", "No")
+
+
+def _outside_validator_set(value):
+    return value in OUTSIDE_VALIDATOR_SET
+
+
+def validator_duty(statistics):
+    """Describe this node's validator duties, or why they are unproven.
+
+    Returns None when the node has shown it owes nothing, otherwise a phrase
+    naming either the sets it belongs to or the reason membership could not be
+    established. One reading for every guard, so they cannot disagree.
+    """
+    if _explicitly_outside_validator_set(statistics):
+        return None
+    member = [
+        label
+        for field, label in VALIDATOR_SET_FIELDS
+        if statistics.get(field) is not None
+        and not _outside_validator_set(statistics.get(field))
+    ]
+    if member:
+        return "in the " + " and ".join(member) + " validator set"
+    # A node still catching up is not meeting its duties either way, and
+    # refusing every such operation would only teach operators to override by
+    # habit. A synchronized node that does not report these fields is a version
+    # this code cannot read, and treating that silence as "not a member" is how
+    # a next-set member gets taken out from under its consensus session.
+    if not is_node_synchronized(statistics):
+        return None
+    unreported = ", ".join(
+        field for field, _ in VALIDATOR_SET_FIELDS if statistics.get(field) is None
+    )
+    return (
+        "synchronized but silent about its validator-set membership ("
+        + unreported
+        + " missing from its console statistics), so it cannot be shown to owe "
+        "no blocks"
+    )
+
+
 def _explicitly_outside_validator_set(value):
     """Fail closed: a stopped source must prove it has no validator duties."""
-    false_values = (False, 0, "0", "false", "False", "no", "No")
-    for field in ("in_current_vset_p34", "in_next_vset_p36"):
-        if value.get(field) not in false_values:
-            return False
-    return True
+    return all(
+        _outside_validator_set(value.get(field)) for field, _ in VALIDATOR_SET_FIELDS
+    )
 
 
 def _private_database(directory):
@@ -368,7 +414,13 @@ def get_node_status(config):
         "name": config["name"],
         "phase": config["phase"],
         "setup_stage": config.get("setup_stage"),
-        "next_setup_command": wallets.next_setup_command(config),
+        # Setup is complete once its schedule is installed; a node that is
+        # already operating must not keep advertising the last setup step.
+        "next_setup_command": (
+            None
+            if elections.node_election_cron_path(config["name"]).exists()
+            else wallets.next_setup_command(config)
+        ),
         "container": obj["State"]["Status"] if obj else "absent",
         "image": config["image"],
         "metrics": f"http://127.0.0.1:{config['metrics_port']}/metrics",
@@ -534,8 +586,31 @@ def discard_failed_creation(store, config):
             raise process.OperationError("; ".join(errors))
 
 
+def _refuse_while_validating(config, action):
+    """Stop an operator taking a node out of a set it is a member of.
+
+    A node in the current set misses the blocks it owes. A node in the next set
+    is worse: its successor session cannot reach consensus without it, which on
+    a small network halts the chain outright. Fencing a replaced validator is a
+    legitimate reason to do it anyway, so this is overridable, not forbidden.
+    """
+    try:
+        statistics = fetch_node_statistics(config)
+    except process.OperationError:
+        return  # An unreachable console cannot prove membership either way.
+    duty = validator_duty(statistics)
+    if duty is None:
+        return
+    raise process.OperationError(
+        f"This node is {duty}; {action} would make it miss the blocks it owes, "
+        "and a next-set member is required for its successor session to reach "
+        f"consensus. Wait for the set to expire, or pass --force to {action} it "
+        "anyway (for example to fence a replaced node)."
+    )
+
+
 def apply_node_lifecycle_operation(
-    store, name, action, *, timeout=30, purge_data=False
+    store, name, action, *, timeout=30, purge_data=False, force=False
 ):
     """Coordinate one lifecycle operation under its node and reservation locks."""
     if action not in ("start", "stop", "restart", "remove"):
@@ -544,6 +619,8 @@ def apply_node_lifecycle_operation(
         raise process.OperationError("Timeout must be positive")
     with store.acquire_operation_lock(name):
         config = store.load_node_config(name)
+        if action in ("stop", "restart", "remove") and not force:
+            _refuse_while_validating(config, action)
         if action == "start":
             # A removed node can reserve its image again before startup.
             with store.acquire_operation_lock():
@@ -576,38 +653,43 @@ def apply_node_lifecycle_operation(
             remove_node(store, config, purge_data, timeout)
 
 
-def _in_validator_set(statistics):
-    for field in ("in_current_vset_p34", "in_next_vset_p36"):
-        value = statistics.get(field)
-        if value not in (
-            None,
-            False,
-            0,
-            "0",
-            "false",
-            "False",
-            "unknown",
-            "not specified",
-        ):
-            return True
-    return False
+
+
+def image_maintenance_blockers(store, name):
+    """Report what would stop image maintenance, without changing anything.
+
+    A dry run that lists a plan the real run then refuses tells the operator
+    nothing, so both read the same conditions.
+    """
+    reasons = []
+    if elections.node_election_cron_path(name).exists():
+        reasons.append(
+            "This node's election schedule is installed; disable it with "
+            "evernode election stop before image maintenance"
+        )
+    try:
+        status = get_node_status(store.load_node_config(name))
+    except process.OperationError as exc:
+        return reasons + [str(exc)]
+    duty = (
+        validator_duty(status.get("stats", {}))
+        if status.get("container") == "running"
+        else None
+    )
+    if duty:
+        reasons.append(
+            "This node is " + duty + "; do not replace its image during validation"
+        )
+    return reasons
 
 
 def update_node_image(store, name, record=None, *, rollback=False, timeout=30):
     """Switch exactly one node to a verified image while retaining its identity."""
     with store.acquire_operation_lock(name):
         config = store.load_node_config(name)
-        if elections.node_election_cron_path(name).exists():
-            raise process.OperationError(
-                "Disable this node's election schedule before image maintenance"
-            )
-        status = get_node_status(config)
-        if status.get("container") == "running" and _in_validator_set(
-            status.get("stats", {})
-        ):
-            raise process.OperationError(
-                "Node is in a current or next validator set; do not update it during validation"
-            )
+        blockers = image_maintenance_blockers(store, name)
+        if blockers:
+            raise process.OperationError("; ".join(blockers))
         if rollback:
             previous = config.get("image_rollback")
             if not isinstance(previous, dict) or set(previous) != {"image", "image_id"}:
@@ -678,12 +760,21 @@ def build_node_log_command(store, config, component="node", *, tail=100, follow=
             "node": "logs/node/node.log",
             "stderr": "logs/node/stderr.log",
             "stdout": "logs/node/stdout.log",
-            "elections": "logs/validator/validator.log",
+            # prepare_elections.sh and take_part_in_elections.sh write this.
+            # validator.log is written only by the reference kit's own updater
+            # cron, which this CLI does not install, so it stays empty forever.
+            "elections": "logs/validator/transactions.log",
             "election-cron": "logs/validator/election-cron.log",
         }[component]
+        path = store.node_directory(config["name"]) / relative
+        # tail -F deliberately waits for a file that does not exist yet, which
+        # is useful when following. A plain read should say so instead of
+        # leaving the operator with tail's own message.
+        if not follow and not path.exists():
+            raise process.OperationError(
+                f"No {component} log yet at {path}; nothing has written it"
+            )
         command = (
-            ["tail", "-n", str(tail)]
-            + (["-F"] if follow else [])
-            + [str(store.node_directory(config["name"]) / relative)]
+            ["tail", "-n", str(tail)] + (["-F"] if follow else []) + [str(path)]
         )
     return command

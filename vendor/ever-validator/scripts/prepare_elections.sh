@@ -67,38 +67,10 @@ echo -e "$(Determine_Current_Network)"
 echo
 
 ##############################################################################
-# Check node sync
-# masterchain timediff
 #=================================================
-# Get node sync status
-NODE_SYNC_STATUS=$(Get_TimeDiff)
-# Get time difference between the current machine and the node
-# shellcheck disable=SC2046
-read -r MC_TIME_DIFF SH_TIME_DIFF <<< $(echo "$NODE_SYNC_STATUS" | awk '{print $1, $2}')
-echo "---INFO: Node sync status: $MC_TIME_DIFF $SH_TIME_DIFF"
-if ! [[ $MC_TIME_DIFF =~ ^[0-9]+$ && $SH_TIME_DIFF =~ ^[0-9]+$ ]]; then
-    # If one of the values is not a number, we assume that the condition for the crown is met
-    MC_TIME_DIFF=888
-    SH_TIME_DIFF=888
-    echo "---INFO: Modified sync status: $MC_TIME_DIFF $SH_TIME_DIFF"
-fi
-
-if [[ $MC_TIME_DIFF -gt $TIMEDIFF_MAX ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced with MC. Wait until MC sync (<$TIMEDIFF_MAX) Current MC timediff: $MC_TIME_DIFF"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
-        "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced. Wait until MC sync (<$TIMEDIFF_MAX) Current MC timediff: $MC_TIME_DIFF" > /dev/null 2>&1
-    exit 1
-fi
-# echo "---INFO: Current MC TimeDiff: $MC_TIME_DIFF"
-
-# shards timediff (by worst shard)
-if [[ $SH_TIME_DIFF -gt $TIMEDIFF_MAX ]];then
-    echo -e "${YellowBack}${BoldText}###-WARNING(${SelfScriptName} line $LINENO): Your node is not synced with WORKCHAIN. Wait for all shards to sync or your accounts may not be accessible (<$TIMEDIFF_MAX) Current shards (by worst shard) timediff: $SH_TIME_DIFF${NormText}"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
-     "${Tg_SOS_sign} ###-ERROR(${SelfScriptName} line $LINENO): Your node is not synced with WORKCHAIN. Wait for all shards to sync or your accounts may not be accessible (<$TIMEDIFF_MAX) Current shards (by worst shard) timediff: $SH_TIME_DIFF" > /dev/null 2>&1
-    exit 1
-fi
-# echo "---INFO: Current WC TimeDiff: $SH_TIME_DIFF"
+# The node's own console is the only transport, so an unsynced or unreachable
+# node refuses the attempt here, with the node's own numbers in the message.
+Require_Node_Console "$TIMEDIFF_MAX" || exit 1
 
 #=================================================
 # Get elections ID
@@ -322,73 +294,74 @@ if [[ "$STAKE_MODE" == "msig" ]];then
         echo "---INFO:  DONE"
 
         #=================================================
-        # Send request for recover stake to Elector
-        ## 5x3 attempts to make trasaction
-        for (( TryToSetEl=0; TryToSetEl <= 5; TryToSetEl++ ))
-        do
-            echo -n "---INFO: Send query to Elector... "
-            #################
-            if ! New_Elect_Trans_ID=$(Send_Message "${Validator_addr}" "${elector_addr}" "${INPL_CURR_ELECTIONS_DIR}/recover-msg.boc");then
-            #################
-                echo "###-ERROR(${SelfScriptName} line $LINENO): ALARM!!! Cannot make transaction for stake recover!!!" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        # Send the recovery request and sign it through to execution.
+        #
+        # This is the solo-staking path, reached only with STAKE_MODE=msig.
+        # It used the same positional identification and the same one-shot
+        # verdict the DePool paths used to, so it gets the same treatment:
+        # the request is identified by its content and this node's own key,
+        # each signature is evidenced before the next is sent, and the effect
+        # is the recovered stake arriving in the wallet.
+        declare -i Recover_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+        declare -i Wallet_Before=$(( $(echo "$(Get_Account_Info "${Validator_addr}")" | awk '{print $2}') ))
+        New_Elect_Trans_ID=""
+        if [[ ${Required_Signs} -gt 1 ]];then
+            New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$elector_addr" \
+                "1000000000" "$recover_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}") || exit 1
+            if [[ -n $New_Elect_Trans_ID ]];then
+                echo "---INFO: Resuming the matching recovery request $New_Elect_Trans_ID already in the wallet."
             else
-                echo " DONE"
-                echo "+++-INFO: Made transaction ID: $New_Elect_Trans_ID"
-                break
-            fi
-        done
-        #=================================================
-        # Final checking
-        #=================================================
-        # Verifying that a transaction has been created 
-        if [[ $Required_Signs -gt 1 ]];then
-            Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-            New_Trans_Qty=$(( $(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$elector_addr\")]|length") ))
-            if [[ $New_Trans_Qty -gt $Exist_El_Trans_Qty ]];then
-                Elect_Trans_ID=$(echo "$Trans_List" | jq -r ".transactions[]|select(.dest == \"$elector_addr\")|.id"|tail -n 1)
-                if [[ $New_Elect_Trans_ID -ne $Elect_Trans_ID ]];then
-                    echo "###-WARNING(${SelfScriptName} line $LINENO): Transaction from Send_Message function ($New_Elect_Trans_ID) is not equal to last transaction from list ($Elect_Trans_ID)"
-                fi
-                echo "---INFO(${SelfScriptName} line $LINENO): Making transaction for elections was done SUCCESSFULLY! Trnasaction ID: $Elect_Trans_ID You have to sign this transaction!!"| tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-                echo "Made transaction ID: $Elect_Trans_ID" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-                
-                # Sign transaction by all keys which we have
-                # $LocalKeysQty  $Required_Signs
-                for (( i=0; i < LocalKeysQty; i++ )); do
-                    echo "---INFO(${SelfScriptName} line $LINENO): Sign transaction for recover stake with ${MSIG_KEY_FILES_ARRAY[$i]}..."
-                    Send_MSIG_Trans_Confirmation "$Elect_Trans_ID" "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[$i]##*/}"
-                    sleep $SLEEP_TIMEOUT
-                done
-                if ! $RemoteSign;then
-                    # Check TransID is signed by all keys and send it to elector
-                    Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-                    if [[ -z $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")") ]];then
-                        echo "+++-INFO: Transaction to Elector for recover stake is signed and sent"
-                    else
-                        echo "Signs required: $Required_Signs"
-                        echo "Signs made: $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")|.signsReceived")"
-                        echo "###-ERROR(${SelfScriptName} line $LINENO): Transaction to Elector for recover stake is NOT signed by all keys!!!"
-                    fi
-                else
-                    echo "Signs required: $Required_Signs"
-                    echo "Signs made: $(echo "$Trans_List" | jq -r ".transactions[]|select(.id == \"$Elect_Trans_ID\")|.signsReceived")"
-                    echo "+++WARNING: You have not enough keys to sign transaction $Elect_Trans_ID locally, so you have to sign it remotely"
-                fi
-            else
-                echo "###-ERROR(${SelfScriptName} line $LINENO): Transaction does not made or timeout is too low!" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-            fi
-        else
-            #=================================================
-            # Verifying that a transaction has been sent (for 1 custodian acc) by cheching change last transaction time
-            Validator_Acc_Info="$(Get_Account_Info "${Validator_addr}")"
-            declare -i Validator_Acc_LT_Sent=$(echo "$Validator_Acc_Info" | awk '{print $3}')
-            if [[ $Validator_Acc_LT_Sent -gt $Validator_Acc_LT ]];then
-                echo "---INFO(${SelfScriptName} line $LINENO): Sending transaction for recover stake was done SUCCESSFULLY!"| tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log" 
-            else
-                echo "###-ERROR(${SelfScriptName} line $LINENO): Sending transaction for stake recover FAILED!!!" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-                Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): Sending transaction for elections FAILED!!!" > /dev/null 2>&1
+                Require_Queue_Space "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[0]}" || exit 1
             fi
         fi
+        if [[ -z $New_Elect_Trans_ID ]];then
+            echo -n "---INFO: Send query to Elector... "
+            if ! New_Elect_Trans_ID=$(Submit_And_Identify "$Validator_addr" "$elector_addr" \
+                    "${INPL_CURR_ELECTIONS_DIR}/recover-msg.boc" "1000000000" \
+                    "$recover_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}");then
+                echo "###-ERROR(${SelfScriptName} line $LINENO): The stake recovery request was not accepted by the wallet, so nothing was signed and nothing was recovered." \
+                    | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+                exit 1
+            fi
+            echo " DONE"
+        fi
+        if [[ -n $New_Elect_Trans_ID ]];then
+            echo "---INFO: Made transaction ID: $New_Elect_Trans_ID" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            Recover_Expires_At="$(Trans_Expires_At "$Validator_addr" "$New_Elect_Trans_ID")"
+            if [[ $Recover_Expires_At =~ ^[0-9]+$ ]] && [[ $((Recover_Expires_At - 5)) -lt $Recover_Deadline ]];then
+                Recover_Deadline=$((Recover_Expires_At - 5))
+            fi
+            Sign_To_Execution "$Validator_addr" "$VALIDATOR_NAME" "$New_Elect_Trans_ID" \
+                "$Recover_Deadline" "The stake recovery request"
+            Recover_Sign_Status=$?
+            if [[ $Recover_Sign_Status -eq 3 ]];then
+                echo "+++WARNING(${SelfScriptName} line $LINENO): The stake recovery request $New_Elect_Trans_ID needs signatures no key on this node can give; sign it on the remaining custodians." \
+                    | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+                exit 1
+            fi
+            if [[ $Recover_Sign_Status -ne 0 ]];then
+                Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR: Signing the stake recovery request FAILED!!!" > /dev/null 2>&1
+                exit 1
+            fi
+        fi
+        #=================================================
+        # A signed wallet transaction is not a recovered stake: the elector
+        # returns it as a transfer, so wait for the wallet's own balance to
+        # carry it. One token was sent with the request and fees are paid from
+        # it, so the threshold allows two.
+        declare -i Recover_Now=$(date +%s)
+        if [[ $Recover_Deadline -lt $((Recover_Now + ${EFFECT_MIN_WAIT:-10})) ]];then
+            Recover_Deadline=$((Recover_Now + ${EFFECT_MIN_WAIT:-10}))
+        fi
+        if ! Await_Effect "The recovery of ${recover_amount} nanotokens" "$Recover_Deadline" \
+                "${EFFECT_POLL_INTERVAL:-2}" Effect_Account_Balance_At_Least "$Validator_addr" \
+                "$(( Wallet_Before + recover_amount - 2000000000 ))";then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The recovered stake has not arrived in ${Validator_addr}." \
+                | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR: Stake recovery did not arrive!!!" > /dev/null 2>&1
+            exit 1
+        fi
+        echo "+++-INFO: The recovered stake has arrived in ${Validator_addr}." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     else
         echo "--- INFO(${SelfScriptName} line $LINENO): Nothing to recover."
     fi
@@ -502,28 +475,56 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
             "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot create file ${ReplenishFile}" > /dev/null 2>&1
     fi
 
-    # Send replenish transaction
-    Send_File_To_BC "${INPL_ReplenishFile}" 
+    # A sixth live transaction from this custodian would be rejected with 113
+    # before tvm.accept(), leaving nothing on chain to explain itself.
+    if [[ ${Required_Signs} -gt 1 ]];then
+        Require_Queue_Space "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[0]}" || exit 1
+    fi
 
-    # Wait for transaction appear in contract inside timeout. 
+    # Send replenish transaction
+    Send_File_To_BC "${INPL_ReplenishFile}"
+
+    # Find the transaction this submit created, by matching its content.
+    #
+    # The reference code counted pending transactions to the DePool and asked
+    # whether the count had *fallen* -- `Exist_DP_Trans_Qty -gt
+    # New_DP_Trans_Qty` -- while a submit makes it rise. Worse, this block is
+    # only reached when there are no pending DePool transactions at all, so
+    # Exist_DP_Trans_Qty was always 0 and the test could never be true: the
+    # top-up was submitted, never signed, and left a half-signed transfer in
+    # the wallet. That transfer then made every later run exit at the unsigned-
+    # transaction check above, so a DePool that dipped below its threshold
+    # stopped the node bidding until someone cleared the wallet by hand.
+    #
+    # Matching on destination, value and payload identifies our own submission
+    # without counting anything, and so cannot pick up a concurrent one.
     DP_Trans_ID=""
-    for (( i=0; i < 6; i++ )); do
-        sleep $LC_Send_MSG_Timeout
-        Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-        New_DP_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${Depool_addr}\")]|length")
-        if [[ $Exist_DP_Trans_Qty -gt $New_DP_Trans_Qty ]];then
-            # Get Transaction ID
-            DP_Trans_ID=$(echo "$Trans_List" | jq -r ".transactions[]|select(.dest == \"$Depool_addr\")|.id"|tail -n 1)
-            break
+    if [[ ${Required_Signs} -gt 1 ]];then
+        for (( i=0; i < 6; i++ )); do
+            sleep $LC_Send_MSG_Timeout
+            DP_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Depool_addr" \
+                "$Replenish_Amount" "$DePoolReplenish_Payload") || DP_Trans_ID=""
+            [[ -n $DP_Trans_ID ]] && break
+        done
+        if [[ -z $DP_Trans_ID ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet, so nothing was signed and nothing was transferred." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+                "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet." > /dev/null 2>&1
+            exit 1
         fi
-    done
-    if [[ -z $DP_Trans_ID ]];then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot find transaction ID for replenish DePool account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot find transaction ID for replenish DePool account" > /dev/null 2>&1
-    else
         # Sign replenish transaction
-        "${SCRIPT_DIR}/Sign_Trans.sh" "${VALIDATOR_NAME}" "$DP_Trans_ID" 
+        "${SCRIPT_DIR}/Sign_Trans.sh" "${VALIDATOR_NAME}" "$DP_Trans_ID"
+    fi
+    # Signing is not the top-up: the confirmation ends in an internal message
+    # the DePool can still refuse. Wait for its balance to show the transfer,
+    # less the forward fee, and refuse to continue without it -- running an
+    # election on a DePool below its threshold is what this block exists to
+    # prevent.
+    if ! Complete_And_Await "" "$Validator_addr" "$VALIDATOR_NAME" \
+            "The DePool top-up of $((Replenish_Amount / 1000000000)) tokens" \
+            Effect_Account_Balance_At_Least "$Depool_addr" \
+            "$(( Depool_Bal + Replenish_Amount - 1000000000 ))";then
+        exit 1
     fi
 fi
 
@@ -565,7 +566,7 @@ echo
 # Make boc message to tik depool
 LC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_CURR_ELECTIONS_DIR}/tik-msg.boc" \
     --sign "${INPL_KEYS_DIR}/${MSIG_KEY_FILES_ARRAY[0]##*/}" ${SIG_ID_OPTION} \
-    --lifetime 600 \
+    --lifetime "$MSG_LIFETIME" \
     --abi "${INPL_SafeC_Wallet_ABI}" \
     "$Validator_addr" submitTransaction \
     "{\"dest\":\"$Depool_addr\",\"value\":${NANOSTAKE},\"bounce\":true,\"allBalance\":false,\"payload\":\"$DePoolTik_Payload\"}")"
@@ -581,44 +582,72 @@ Tik_Message_ID="$(echo "${LC_OUTPUT}" | grep 'MessageId' | awk '{print $2}')"
 echo "+++-INFO(${SelfScriptName} line $LINENO): Tik message was created with ID: $Tik_Message_ID"
 
 #=================================================
-# Send tick to Depool
-## 5x3 attempts to make trasaction
-for (( TryToSetEl=0; TryToSetEl <= 5; TryToSetEl++ ));do
-    echo -n "---INFO: Send tik query to Depool... "
-    #################
-    if New_Elect_Trans_ID=$(Send_Message "${Validator_addr}" "${Depool_addr}" "${INPL_CURR_ELECTIONS_DIR}/tik-msg.boc");then
-    #################
-        echo " DONE"
-        if [[ $New_Elect_Trans_ID -eq 0 ]];then
-            echo "---INFO(${SelfScriptName} line $LINENO): Sending transaction  was done SUCCESSFULLY!"
-            exit 0
-        fi
-        break
+# Send the tik, sign it through to execution, then wait for the DePool to act
+# on it.
+#
+# Send_Message counted the pending entries addressed to the DePool and returned
+# the newest by position; every operation of every custodian targets that same
+# address, so the signatures below could have gone to a transaction this node
+# did not create. Identity is now the content plus our own submitting key.
+declare -i Tik_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+New_Elect_Trans_ID=""
+if [[ ${Required_Signs} -gt 1 ]];then
+    New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Depool_addr" \
+        "$NANOSTAKE" "$DePoolTik_Payload" "${MSIG_KEY_FILES_ARRAY[0]}") || exit 1
+    if [[ -n $New_Elect_Trans_ID ]];then
+        echo "---INFO: Resuming the matching tik transaction $New_Elect_Trans_ID already in the wallet."
     else
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Error during sending message to DePool. Repeat sending..."
+        # A sixth live transaction from this custodian is rejected before
+        # tvm.accept() and so leaves nothing on chain to explain itself.
+        Require_Queue_Space "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[0]}" || exit 1
     fi
-done
-
-if [[ $New_Elect_Trans_ID -lt 0 ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot make transaction for elections!!!"
-    exit 1
-else
-    echo "+++-INFO(${SelfScriptName} line $LINENO): Tik transaction to DePool with id: $New_Elect_Trans_ID need to be signed."
+fi
+if [[ -z $New_Elect_Trans_ID ]];then
+    echo -n "---INFO: Send tik query to Depool... "
+    if ! New_Elect_Trans_ID=$(Submit_And_Identify "$Validator_addr" "$Depool_addr" \
+            "${INPL_CURR_ELECTIONS_DIR}/tik-msg.boc" "$NANOSTAKE" "$DePoolTik_Payload" \
+            "${MSIG_KEY_FILES_ARRAY[0]}");then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The tik was not accepted by the wallet, so the DePool was not ticked and nothing was signed." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        exit 1
+    fi
+    echo " DONE"
+    [[ -n $New_Elect_Trans_ID ]] && echo "+++-INFO: Made transaction ID: $New_Elect_Trans_ID"
 fi
 
 #=================================================
-# Sign transaction by all keys which we have if needed
-if [[ $New_Elect_Trans_ID -gt 1 ]];then
-    Current_Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
-    echo "--- Current transactions list:"
-    echo $Current_Trans_List|jq
-    echo "---------------------------------------------"
-    for (( i=0; i < LocalKeysQty; i++ )); do
-        echo "---INFO: Sign Tik transaction $New_Elect_Trans_ID with ${MSIG_KEY_FILES_ARRAY[$i]}..."
-        Send_MSIG_Trans_Confirmation "$New_Elect_Trans_ID" "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[$i]##*/}"
-        sleep $LC_Send_MSG_Timeout
-    done
+# Sign it through, one signature at a time, never past its own lifetime.
+if [[ -n $New_Elect_Trans_ID ]];then
+    Tik_Expires_At="$(Trans_Expires_At "$Validator_addr" "$New_Elect_Trans_ID")"
+    if [[ $Tik_Expires_At =~ ^[0-9]+$ ]] && [[ $((Tik_Expires_At - 5)) -lt $Tik_Deadline ]];then
+        Tik_Deadline=$((Tik_Expires_At - 5))
+    fi
+    if ! Sign_To_Execution "$Validator_addr" "$VALIDATOR_NAME" "$New_Elect_Trans_ID" \
+            "$Tik_Deadline" "The DePool tik for elections $elections_id";then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool tik for elections $elections_id could not be signed through to execution." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+            "$Tg_SOS_sign ALARM!!! The DePool tik for elections $elections_id could not be signed." > /dev/null 2>&1
+        exit 1
+    fi
 fi
+
+#=================================================
+# A signed wallet transaction is not a ticked DePool: wait until the DePool's
+# own rounds show that it has entered this election.
+declare -i Tik_Effect_Now=$(date +%s)
+if [[ $Tik_Deadline -lt $((Tik_Effect_Now + ${MSG_LIFETIME:-60})) ]];then
+    Tik_Deadline=$((Tik_Effect_Now + ${MSG_LIFETIME:-60}))
+fi
+if ! Await_Effect "The DePool entering elections $elections_id" "$Tik_Deadline" \
+        "${EFFECT_POLL_INTERVAL:-2}" Effect_DePool_Set_For_Election "$Depool_addr" "$elections_id";then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool did not enter elections $elections_id." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+        "$Tg_SOS_sign ALARM!!! DePool DOES NOT CRANKED UP for elections $elections_id!!!" > /dev/null 2>&1
+    exit 1
+fi
+echo "+++-INFO: The DePool is set for elections $elections_id." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
 
 #=================================================
 

@@ -104,7 +104,14 @@ class NodeStateStore:
 
     def validate_node_directory(self, name):
         self.validate_state_root()
-        for path in (self.root, self.root / "nodes", self.node_directory(name)):
+        directory = self.node_directory(name)
+        if not directory.exists():
+            # A mistyped name is the common cause, and an errno with an
+            # internal path neither names the mistake nor helps correct it.
+            raise process.OperationError(
+                f"No managed node named {name}; run evernode node list"
+            )
+        for path in (self.root, self.root / "nodes", directory):
             validate_private_path(path)
 
     def load_node_config(self, name):

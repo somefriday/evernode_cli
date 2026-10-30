@@ -109,6 +109,12 @@ def build_argument_parser():
         if command in ("stop", "remove"):
             q.add_argument("--all", action="store_true")
         if command in ("stop", "restart", "remove"):
+            q.add_argument(
+                "--force",
+                action="store_true",
+                help="Act even while the node is in a current or next validator set",
+            )
+        if command in ("stop", "restart", "remove"):
             q.add_argument("--timeout", type=int, default=30)
         if command in ("start", "stop", "restart", "remove"):
             q.add_argument("--dry-run", action="store_true")
@@ -128,7 +134,8 @@ def build_argument_parser():
                     "election-cron",
                 ],
                 default="node",
-                help="Log source; election-cron includes scheduled election output and errors",
+                help="Log source; elections is the election scripts' own record of "
+                "outstanding transactions, election-cron the scheduled run output and errors",
             )
             q.add_argument("--follow", action="store_true")
             q.add_argument("--tail", type=int, default=100)
@@ -150,6 +157,14 @@ def build_argument_parser():
     )
     q.add_argument("--yes", action="store_true")
     q.add_argument("--dry-run", action="store_true")
+    q = node.add_parser(
+        "sync-scripts",
+        help="Refresh a node's saved orchestration scripts from its recorded source",
+    )
+    q.add_argument("-n", "--name", help="Node name; omit with --all")
+    q.add_argument("--all", action="store_true")
+    q.add_argument("--yes", action="store_true")
+    q.add_argument("--dry-run", action="store_true")
     wallet = groups.add_parser("wallet").add_subparsers(dest="action", required=True)
     for command in ("create", "deploy", "recover"):
         q = wallet.add_parser(command)
@@ -164,6 +179,56 @@ def build_argument_parser():
         q.add_argument("--yes", action="store_true")
     q = depool.add_parser("verify")
     q.add_argument("-n", "--name", required=True)
+    q = depool.add_parser(
+        "info", help="Read this node's DePool, rounds and own participant stake"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q = depool.add_parser(
+        "withdraw",
+        help="Withdraw this node's own ordinary stake, or cancel a pending withdrawal",
+    )
+    q.add_argument("-n", "--name", required=True)
+    target = q.add_mutually_exclusive_group(required=True)
+    target.add_argument(
+        "--amount",
+        type=int,
+        help="Whole tokens to withdraw from the next round",
+    )
+    target.add_argument(
+        "--all",
+        dest="withdraw_all",
+        action="store_true",
+        help="Withdraw the entire ordinary stake from every round",
+    )
+    target.add_argument(
+        "--cancel",
+        action="store_true",
+        help="Cancel a pending withdrawal and resume reinvestment",
+    )
+    q.add_argument("--yes", action="store_true")
+    q = depool.add_parser(
+        "confirm",
+        help="Add this node's remaining signatures to one reviewed Safe transaction",
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument(
+        "--transaction-id",
+        required=True,
+        help="Exact pending transaction id from depool info; bulk signing is refused",
+    )
+    q.add_argument("--yes", action="store_true")
+    q = depool.add_parser(
+        "stake", help="Add an ordinary stake to this node's DePool from its Safe"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--amount", type=int, required=True, help="Whole tokens to stake")
+    q.add_argument("--yes", action="store_true")
+    q = depool.add_parser(
+        "replenish", help="Top up the DePool's own operating balance from the Safe"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--amount", type=int, required=True, help="Whole tokens to send")
+    q.add_argument("--yes", action="store_true")
     elections = groups.add_parser("election").add_subparsers(
         dest="action", required=True
     )

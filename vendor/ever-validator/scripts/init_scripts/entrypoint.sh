@@ -37,7 +37,7 @@ fi
 # Chech yq and install if not present
 if ! yq -V 2>/dev/null | cat | grep -q version; then
     echo "+++WARNING: yq not found. Installing..."
-    if ! curl https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64 -o /usr/local/bin/yq &>/dev/null; then
+    if ! curl https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_$(dpkg --print-architecture) -o /usr/local/bin/yq &>/dev/null; then
         echo "###-ERROR(${SelfScriptName}: line $LINENO): Failed to download yq"
         exit 1
     fi

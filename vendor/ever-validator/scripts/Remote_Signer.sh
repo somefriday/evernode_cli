@@ -62,21 +62,10 @@ if [[ $1 == "stop" ]]; then
     exit 0
 fi
 #==================================================
-# Check if the node is running and set DAPP mode accordingly
-if pgrep -x ${NODE_BIN_NAME} > /dev/null; then
-    echo "---WARNING(${SelfScriptName} line $LINENO): Node is running. "
-    # If the access mode is set to console and the node is not synchronized, prompt the user to switch to dapp mode temporarily
-    if Ask_to_switch_to_dapp;then
-        echo "Proceeding..."
-        export FORCE_USE_DAPP=true
-    elif [[ $? -gt 1 ]];then
-        echo "Cancelled."
-        exit 1
-    fi
-else
-    echo "---WARNING(${SelfScriptName} line $LINENO): Node is NOT running. Set DAPP mode."
-    export FORCE_USE_DAPP=true
-fi
+# The node's own console is the only transport, so what matters is whether the
+# node answers it - not whether a node process happens to be visible in this
+# process table, which it is not when the scripts run outside the container.
+Require_Node_Console || exit 1
 
 #==================================================
 # Get Elector address, Elector type, and elector boc file in ${ELECTIONS_WORK_DIR}/${Elector_addr##*:}.boc

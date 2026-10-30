@@ -348,3 +348,156 @@ class LocalSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValidatorSetGuardTests(unittest.TestCase):
+    """Taking a set member out costs the blocks it owes, so refuse by default."""
+
+    def setUp(self):
+        self.config = make_node_configuration("validator01")
+
+    def refuse(self, **membership):
+        reading = {
+            "node_status": "synchronization_finished",
+            "timediff": 2,
+            "shards_timediff": 2,
+            "in_current_vset_p34": False,
+            "in_next_vset_p36": False,
+        }
+        reading.update(membership)
+        with patch("evernode.nodes.fetch_node_statistics", return_value=reading):
+            nodes._refuse_while_validating(self.config, "stop")
+
+    def test_a_member_of_either_set_is_named_and_refused(self):
+        cases = [
+            ({"in_current_vset_p34": True}, "in the current validator set"),
+            ({"in_next_vset_p36": True}, "in the next validator set"),
+            (
+                {"in_current_vset_p34": True, "in_next_vset_p36": True},
+                "in the current and next validator set",
+            ),
+        ]
+        for membership, expected in cases:
+            with self.subTest(membership=membership):
+                with self.assertRaises(process.OperationError) as caught:
+                    self.refuse(**membership)
+                message = str(caught.exception)
+                self.assertIn(expected, message)
+                self.assertIn("--force", message)
+
+    def test_a_node_outside_both_sets_is_allowed(self):
+        self.refuse()
+
+    def test_an_unproven_membership_is_treated_as_membership(self):
+        # Fail closed: a field that is not explicitly false proves nothing.
+        with self.assertRaises(process.OperationError):
+            self.refuse(in_current_vset_p34="unknown")
+
+    def test_a_synchronized_node_that_does_not_report_membership_is_refused(self):
+        """A node version that stops reporting these fields must not fail open."""
+        reading = {"node_status": "synchronization_finished", "timediff": 2,
+                   "shards_timediff": 2}
+        with patch("evernode.nodes.fetch_node_statistics", return_value=reading):
+            with self.assertRaises(process.OperationError) as caught:
+                nodes._refuse_while_validating(self.config, "stop")
+        message = str(caught.exception)
+        self.assertIn("silent about its validator-set membership", message)
+        self.assertIn("in_current_vset_p34", message)
+        self.assertIn("--force", message)
+
+    def test_an_unsynchronized_node_can_still_be_stopped(self):
+        """It is not meeting its duties anyway, and refusing would make
+        --force a habit, which is how the guard stops being read at all."""
+        reading = {"node_status": "synchronization_by_archives", "timediff": 900,
+                   "shards_timediff": 900}
+        with patch("evernode.nodes.fetch_node_statistics", return_value=reading):
+            nodes._refuse_while_validating(self.config, "stop")
+
+    def test_an_unreachable_console_cannot_block_a_stop(self):
+        # A node whose console is gone owes nothing that stopping can worsen.
+        with patch(
+            "evernode.nodes.fetch_node_statistics",
+            side_effect=process.OperationError("container is not running"),
+        ):
+            nodes._refuse_while_validating(self.config, "stop")
+
+
+class UnknownNodeTests(unittest.TestCase):
+    """A mistyped name must name the mistake, not report an internal errno."""
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o077))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+
+    def test_an_unknown_node_is_named_with_the_way_to_list_nodes(self):
+        with self.assertRaises(process.OperationError) as caught:
+            self.store.load_node_config("no-such-node")
+        message = str(caught.exception)
+        self.assertIn("No managed node named no-such-node", message)
+        self.assertIn("evernode node list", message)
+        self.assertNotIn(str(self.store.root), message)
+
+
+class ImageMaintenanceDryRunTests(unittest.TestCase):
+    """A dry run must say what would stop the real run."""
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o077))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+        self.config = make_node_configuration("validator01")
+
+    def blockers(self, *, schedule, running, **membership):
+        reading = {"in_current_vset_p34": False, "in_next_vset_p36": False}
+        reading.update(membership)
+        status = {"container": "running" if running else "exited", "stats": reading}
+        with patch("evernode.nodes.get_node_status", return_value=status), patch(
+            "evernode.storage.NodeStateStore.load_node_config", return_value=self.config
+        ), patch(
+            "evernode.elections.node_election_cron_path"
+        ) as cron:
+            cron.return_value.exists.return_value = schedule
+            return nodes.image_maintenance_blockers(self.store, "validator01")
+
+    def test_an_installed_schedule_and_a_validating_node_are_both_reported(self):
+        reported = self.blockers(schedule=True, running=True, in_current_vset_p34=True)
+        self.assertEqual(len(reported), 2)
+        self.assertIn("election schedule is installed", reported[0])
+        self.assertIn("in the current validator set", reported[1])
+
+    def test_a_stopped_node_without_a_schedule_is_not_blocked(self):
+        self.assertEqual(self.blockers(schedule=False, running=False), [])
+
+    def test_a_running_node_outside_both_sets_is_not_blocked(self):
+        self.assertEqual(self.blockers(schedule=False, running=True), [])
+
+
+class LogComponentTests(unittest.TestCase):
+    """Every log component must name a file something actually writes."""
+
+    def test_the_election_components_name_files_the_scripts_write(self):
+        scripts = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+        written = "".join(
+            path.read_text()
+            for path in scripts.glob("*.sh")
+        ) + "".join(path.read_text() for path in scripts.glob("*.shinc"))
+        source = (Path(__file__).resolve().parents[1] / "evernode/nodes.py").read_text()
+        for component, filename in (
+            ("elections", "transactions.log"),
+            ("election-cron", "election-cron.log"),
+        ):
+            with self.subTest(component=component):
+                self.assertIn(f'"{component}": "logs/validator/{filename}"', source)
+        # The reference kit writes validator.log only from its own updater
+        # cron, which this CLI never installs.
+        self.assertNotIn('"logs/validator/validator.log"', source)
+        self.assertIn("transactions.log", written)

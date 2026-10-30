@@ -61,7 +61,7 @@
 # Send_File_To_BC()
 # top_app_account
 # Send_msg_toTelBot
-# Ask_to_switch_to_dapp
+# Require_Node_Console
 # Send_Message
 # NameToAddr
 # =====================================================
@@ -214,7 +214,7 @@ function DispEnvInfo() {
 }
 # =====================================================
 function hex2dec() {
-    local ival="$(echo "${1^^}"|tr -d '"')"
+    local ival="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -d '"')"
     local ob=${2:-10}
     local ib=${3:-16}
     if [[ -z "$ival" ]] || ! [[ "$ival" =~ ^[0-9A-F]+$ ]]; then
@@ -747,19 +747,27 @@ function Get_Engine_ADNL() {
         return
     fi
     if [[ "$ADNL_1" == "null" ]];then
-        local Curr_Engine_ADNL="$(echo "$ADNL_0" | base64 -d | xxd -p | tr -d '\n')"
+        local Curr_Engine_ADNL="$(echo "$ADNL_0" | base64 -d | od -An -v -t x1 | tr -d ' \n')"
         local Curr_Engine_Elec_ID=$Elec_0
     else
         local Next_Engine_Elec_ID="$((Elec_0 > Elec_1 ? Elec_0 : Elec_1))"
         local Curr_Engine_Elec_ID="$((Elec_0 < Elec_1 ? Elec_0 : Elec_1))"
         local Curr_Engine_ADNL="$(echo "$Curr_Engine_Val_Keys" | jq -r ".[]|select(.election_id == $Curr_Engine_Elec_ID)|.validator_adnl_key_id" \
-            | base64 -d|od -t xC -An|tr -d '\n'|tr -d ' ')"
+            | base64 -d|od -An -v -t xC|tr -d '\n'|tr -d ' ')"
         local Next_Engine_ADNL="$(echo "$Curr_Engine_Val_Keys" | jq -r ".[]|select(.election_id == $Next_Engine_Elec_ID)|.validator_adnl_key_id" \
-            | base64 -d|od -t xC -An|tr -d '\n'|tr -d ' ')"
+            | base64 -d|od -An -v -t xC|tr -d '\n'|tr -d ' ')"
+    fi
+    if [[ ${#Curr_Engine_ADNL} -ne 64 ]]; then
+        log_error_stack "Cannot decode current validator ADNL key"
+        return 1
     fi
     if [[ -z $ADNL_1 ]] || [[ "$ADNL_1" == "null" ]];then
         Result="${Curr_Engine_ADNL} ${Curr_Engine_Elec_ID}"
     else
+        if [[ ${#Next_Engine_ADNL} -ne 64 ]]; then
+            log_error_stack "Cannot decode next validator ADNL key"
+            return 1
+        fi
         Result="${Curr_Engine_ADNL} ${Curr_Engine_Elec_ID} ${Next_Engine_ADNL} ${Next_Engine_Elec_ID}"
     fi
     echo "$Result"
@@ -814,13 +822,24 @@ function Elector_ADNL_Search() {
             Result="$stake $time $max_factor $addr"
             ;;
         solidity)
-            local Elector_Parts_List=$($CALL_CLI -j run --boc "${NET_ELECTOR_BOC}" get '{}' --abi "${INPL_Elector_ABI}")
-            local Elections_Open=$(jq -r .election_open <<< "${Elector_Parts_List}")
-            if [[ $Elections_Open -eq 0 ]]; then
-                echo "null"
-                return $ERR_ELECTIONS_CLOSED
+            if ! Elector_Parts_List=$($CALL_CLI -j run --boc "${NET_ELECTOR_BOC}" get '{}' --abi "${INPL_Elector_ABI}"); then
+                log_error_stack "Cannot read Solidity elector participants"
+                return $ERR_ELECTOR_TYPE
             fi
-            local found=$(jq ".cur_elect.members[]|select(.adnl_addr == \"0x${ADNL}\")" <<< "${Elector_Parts_List}")
+            if ! jq -e 'type == "object" and has("election_open") and (.cur_elect.members | type == "object")' <<< "$Elector_Parts_List" >/dev/null; then
+                log_error_stack "Invalid Solidity elector response; check the elector ABI"
+                return $ERR_ELECTOR_TYPE
+            fi
+            local Elections_Open=$(jq -r .election_open <<< "${Elector_Parts_List}")
+            case "$Elections_Open" in
+                false|0) echo "null"; return $ERR_ELECTIONS_CLOSED ;;
+                true|1) ;;
+                *) log_error_stack "Invalid elector election_open flag"; return $ERR_ELECTOR_TYPE ;;
+            esac
+            local ADNL_decimal
+            ADNL_decimal=$(hex2dec "$ADNL") || return $ERR_WRONG_ADNL_LENGTH
+            local found=$(jq --arg hex "$ADNL" --arg decimal "$ADNL_decimal" \
+                '.cur_elect.members[] | select(.adnl_addr == ("0x" + $hex) or .adnl_addr == $hex or .adnl_addr == $decimal)' <<< "${Elector_Parts_List}")
             if [[ -z $found ]];then
                 echo "absent"
                 return $ERR_ADNL_ABSENT
@@ -1074,6 +1093,7 @@ function Send_MSIG_Trans_Confirmation() {
     # Use random name for boc file for multiple concurrent calls
     local BOC_FileName="confirm-msg_$(head -c 8 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9').boc"
     if ! result="$($CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/${BOC_FileName}" \
+            --lifetime "$MSG_LIFETIME" \
             --sign "$signature" ${SIG_ID_OPTION} \
             --abi "${INPL_SafeC_Wallet_ABI}" \
             "$MSIG_ADDR" confirmTransaction \
@@ -1114,6 +1134,10 @@ function Send_MSIG_Trans_Confirmation() {
     fi
     echo "${Result}"
 } # Send_MSIG_Trans_Confirmation
+#=================================================
+# Helpers for operations evernode has already confirmed; see managed_ops.shinc.
+# shellcheck source=managed_ops.shinc
+source "$(dirname "${BASH_SOURCE[0]}")/managed_ops.shinc"
 #=================================================
 # Send File - send external message serialized as bag of cells and stored in specified msg_file
 # Input: boc file
@@ -1267,29 +1291,33 @@ function Send_msg_toTelBot() {
     fi
 }
 #=================================================
-# Ask to switch to dapp if node not syncronized
-function Ask_to_switch_to_dapp() {
-    # Check node sync status if not forced to use dapp
-    if ! $FORCE_USE_DAPP;then
-        NODE_SYNC_STATUS=$(Get_TimeDiff)
-        # Get time difference between the current machine and the node
-        # shellcheck disable=SC2046
-        read -r MC_TIME_DIFF SH_TIME_DIFF <<< $(echo "$NODE_SYNC_STATUS" | awk '{print $1, $2}')
-        # echo "---INFO: Node sync status: $MC_TIME_DIFF $SH_TIME_DIFF"
-        if ! [[ $MC_TIME_DIFF =~ ^[0-9]+$ && $SH_TIME_DIFF =~ ^[0-9]+$ ]] || [[ $MC_TIME_DIFF -gt 20 ]] || [[ $SH_TIME_DIFF -gt 20 ]];then
-            IFS= read -rp "### Access method: console, but your node is not synced!!! Do you want to use DAPP temporarily? (yes/no)? " </dev/tty answer
-            case ${answer} in
-                y|Y|yes|Yes|YES )
-                    return 0 ;;
-                * )
-                    return 2 ;;
-            esac
-        else
-            return 1
-        fi
-    else
-        return 1
+# Verify that this node's console can serve the operation about to run.
+#
+# The node's own console is the only transport this installation uses; there is
+# no DApp mode to fall back to. A managed node may be on a private network, so
+# a public endpoint has nothing to say about it and the fallback can only hang;
+# and the node's reachability is something the caller must fix, not something
+# to route around. An unusable node therefore refuses the operation here,
+# immediately and with the node's own status in the message.
+# Input (optional):
+#  - tolerance in seconds, defaulting to NODE_SYNC_TOLERANCE
+# Output: 0 when the console is usable, 1 when the operation must not proceed
+function Require_Node_Console() {
+    local status mc_diff sh_diff tolerance
+    tolerance="${1:-${NODE_SYNC_TOLERANCE:-20}}"
+    status="$(Get_TimeDiff)"
+    read -r mc_diff sh_diff <<< "$(awk '{print $1, $2}' <<< "$status")"
+    if [[ $mc_diff =~ ^[0-9]+$ && $sh_diff =~ ^[0-9]+$ ]] \
+            && [[ $mc_diff -le $tolerance && $sh_diff -le $tolerance ]];then
+        printf "%s\n" "---INFO: node timediff: masterchain ${mc_diff}s, shardchain ${sh_diff}s (tolerance ${tolerance}s)"
+        return 0
     fi
+    if [[ $mc_diff =~ ^[0-9]+$ && $sh_diff =~ ^[0-9]+$ ]];then
+        echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): node is not synced (masterchain ${mc_diff}s, shardchain ${sh_diff}s behind; tolerance ${tolerance}s). The node's console is the only transport, so this operation cannot run. Wait for the node to catch up, then retry."
+    else
+        echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): node console is not answering (${status:-no response}). The node's console is the only transport, so this operation cannot run. Start the node and let it sync, then retry."
+    fi
+    return 1
 }
 #=================================================
 function Send_Message() {

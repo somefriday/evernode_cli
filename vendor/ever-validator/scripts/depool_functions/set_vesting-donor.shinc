@@ -96,7 +96,7 @@ function set_msig_vesting_donor() {
         --abi "${INPL_SafeC_Wallet_ABI}" \
         "${MSIG_addr}" submitTransaction \
         "{\"dest\":\"$Depool_addr\",\"value\":$DEPOOL_STAKE_FEE_NANO,\"bounce\":true,\"allBalance\":false,\"payload\":\"$PayLoad\"}" \
-        --lifetime 3600
+        --lifetime "$MSG_LIFETIME"
     # Decode BOC file
     if ! Message_JSON="$($CALL_CLI -j decode msg --abi "${INPL_SafeC_Wallet_ABI}" "${INPL_ELECTIONS_WORK_DIR}/set_vesting-donor.boc")";then
         echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode message for set_vesting-donor.boc. Exiting..."

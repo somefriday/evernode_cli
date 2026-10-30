@@ -38,6 +38,11 @@ echo -e "$(Determine_Current_Network)"
 echo
 
 #=================================================
+# Every reading below comes from this node's console, the only transport, so a
+# node that cannot answer must say so rather than report an empty round.
+Require_Node_Console || exit 1
+
+#=================================================
 # Check compute_returned_stake in elector contract for both proxies
 function proxy_recover_amount() {
     if [[ "$STAKE_MODE" == "depool" ]];then

@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import time
 
 from . import docker, process, storage
 
@@ -16,6 +18,51 @@ HOST_SCRIPTS = {
     "take_part_in_elections.sh",
     "part_check.sh",
 }
+
+# These two only generate keys, addresses and config files. Every other host
+# script reads the chain or sends a message, so it needs the node's console.
+OFFLINE_SCRIPTS = {
+    "Msig-prep.sh",
+    "DePool-prep.sh",
+}
+
+
+def require_node_console(config, attempts=3, interval=5):
+    """Refuse an operation whose only transport cannot answer.
+
+    The node's own console is the only transport this CLI uses; there is no
+    DApp endpoint to fall back to, because a managed node may be on a private
+    network and a public endpoint would at best hang.  An unreachable or
+    lagging node therefore stops the operation here, where the reason reaches
+    the operator, instead of inside a script whose output is kept in a private
+    log.
+
+    A node at the head of the chain still reports a lag as large as the gap
+    between two masterchain blocks, so one reading above the tolerance is not
+    evidence of a node left behind.  Read again before refusing, and say what
+    was seen, so a single slow block cannot abort an election attempt.
+    """
+    # nodes imports this module, so the import stays inside the call.
+    from . import nodes
+
+    for attempt in range(max(1, attempts)):
+        statistics = nodes.fetch_node_statistics(config)
+        if nodes.is_node_synchronized(statistics):
+            return
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    raise process.OperationError(
+        "Node is not synchronized and its console is the only transport "
+        "available; run: evernode node sync -n "
+        + config["name"]
+        + " --wait (last reading: status "
+        + str(statistics.get("node_status", statistics.get("sync_status")))
+        + ", masterchain lag "
+        + str(statistics.get("timediff"))
+        + "s, shard lag "
+        + str(statistics.get("shards_timediff"))
+        + "s)"
+    )
 
 
 def execute_supported_node_script(store, config, script, *, timeout=180):
@@ -63,8 +110,52 @@ def execute_supported_node_script(store, config, script, *, timeout=180):
         raise
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# The reference scripts mark their own diagnostics with these prefixes.
+SCRIPT_DIAGNOSTIC = re.compile(r"(###-ERROR|###-WARNING|\+\+\+-WARNING)")
+# Twelve or more words in a row is a mnemonic, whatever line it appears on.
+MNEMONIC = re.compile(r"(?:\b[a-z]{3,}\b[ \t]+){11,}\b[a-z]{3,}\b")
+# There is no DApp mode, so a missing DApp credential is never the reason.
+IRRELEVANT_DIAGNOSTIC = re.compile(r"project_id|access_key")
+
+
+def script_diagnostics(result, limit=10):
+    """Return the lines a failing script marked as its own diagnostics.
+
+    Script output is kept off the terminal because a setup command can print a
+    seed phrase, but then the one line that says what to do next - which
+    transaction still needs signatures, which account is short of funds -
+    reaches nobody. Pass on only the lines the script itself marked, without
+    anything that could carry a phrase.
+    """
+    text = (result.stdout or "") + "\n" + (result.stderr or "")
+    lines = []
+    for line in text.splitlines():
+        line = ANSI_ESCAPE.sub("", line).strip()
+        if not SCRIPT_DIAGNOSTIC.search(line) or IRRELEVANT_DIAGNOSTIC.search(line):
+            continue
+        if "seed" in line.lower() or MNEMONIC.search(line):
+            continue
+        if line not in lines:
+            lines.append(line)
+    return lines[:limit]
+
+
+def _record_script_failure(root, script, result):
+    """Save a failed script's output privately and return its path."""
+    directory = root / "logs" / "validator"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    name = script.replace("/", "-") + time.strftime("-failed-%Y%m%dT%H%M%SZ.log", time.gmtime())
+    path = directory / name
+    descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(result.stdout or "")
+        stream.write(result.stderr or "")
+    return path
+
+
 def execute_validator_script(
-    store, config, script, *arguments, timeout=300, sensitive=False
+    store, config, script, *arguments, timeout=300, sensitive=False, variables=None
 ):
     """Run a reviewed upstream script on the host.
 
@@ -79,12 +170,41 @@ def execute_validator_script(
     path = root / "scripts" / script
     for item in (root, root / "scripts", path):
         storage.validate_private_path(item)
-    return process.execute_command(
+    if script not in OFFLINE_SCRIPTS:
+        require_node_console(config)
+    environment = os.environ.copy()
+    # These scripts otherwise reopen /dev/tty, which is unavailable in the
+    # detached process session. The setup command has already collected approval.
+    if script in ("DePool_deploy.sh", "stake_to_depool.sh"):
+        environment["EVERNODE_APPROVED"] = "yes"
+    # Only the names this module sets itself; never caller-supplied secrets.
+    for name, value in (variables or {}).items():
+        if name not in ("EVERNODE_INITIAL_STAKE",):
+            raise process.OperationError(f"Unsupported script variable {name}")
+        environment[name] = value
+    result = process.execute_command(
         ["bash", path, *arguments],
         cwd=root / "scripts",
+        env=environment,
         timeout=timeout,
         sensitive=sensitive,
+        check=False,
     )
+    if result.returncode:
+        # These scripts print addresses, balances and contract state, which is
+        # exactly what diagnosing a failure needs, but they are run as
+        # sensitive so none of it reaches the terminal. Keep all of it in the
+        # node's own private log, and report the lines the script marked as
+        # diagnostics so the operator reads the reason without opening a file.
+        path = _record_script_failure(root, script, result)
+        reported = script_diagnostics(result)
+        raise process.OperationError(
+            f"{script} failed (exit {result.returncode})"
+            + ("\n" + "\n".join(reported) if reported else "")
+            + "\nFull output: "
+            + str(path)
+        )
+    return result
 
 
 def _import_verification_context(store, config):
@@ -98,6 +218,53 @@ def _import_verification_context(store, config):
     ):
         storage.validate_private_path(item)
     return scripts_dir
+
+
+def wait_for_active_account(store, config, address, label, timeout=240, interval=5):
+    """Wait until a just-deployed contract is Active on chain.
+
+    Deployment is one external message. The account becomes Active only once
+    that message executes, so reporting the stage before then lets the next
+    documented command run against an account that is still Uninit.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    program = """set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
+source ./env.sh
+source ./functions.shinc
+deadline=$(( $(date +%s) + EVERNODE_WAIT_SECONDS ))
+while :; do
+    read -r status balance _ <<< "$(Get_Account_Info "$EVERNODE_ACCOUNT")"
+    if [[ $status == Active ]];then
+        jq -cn --arg s "$status" --arg b "$balance" '{acc_type: $s, balance: $b}'
+        exit 0
+    fi
+    if [[ $(date +%s) -ge $deadline ]];then
+        printf "%s\\n" "$status" >&2
+        exit 1
+    fi
+    sleep "$EVERNODE_WAIT_INTERVAL"
+done
+"""
+    environment = os.environ.copy()
+    environment["EVERNODE_ACCOUNT"] = address
+    environment["EVERNODE_WAIT_SECONDS"] = str(timeout)
+    environment["EVERNODE_WAIT_INTERVAL"] = str(interval)
+    try:
+        result = process.execute_command(
+            ["bash", "-c", program],
+            cwd=scripts_dir,
+            env=environment,
+            timeout=timeout + 60,
+        )
+    except process.OperationError as exc:
+        raise process.OperationError(
+            f"The {label} at {address} did not become active on chain within "
+            f"{timeout}s. Check that it holds enough balance, then run this "
+            "command again; a completed deployment is recognized and not repeated."
+        ) from exc
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def verify_imported_safe(store, config, wallet_address, timeout=300):
@@ -144,6 +311,73 @@ jq -cn --argjson c "$custodians" --argjson p "$parameters" \
         "custodians": len(public_keys),
         "required_signatures": signatures,
         "public_keys": public_keys,
+    }
+
+
+def read_depool_state(store, config, depool_address, wallet_address, timeout=300):
+    """Read DePool settings, rounds, pending Safe transactions and own stake.
+
+    Every value comes from a contract getter, so this is a read-only operator
+    report. A participant that holds no stake is reported, not treated as an
+    error, because that is the normal state after a completed withdrawal.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    program = """set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
+source ./env.sh
+source ./functions.shinc
+info="$(Get_DP_Info "$EVERNODE_DEPOOL")"
+rounds="$(Get_DP_Rounds "$EVERNODE_DEPOOL")"
+pending="$(Get_MSIG_Trans_List "$EVERNODE_WALLET")"
+participants="$(Get_DP_Parts_List "$EVERNODE_DEPOOL")"
+balance="$(Get_DP_Self_Balance "$EVERNODE_DEPOOL")"
+if jq -e --arg wallet "$EVERNODE_WALLET" \
+        '.participants | index($wallet) != null' <<< "$participants" >/dev/null; then
+    participant="$(Get_DP_Part_Info "$EVERNODE_DEPOOL" "$EVERNODE_WALLET")"
+else
+    participant='null'
+fi
+jq -cn --argjson i "$info" --argjson r "$rounds" --argjson p "$pending" \
+       --argjson s "$participant" --arg b "$balance" \
+  '{depool: $i, rounds: $r, pending: $p, participant: $s, self_balance: $b}'
+"""
+
+    environment = os.environ.copy()
+    environment["EVERNODE_DEPOOL"] = depool_address
+    environment["EVERNODE_WALLET"] = wallet_address
+    result = process.execute_command(
+        ["bash", "-c", program], cwd=scripts_dir, env=environment, timeout=timeout
+    )
+    try:
+        value = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError("Could not read DePool state") from exc
+    rounds = value.get("rounds")
+    rounds = list(rounds.get("rounds", {}).values()) if isinstance(rounds, dict) else []
+    participant = value.get("participant")
+    pending = value.get("pending")
+    pending = pending.get("transactions", []) if isinstance(pending, dict) else []
+    return {
+        "pool_closed": value.get("depool", {}).get("poolClosed"),
+        "validator_wallet": value.get("depool", {}).get("validatorWallet"),
+        "self_balance_tokens": value.get("self_balance"),
+        "participant_reward_fraction": value.get("depool", {}).get(
+            "participantRewardFraction"
+        ),
+        "proxies": value.get("depool", {}).get("proxies"),
+        "rounds": sorted(rounds, key=lambda item: int(item.get("id", 0))),
+        "pending_wallet_transactions": pending,
+        "own_stake": participant,
+        "own_total_nanotokens": (
+            participant.get("total") if isinstance(participant, dict) else None
+        ),
+        "own_pending_withdrawal_nanotokens": (
+            participant.get("withdrawValue") if isinstance(participant, dict) else None
+        ),
+        "own_reinvest": (
+            participant.get("reinvest") if isinstance(participant, dict) else None
+        ),
     }
 
 

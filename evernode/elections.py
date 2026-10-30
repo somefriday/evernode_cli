@@ -1,10 +1,16 @@
 """Install and remove one owned reference-election schedule per node."""
 
+import contextlib
+import fcntl
 import os
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 from . import configuration, process, storage
+
+TRUE_VALUES = (True, 1, "1", "true", "True", "yes", "Yes")
 
 
 def node_election_cron_path(name):
@@ -88,3 +94,81 @@ def election_schedule_status(store, config):
             / "election-cron.log"
         ),
     }
+
+
+def cron_daemon_state():
+    """Report whether a cron daemon is actually running on this host.
+
+    An installed cron file alone does not run anything. Container and minimal
+    server images frequently have no cron daemon, which silently stops every
+    scheduled election.
+    """
+    executable = shutil.which("pgrep")
+    if not executable:
+        return "unknown"
+    for name in ("cron", "crond"):
+        try:
+            found = subprocess.run(
+                [executable, "-x", name], capture_output=True, timeout=10
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "unknown"
+        if found.returncode == 0:
+            return "running"
+    return "not running"
+
+
+def describe_election_state(store, config, statistics=None, console_error=None):
+    """Report the schedule, cron health and what the chain says about this node.
+
+    An enabled schedule proves only that the job is installed. Admission into
+    a validator set and actual block validation are separate on-chain facts,
+    so they are reported separately and never inferred from the schedule.
+    """
+    result = election_schedule_status(store, config)
+    result["cron_daemon"] = cron_daemon_state()
+    if result["enabled"] and result["cron_daemon"] == "not running":
+        result["warning"] = (
+            "The schedule is installed but no cron daemon is running, "
+            "so no election will be attempted"
+        )
+    if console_error is not None:
+        result["chain"] = {"error": console_error}
+        return result
+    if not isinstance(statistics, dict):
+        return result
+    current = statistics.get("in_current_vset_p34") in TRUE_VALUES
+    following = statistics.get("in_next_vset_p36") in TRUE_VALUES
+    validation = statistics.get("validation_status")
+    result["chain"] = {
+        "in_current_vset_p34": current,
+        "in_next_vset_p36": following,
+        "validation_status": validation,
+        "last_validation_ago_sec": statistics.get("last_validation_ago_sec"),
+        "validating": current and validation == "Active",
+        "elected_for_next_round": following,
+    }
+    return result
+
+
+@contextlib.contextmanager
+def hold_election_lock(store, name):
+    """Hold the same lock a scheduled election run takes.
+
+    A scheduled sequence already in progress keeps this lock for its whole
+    run, so a maintenance action waits for it instead of changing files
+    underneath a signing attempt.
+    """
+    path = store.node_directory(name) / "elections" / "evernode-election.lock"
+    # The reference runner creates this lock itself under the default umask, so
+    # only its private parent directory and the absence of a symlink are checked.
+    storage.validate_private_path(path.parent)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise process.OperationError(
+                f"A scheduled election run holds {name}'s election lock; retry when it finishes"
+            ) from None
+        yield

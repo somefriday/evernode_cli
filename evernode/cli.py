@@ -15,6 +15,7 @@ from . import (
     images,
     nodes,
     process,
+    provisioning,
     resources,
     setup_actions,
     storage,
@@ -109,6 +110,7 @@ def handle_node_lifecycle(store, args):
                 "node": name,
                 "timeout": getattr(args, "timeout", None),
                 "purge_data": getattr(args, "purge_data", False),
+                "force": getattr(args, "force", False),
             }
         )
         if args.dry_run:
@@ -120,6 +122,7 @@ def handle_node_lifecycle(store, args):
                 args.action,
                 timeout=getattr(args, "timeout", 30),
                 purge_data=getattr(args, "purge_data", False),
+                force=getattr(args, "force", False),
             )
             ui.print_json_result({"node": name, "result": "success"})
         except (process.OperationError, OSError, ValueError) as exc:
@@ -143,6 +146,52 @@ def handle_node_local_sync(store, args):
         f"Database seeded. Wait for sync before continuing: evernode node sync -n {target} --wait"
     )
     return 0
+
+
+def handle_script_refresh(store, args):
+    """Re-render saved orchestration scripts for the selected nodes."""
+    names = select_node_names(store, args)
+    failed = False
+    for name in names:
+        try:
+            with store.acquire_operation_lock(name):
+                config = store.load_node_config(name)
+                with elections.hold_election_lock(store, name):
+                    # An approved run renders once; otherwise the plan is shown
+                    # first and the source is rendered again to apply it.
+                    if args.yes and not args.dry_run:
+                        plan = provisioning.refresh_node_scripts(store, config)
+                        store.save_node_config(config)
+                        ui.print_json_result({"node": name, "refreshed": plan})
+                        continue
+                    plan = provisioning.refresh_node_scripts(
+                        store, config, dry_run=True
+                    )
+                    ui.print_json_result(plan)
+                    if args.dry_run or not plan["changed"]:
+                        continue
+                    ui.confirm_operation(
+                        False,
+                        f"Replace {name}'s saved scripts with the rendered source? "
+                        "Keys, database and elections state are untouched.",
+                    )
+                    applied = provisioning.refresh_node_scripts(store, config)
+                    store.save_node_config(config)
+                    ui.print_json_result({"node": name, "refreshed": applied})
+        except (process.OperationError, OSError, ValueError) as exc:
+            failed = True
+            ui.print_json_result({"node": name, "result": "failed", "error": str(exc)})
+    return 1 if failed else 0
+
+
+def describe_election_state(store, config):
+    """Read the chain for one node without failing the whole status report."""
+    statistics, console_error = None, None
+    try:
+        statistics = nodes.fetch_node_statistics(config)
+    except process.OperationError as exc:
+        console_error = str(exc)
+    return elections.describe_election_state(store, config, statistics, console_error)
 
 
 def main(argv=None):
@@ -179,6 +228,8 @@ def main(argv=None):
             return resources.show_node_resources(store, args.name)
         if args.group in ("wallet", "depool"):
             return setup_actions.handle_setup_action(store, args)
+        if args.group == "node" and args.action == "sync-scripts":
+            return handle_script_refresh(store, args)
         if args.group == "node" and args.action == "lsync":
             return handle_node_local_sync(store, args)
         if args.group == "node" and args.action == "update":
@@ -186,6 +237,7 @@ def main(argv=None):
             record = (
                 None if args.rollback else images.find_image_record(store, args.image)
             )
+            blockers = nodes.image_maintenance_blockers(store, name)
             ui.print_json_result(
                 {
                     "plan": (
@@ -193,10 +245,11 @@ def main(argv=None):
                     ),
                     "node": name,
                     "image": record["image"] if record else None,
+                    "blocked_by": blockers,
                 }
             )
             if args.dry_run:
-                return 0
+                return 1 if blockers else 0
             ui.confirm_operation(args.yes, "Perform image maintenance on this node?")
             nodes.update_node_image(
                 store, name, record, rollback=args.rollback, timeout=args.timeout
@@ -216,9 +269,7 @@ def main(argv=None):
                     [
                         {
                             "name": n,
-                            **elections.election_schedule_status(
-                                store, store.load_node_config(n)
-                            ),
+                            **describe_election_state(store, store.load_node_config(n)),
                         }
                         for n in store.list_node_names()
                     ]
@@ -230,7 +281,7 @@ def main(argv=None):
                 ui.print_json_result(
                     {
                         "name": config["name"],
-                        **elections.election_schedule_status(store, config),
+                        **describe_election_state(store, config),
                     }
                 )
             elif args.action == "start":
@@ -255,7 +306,7 @@ def main(argv=None):
                         ui.print_json_result(
                             {
                                 "name": name,
-                                **elections.election_schedule_status(store, config),
+                                **describe_election_state(store, config),
                             }
                         )
             elif args.dry_run:
@@ -316,7 +367,19 @@ def main(argv=None):
             elif args.action == "sync":
                 previous = False
                 while True:
-                    value = nodes.fetch_node_statistics(config)
+                    try:
+                        value = nodes.fetch_node_statistics(config)
+                    except process.OperationError as exc:
+                        if not args.wait or "connection refused" not in str(exc).lower():
+                            raise
+                        previous = False
+                        ui.print_json_result({
+                            "name": name,
+                            "sync_status": "console_not_ready",
+                            "error": str(exc),
+                        })
+                        time.sleep(args.interval)
+                        continue
                     ui.print_json_result(value)
                     if not args.wait:
                         return 0 if nodes.is_node_synchronized(value) else 2

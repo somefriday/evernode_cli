@@ -609,7 +609,10 @@ class FocusedFeatureTests(unittest.TestCase):
             setup_stage="depool-deployed",
             settings={"ValidatorAssuranceT": 50000},
         )
-        with patch("evernode.wallets.scripts.execute_validator_script") as execute:
+        with patch("evernode.wallets.scripts.execute_validator_script") as execute, patch(
+            # Waiting for a deployed contract to appear is covered separately.
+            "evernode.wallets.scripts.wait_for_active_account"
+        ) as awaited:
             self.assertEqual(
                 wallets.wallet_deploy(self.store, deploy_wallet)[0]["setup_stage"],
                 "wallet-deployed",
@@ -622,6 +625,10 @@ class FocusedFeatureTests(unittest.TestCase):
                 wallets.depool_stake_initial(self.store, stake)[0]["setup_stage"],
                 "ready-for-elections",
             )
+        self.assertEqual(
+            [call.args[2] for call in awaited.call_args_list],
+            [profile["wallet_address"], profile["depool_address"]],
+        )
         self.assertEqual(
             [call.args[2] for call in execute.call_args_list],
             ["Msig_deploy.sh", "DePool_deploy.sh", "stake_to_depool.sh"],

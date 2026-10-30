@@ -32,9 +32,19 @@ export RUN_MODE="docker"                # can be 'docker' or 'service'  or 'offl
 export DOCKER_USE_CUSTOM_IMAGE=false    # To use custom docker image builded locally set it to true otherwise to use official image set it to false
 export NODE_WC=0                        # Node WorkChain
 
-FORCE_USE_DAPP=false                    # For offnode works or to use DApp Server instead of use node's console to operate
-[[ "${RUN_MODE}" == "offline" ]] && FORCE_USE_DAPP=true  # For offline mode we need to use DApp server anyway
+# The node's own console is the only transport this installation uses; there is
+# no DApp mode (signing-reliability-design.md, D13). Nothing assigns this true,
+# and tests/test_console_only.py fails if an assignment reappears.
+FORCE_USE_DAPP=false
 export FORCE_USE_DAPP
+export NODE_SYNC_TOLERANCE=20           # Seconds the node may lag before an operation is refused
+# One lifetime for every message this installation signs. It is short on
+# purpose: the window that has to pass before "it never landed" is final is
+# exactly this, so an hour of it means an hour of uncertainty after any
+# transient failure, and an orphan that can still appear long after the
+# command reported. Every wait for an effect is longer than this, so by the
+# time a failure is reported nothing further can execute.
+export MSG_LIFETIME=60
 export STAKE_MODE="depool"              # can be 'msig' or 'depool'
 export NODE_ROLE="validator"            # can be 'sync' or 'validator' or 'dapp'
 export VALIDATOR_NAME="${HOSTNAME%%.*}"

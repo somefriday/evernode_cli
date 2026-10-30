@@ -1,12 +1,69 @@
 """Capture orchestration sources and prepare resumable node workspaces."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 
 from . import configuration, docker, process, storage
+
+
+SOURCE_COMPONENTS = ("scripts", "configs", "contracts")
+
+
+def render_source_snapshot(store, config, work):
+    """Render this node's recorded orchestration source into ``work``.
+
+    The result is a complete snapshot directory holding every source component
+    and the node's own rendered env.sh, plus the manifest describing it. The
+    caller owns ``work`` and decides whether to install the result.
+    """
+    source_spec = config.get("source_spec")
+    if not source_spec:
+        raise process.OperationError(
+            "No saved source inputs; this node's scripts cannot be rendered automatically"
+        )
+    if source_spec["local"]:
+        source = Path(source_spec["local"])
+    else:
+        source = work / "checkout"
+        process.execute_command(
+            ["git", "clone", "--", source_spec["repo"], source], timeout=600
+        )
+        if source_spec["ref"]:
+            process.execute_command(
+                ["git", "-C", source, "checkout", "--detach", source_spec["ref"]],
+                timeout=120,
+            )
+    revision = process.execute_command(
+        ["git", "-C", source, "rev-parse", "HEAD"], check=False
+    )
+    staged = work / "snapshot"
+    staged.mkdir(mode=0o700)
+    for component in SOURCE_COMPONENTS:
+        storage.calculate_directory_fingerprint(source / component)
+        shutil.copytree(source / component, staged / component)
+    configuration.write_node_environment(
+        staged / "scripts/env.sh", configuration.build_node_environment(config)
+    )
+    manifest = {
+        "project_commit": (
+            revision.stdout.strip()
+            if revision.returncode == 0
+            else "local-unversioned"
+        ),
+        "inputs": configuration.build_node_environment(config),
+        "hashes": {
+            c: storage.calculate_directory_fingerprint(staged / c)
+            for c in SOURCE_COMPONENTS
+        },
+    }
+    storage.write_json_atomically(staged / "manifest.json", manifest)
+    storage.restrict_workspace_permissions(staged)
+    return staged, manifest
 
 
 def capture_node_source_snapshot(store, config):
@@ -15,57 +72,8 @@ def capture_node_source_snapshot(store, config):
     if not snapshot.exists():
         if snapshot.is_symlink():
             raise process.OperationError("Refusing symlinked source snapshot")
-        source_spec = config.get("source_spec")
-        if not source_spec:
-            raise process.OperationError(
-                "No saved source inputs; this preparation cannot be resumed automatically"
-            )
         with tempfile.TemporaryDirectory(prefix=".prepare-", dir=directory) as tmp:
-            work = Path(tmp)
-            if source_spec["local"]:
-                source = Path(source_spec["local"])
-            else:
-                source = work / "checkout"
-                process.execute_command(
-                    ["git", "clone", "--", source_spec["repo"], source], timeout=600
-                )
-                if source_spec["ref"]:
-                    process.execute_command(
-                        [
-                            "git",
-                            "-C",
-                            source,
-                            "checkout",
-                            "--detach",
-                            source_spec["ref"],
-                        ],
-                        timeout=120,
-                    )
-            revision = process.execute_command(
-                ["git", "-C", source, "rev-parse", "HEAD"], check=False
-            )
-            staged = work / "snapshot"
-            staged.mkdir(mode=0o700)
-            for component in ("scripts", "configs", "contracts"):
-                storage.calculate_directory_fingerprint(source / component)
-                shutil.copytree(source / component, staged / component)
-            configuration.write_node_environment(
-                staged / "scripts/env.sh", configuration.build_node_environment(config)
-            )
-            manifest = {
-                "project_commit": (
-                    revision.stdout.strip()
-                    if revision.returncode == 0
-                    else "local-unversioned"
-                ),
-                "inputs": configuration.build_node_environment(config),
-                "hashes": {
-                    c: storage.calculate_directory_fingerprint(staged / c)
-                    for c in ("scripts", "configs", "contracts")
-                },
-            }
-            storage.write_json_atomically(staged / "manifest.json", manifest)
-            storage.restrict_workspace_permissions(staged)
+            staged, _ = render_source_snapshot(store, config, Path(tmp))
             os.replace(staged, snapshot)
     storage.validate_private_path(snapshot)
     storage.validate_private_path(snapshot / "manifest.json")
@@ -80,7 +88,7 @@ def capture_node_source_snapshot(store, config):
         raise process.OperationError(
             "Saved source snapshot does not match node configuration"
         )
-    for component in ("scripts", "configs", "contracts"):
+    for component in SOURCE_COMPONENTS:
         if storage.calculate_directory_fingerprint(
             snapshot / component
         ) != manifest.get("hashes", {}).get(component):
@@ -248,3 +256,116 @@ def validate_generated_node_configuration(directory, config):
         raise process.OperationError(
             "Generated global configuration does not match the selected source network"
         )
+
+
+def _component_files(root):
+    """Map each managed file to its content hash, rejecting links."""
+    storage.calculate_directory_fingerprint(root)
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _install_file(source, target):
+    """Replace one file inside its existing directory.
+
+    The workspace's scripts and contracts are bind-mounted into the running
+    node container, so the directory inode must stay the same. Replacing a
+    file within it is visible to the container; swapping the directory is not.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = target.with_name(target.name + ".evernode-sync.tmp")
+    shutil.copyfile(source, temporary)
+    os.chmod(
+        temporary,
+        0o700 if target.suffix == ".sh" and target.name != "env.sh" else 0o600,
+    )
+    os.replace(temporary, target)
+
+
+def refresh_node_scripts(store, config, *, dry_run=False):
+    """Re-render a node's saved orchestration components from its own source.
+
+    Updating the installed package does not touch a node's saved scripts, so a
+    fixed reference script otherwise never reaches an existing validator. This
+    renders the recorded source again and installs only the files that differ.
+    Identity, keys, database, elections state and logs are never touched.
+    """
+    directory = store.node_directory(config["name"])
+    for component in SOURCE_COMPONENTS:
+        storage.validate_private_path(directory / component)
+    with tempfile.TemporaryDirectory(prefix=".refresh-", dir=directory) as tmp:
+        staged, manifest = render_source_snapshot(store, config, Path(tmp))
+        plan = {
+            "node": config["name"],
+            "project_commit": manifest["project_commit"],
+            "components": {},
+        }
+        work = []
+        for component in SOURCE_COMPONENTS:
+            live = directory / component
+            rendered = _component_files(staged / component)
+            current = _component_files(live)
+            updated = sorted(
+                name
+                for name, digest in rendered.items()
+                if current.get(name) != digest and name in current
+            )
+            added = sorted(set(rendered) - set(current))
+            removed = sorted(set(current) - set(rendered))
+            plan["components"][component] = {
+                "updated": updated,
+                "added": added,
+                "removed": removed,
+                "unchanged": len(rendered) - len(updated) - len(added),
+            }
+            for name in updated + added:
+                work.append((staged / component / name, live / name))
+            for name in removed:
+                work.append((None, live / name))
+        plan["changed"] = bool(work)
+        if dry_run or not work:
+            return plan
+        backups = directory / ".script-backups"
+        backups.mkdir(exist_ok=True, mode=0o700)
+        # A unique suffix keeps two refreshes in the same second apart.
+        backup = Path(
+            tempfile.mkdtemp(
+                prefix=time.strftime("%Y%m%dT%H%M%SZ-", time.gmtime()), dir=backups
+            )
+        )
+        backup.chmod(0o700)
+        for source, target in work:
+            if target.exists():
+                saved = backup / target.relative_to(directory)
+                saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                shutil.copy2(target, saved)
+        for source, target in work:
+            if source is None:
+                target.unlink()
+            else:
+                _install_file(source, target)
+        # Removing the last file in a subdirectory leaves it behind, and the
+        # fingerprint below covers directories as well as files.
+        for component in SOURCE_COMPONENTS:
+            live = directory / component
+            for path in sorted(live.rglob("*"), reverse=True):
+                if (
+                    path.is_dir()
+                    and not any(path.iterdir())
+                    and not (staged / component / path.relative_to(live)).is_dir()
+                ):
+                    path.rmdir()
+        plan["backup"] = str(backup)
+        for component in SOURCE_COMPONENTS:
+            if storage.calculate_directory_fingerprint(
+                directory / component
+            ) != manifest["hashes"][component]:
+                raise process.OperationError(
+                    f"Refreshed {component} does not match the rendered source"
+                )
+    config["project_commit"] = manifest["project_commit"]
+    config["source_hashes"] = manifest["hashes"]
+    return plan

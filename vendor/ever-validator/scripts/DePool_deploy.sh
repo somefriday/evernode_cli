@@ -62,14 +62,9 @@ echo -e "$(Determine_Current_Network)"
 echo
 
 #=================================================
-# If the access mode is set to console and the node is not synchronized, prompt the user to switch to dapp mode temporarily
-if Ask_to_switch_to_dapp;then
-    echo "Proceeding..."
-    export FORCE_USE_DAPP=true
-elif [[ $? -gt 1 ]];then
-    echo "Cancelled."
-    exit 1
-fi
+# The node's own console is the only transport; an unusable node refuses the
+# operation here rather than routing around it. See functions.shinc.
+Require_Node_Console || exit 1
 SEND_ATTEMPTS=3
 
 #========= Depool Deploy Parametrs ================================
@@ -189,7 +184,11 @@ if ! echo "$Payload_for_Deploy"|jq; then
 fi
 
 #===========================================================
-read -rp "### CHECK INFO TWICE!!! Is this a right Parameters? Think once more!  (yes/n)? " </dev/tty answer
+if [[ ${EVERNODE_APPROVED:-} == "yes" ]]; then
+    answer=yes
+else
+    read -rp "### CHECK INFO TWICE!!! Is this a right Parameters? Think once more!  (yes/n)? " </dev/tty answer
+fi
 case ${answer:0:3} in
     yes|YES )
         echo

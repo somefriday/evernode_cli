@@ -59,6 +59,10 @@ function remove_stake() {
     printf "\n%s\n" "Depool participant raw info for the multisig $MSIG_NAME:"
     printf "%s\n\n" "$(jq '.' <<< "$MSIG_participant_Info")"
 
+    # What this wallet holds before the withdrawal, so the effect of the
+    # withdrawal is a fall from a known figure rather than an absolute one.
+    Staked_Before=$(jq -er '.total | tonumber | floor' <<< "$MSIG_participant_Info") || return 1
+
     # Check if the multisig has a ordinary stake in the depool
     ST_QTY=$(jq -r '[.stakes[]] | length' <<< "$MSIG_participant_Info")
     if [[ $ST_QTY -eq 0 ]];then
@@ -70,7 +74,9 @@ function remove_stake() {
     do
         Curr_Round_Stake_nano=$(jq -r "[.stakes[]][$i]" <<< "$MSIG_participant_Info") # in nanotokens
         Curr_Round_Stake=$(echo "scale=3; $((Curr_Round_Stake_nano)) / 1000000000" | $CALL_BC)
-        printf "You have stake in $i round: %s\n" "$(jq -r "[.stakes[]][$i]" <<< "${Curr_Round_Stake}")"
+        # Curr_Round_Stake is already the figure, so the reference line's second
+        # jq ran over a number and printed an error and nothing else.
+        printf "You have stake in %s round: %s\n" "$i" "$Curr_Round_Stake"
     done
 
     #=================================================
@@ -83,16 +89,12 @@ function remove_stake() {
     printf "%s\n\n" "If a participant's ordinary stake falls below the depool's minStake due to this withdrawal, their entire stake will be withdrawn."
 
     #=================================================
-    read -rp "### CHECK INFO TWICE!!! Are you sure you want to proceed? (y/n)? " </dev/tty answer
-    case ${answer} in
-        y|Y|yes|Yes|YES )
-            printf "%s\n" "Processing..."
-        ;;
-        * )
-            printf "%s\n" "Cancelled."
-            return 1
-        ;;
-    esac
+    if Confirm_Managed_Operation; then
+        printf "%s\n" "Processing..."
+    else
+        printf "%s\n" "Cancelled."
+        return 1
+    fi
 
     #=================================================
     # make ordinary stake
@@ -104,7 +106,7 @@ function remove_stake() {
         --abi "${INPL_SafeC_Wallet_ABI}" \
         "${MSIG_addr}" submitTransaction \
         "{\"dest\":\"$Depool_addr\",\"value\":$((STAKE_AMOUNT_NANO + DEPOOL_STAKE_FEE_NANO)),\"bounce\":true,\"allBalance\":false,\"payload\":\"$PayLoad\"}" \
-        --lifetime 3600
+        --lifetime "$MSG_LIFETIME"
     # Decode BOC file
     if ! Message_JSON="$($CALL_CLI -j decode msg --abi "${INPL_SafeC_Wallet_ABI}" "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc")";then
         echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot decode message for withdrawFromPoolingRound.boc. Exiting..."
@@ -120,16 +122,38 @@ function remove_stake() {
         return 1
     fi
     #################
-    if ! New_Trans_ID=$(Send_Message "${MSIG_addr}" "${Depool_addr}" "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc");then
+    #################
+    # Resume a transaction an interrupted earlier attempt already submitted.
+    # Only when there could be one: with a single required signature the
+    # submit transfers inline and never creates a pending entry, so any match
+    # would be a leftover from a different wallet configuration.
+    New_Trans_ID=""
+    if [[ ${EVERNODE_APPROVED:-} == "yes" && ${Required_Signs:-1} -gt 1 ]]; then
+        New_Trans_ID=$(Find_Matching_Pending_Trans "$MSIG_addr" "$Depool_addr" "$((STAKE_AMOUNT_NANO + DEPOOL_STAKE_FEE_NANO))" "$PayLoad" "${KEYS_DIR}/${MSIG_NAME}_1.keys.json") || return 1
+        [[ -n $New_Trans_ID ]] && printf "%s\n" "---INFO: Resuming the matching transaction $New_Trans_ID already in the wallet."
+    fi
+    # A sixth live transaction from this custodian would be rejected with 113
+    # before tvm.accept(), leaving nothing on chain to explain itself.
+    if [[ -z $New_Trans_ID && ${Required_Signs:-1} -gt 1 ]];then
+        Require_Queue_Space "$MSIG_addr" "${KEYS_DIR}/${MSIG_NAME}_1.keys.json" || return 1
+    fi
+    if [[ -z $New_Trans_ID ]] && ! New_Trans_ID=$(Submit_And_Identify "$MSIG_addr" "$Depool_addr" \
+            "${INPL_ELECTIONS_WORK_DIR}/withdrawFromPoolingRound.boc" "$((STAKE_AMOUNT_NANO + DEPOOL_STAKE_FEE_NANO))" "$PayLoad" "${KEYS_DIR}/${MSIG_NAME}_1.keys.json");then
     #################
         return 1
-    else
-        # shellcheck disable=SC2154
-        if [[ $Required_Signs -gt 1 ]];then
+    fi
+    if [[ ${EVERNODE_APPROVED:-} != "yes" ]];then
+        if [[ ${Required_Signs:-1} -gt 1 ]];then
             printf "%s\n" "+++-INFO: Made transaction ID: $New_Trans_ID . You need to sign it with the remaining keys by run ${BoldText} ./Sign_Trans.sh $MSIG_NAME $New_Trans_ID ${NormText}"
         else
             printf "%s\n" "+++-INFO: Remove stake successfull. You can check in the depool by ./dinfo.sh script."
         fi
+        return 0
     fi
-    return 0
+    # A signed wallet transaction is not the operation: the confirmation that
+    # executes it ends in an internal message the DePool can still refuse, so
+    # wait for the DePool's own state to show the request.
+    [[ ${Required_Signs:-1} -gt 1 ]] || New_Trans_ID=""
+    Complete_And_Await "$New_Trans_ID" "$MSIG_addr" "$MSIG_NAME" "The removal of ${STAKE_AMOUNT_NANO} nanotokens from the pooling round" \
+        Effect_Own_Stake_At_Most "$Depool_addr" "$MSIG_addr" "$((Staked_Before - STAKE_AMOUNT_NANO))"
 }

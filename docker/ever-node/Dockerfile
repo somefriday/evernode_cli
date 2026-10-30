@@ -13,7 +13,6 @@ ARG YQ_VERSION=4.44.5
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/root/.cargo/bin:${PATH} \
     RUSTUP_TOOLCHAIN=${RUST_VERSION} \
-    ZSTD_LIB_DIR=/usr/lib/x86_64-linux-gnu \
     CARGO_PROFILE_RELEASE_LTO=fat \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
     CARGO_PROFILE_RELEASE_PANIC=abort
@@ -25,13 +24,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq bc util-linux procps && \
     rm -rf /var/lib/apt/lists/* && \
     curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain "${RUST_VERSION}" && \
-    curl -fL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o /usr/local/bin/yq && \
+    curl -fL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_$(dpkg --print-architecture)" -o /usr/local/bin/yq && \
     chmod 0755 /usr/local/bin/yq
 
 COPY src/${NODE_SRC_DIR} /build/${NODE_SRC_DIR}
 COPY src/${CLI_SRC_DIR} /build/${CLI_SRC_DIR}
 
 RUN mkdir -p /out && \
+    export ZSTD_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
     cd /build/${NODE_SRC_DIR} && \
     rustup run "${RUST_VERSION}" cargo update && \
     rustup run "${RUST_VERSION}" cargo build --release --features "${NODE_BUILD_FEATURES}" && \
@@ -45,8 +45,7 @@ RUN mkdir -p /out && \
 
 FROM ubuntu:22.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    ZSTD_LIB_DIR=/usr/lib/x86_64-linux-gnu
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates bash curl git jq bc util-linux procps \

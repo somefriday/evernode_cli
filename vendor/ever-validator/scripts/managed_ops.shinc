@@ -1,0 +1,869 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#**************************************************************************************************
+# Helpers shared by the DePool stake operations when evernode drives them.
+# functions.shinc sources this file; it defines functions only, so a test can
+# source it on its own without the rest of the reference environment.
+#
+# Sourcing it twice is a no-op: DePool_deploy.sh and Msig_deploy.sh each source
+# functions.shinc twice, and re-running a readonly declaration is an error that
+# would abort the script that did it.
+#**************************************************************************************************
+if [[ -n ${MANAGED_OPS_LOADED:-} ]];then
+    return 0
+fi
+MANAGED_OPS_LOADED=1
+
+#=================================================
+# Confirm a stake operation that the managed CLI has already approved.
+# The reference prompts read /dev/tty, which a detached manager session has
+# not got. EVERNODE_APPROVED is set only by the CLI command that collected
+# the operator's confirmation for this exact operation.
+# Output: 0 to proceed, 1 to cancel
+function Confirm_Managed_Operation() {
+    local Prompt="${1:-### CHECK INFO TWICE!!! Are you sure you want to proceed? (y/n)? }"
+    if [[ ${EVERNODE_APPROVED:-} == "yes" ]];then
+        printf "%s\n" "---INFO: Proceeding with the confirmation already collected by evernode."
+        return 0
+    fi
+    local answer
+    read -rp "$Prompt" </dev/tty answer
+    case ${answer} in
+        y|Y|yes|Yes|YES )
+            return 0
+        ;;
+        * )
+            return 1
+        ;;
+    esac
+}
+#=================================================
+# This wallet's own ordinary stake in a DePool, in nanotokens.
+# A wallet that is not a participant yet holds nothing, which is a normal
+# state before the first stake and after a completed withdrawal, so it is
+# reported as 0 rather than treated as an error.
+# Input:
+#  - depool_address
+#  - msig_address
+# Output: the total as a decimal number of nanotokens
+function Get_DP_Own_Stake() {
+    local Depool_addr="$1"
+    local MSIG_addr="$2"
+    local participants participant
+    participants=$(Get_DP_Parts_List "$Depool_addr") || return 1
+    if ! jq -e --arg wallet "$MSIG_addr" \
+            '.participants | index($wallet) != null' <<< "$participants" >/dev/null; then
+        echo 0
+        return 0
+    fi
+    participant=$(Get_DP_Part_Info "$Depool_addr" "$MSIG_addr") || return 1
+    jq -er '.total | tonumber | floor' <<< "$participant"
+}
+#=================================================
+# Find this wallet's pending transaction that exactly matches one this script
+# is about to submit.
+#
+# Submission and confirmation are separate on-chain messages, so a run that
+# dies between them leaves a real transaction holding one signature. Retrying
+# must then resume that transaction, never submit a second one, or each attempt
+# adds another half-signed transfer until the wallet's queue is full.
+#
+# The match is exact on destination, value, payload, bounce and send flags.
+# More than one match is ambiguous and refused rather than guessed.
+# Input:
+#  - msig_address
+#  - destination address
+#  - value in nanotokens
+#  - payload (base64 message body)
+# Output: the matching transaction id, or empty when there is none
+function Find_Matching_Pending_Trans() {
+    local MSIG_ADDR="$1"
+    local Dest="$2"
+    local Value="$3"
+    local PayLoad="$4"
+    local Key_File="${5:-}"
+    local Window_Start="${6:-}"
+    local pending creator="" candidate kept="" count=0
+    pending=$(Get_MSIG_Trans_List "$MSIG_ADDR") || return 1
+    # Matching content alone is not identity. Every operation of every
+    # custodian targets the same DePool, so another custodian running the same
+    # operation produces an entry identical in destination, value and payload -
+    # and adopting it would add our signatures to a transfer we did not create.
+    # The entry names the key that submitted it, so ours is the one with our
+    # own public key as creator.
+    if [[ -n $Key_File ]];then
+        creator=$(Custodian_Key_Decimal "$Key_File") || return 1
+    fi
+    for candidate in $(jq -r --arg dest "$Dest" --arg payload "$PayLoad" \
+            --arg value "$Value" --arg creator "$creator" \
+            '.transactions[] | select(.dest == $dest and .payload == $payload
+                and .value == $value and .bounce == true and .sendFlags == "3"
+                and ($creator == "" or .creator == $creator)) | .id' \
+            <<< "$pending"); do
+        [[ $candidate =~ ^[0-9]+$ ]] || continue
+        # The id carries the second it was created in its high 32 bits, so an
+        # entry from before this attempt began is a leftover, not this submit.
+        # The comparison is done here because the id exceeds the precision jq
+        # keeps for numbers.
+        if [[ -n $Window_Start ]];then
+            [[ $((candidate >> 32)) -ge $Window_Start ]] || continue
+        fi
+        kept="${kept}${candidate} "
+        count=$((count + 1))
+    done
+    if [[ $count -gt 1 ]]; then
+        printf "###-ERROR: More than one pending transaction matches this request; resolve them with 'evernode depool info' and 'evernode depool confirm' before retrying.\n" >&2
+        return 1
+    fi
+    [[ $count -eq 1 ]] && printf "%s\n" "${kept% }"
+    return 0
+}
+#=================================================
+# The timestamp a multisig transaction id was created at.
+# SafeMultisigWallet's _generateId() is (now << 32) | (transLT & 0xFFFFFFFF),
+# so the id carries its own creation time and nothing else has to record it.
+# Input:
+#  - transaction id, decimal
+# Output: the creation time as a unix epoch
+function Trans_Created_At() {
+    local Trans_ID="$1"
+    [[ $Trans_ID =~ ^[0-9]+$ ]] || return 1
+    printf "%s\n" "$(( Trans_ID >> 32 ))"
+}
+#=================================================
+# The earliest of several deadlines, which is the only safe one to wait to.
+# A pending transaction dies at creation + expirationTime, and an operation
+# usually has a shorter window of its own: a bid is worthless once its election
+# closes, so waiting out the contract's hour would turn a clean failure into a
+# missed round. Non-numeric and non-positive candidates are ignored, so a
+# caller may pass a window it could not determine.
+# Input:
+#  - two or more candidate deadlines, unix epochs
+# Output: the smallest, or nothing when no candidate was usable
+function Min_Deadline() {
+    local candidate earliest=""
+    for candidate in "$@"; do
+        [[ $candidate =~ ^[0-9]+$ ]] || continue
+        [[ $candidate -gt 0 ]] || continue
+        if [[ -z $earliest || $candidate -lt $earliest ]]; then
+            earliest="$candidate"
+        fi
+    done
+    [[ -n $earliest ]] || return 1
+    printf "%s\n" "$earliest"
+}
+#=================================================
+# Wait until an operation's intended effect is observable, or give up at a
+# deadline.
+#
+# Every operation here is "build a signed message, deliver it, then decide
+# whether it worked", and every failure seen so far came from the deciding:
+# a single read that lost a race with inclusion, a transport acknowledgement
+# mistaken for execution, a counter that unrelated activity also moves.
+#
+# Deciding cannot be done by looking for the transaction either. The wallet
+# checks every require() before tvm.accept(), so a wrong key, a full queue or
+# an already-confirmed transaction is rejected without being recorded in any
+# block: "no transaction appeared" is the ordinary shape of failure, and only
+# the intended effect tells success from it.
+#
+# So each operation passes a predicate on its own effect, and the predicate
+# must be positive and monotone - something that becomes true and stays true.
+# Absence from the pending list does not qualify: an entry also disappears by
+# expiring, and by never having been created.
+#
+# Input:
+#  - label for the operator-facing messages
+#  - deadline, a unix epoch; see Min_Deadline
+#  - seconds between polls
+#  - predicate function and its arguments. It must not send anything, and
+#    returns 0 when the effect is there, 2 when the chain could not be read,
+#    anything else when the effect is not there yet
+# Output: 0 as soon as the predicate holds, 1 at the deadline
+function Await_Effect() {
+    local Label="$1"
+    local Deadline="$2"
+    local Interval="$3"
+    shift 3
+    local status polls=0 unreadable=0 waited=0
+    [[ $Interval -ge 1 ]] || Interval=1
+    while :; do
+        # Always one poll before the deadline is consulted: the effect may
+        # already be on chain, and then a late start must still succeed.
+        "$@"
+        status=$?
+        polls=$((polls + 1))
+        if [[ $status -eq 0 ]]; then
+            printf "%s\n" "+++-INFO: ${Label} is confirmed on chain after ${waited}s."
+            return 0
+        fi
+        [[ $status -eq 2 ]] && unreadable=$((unreadable + 1))
+        if [[ $(date +%s) -ge $Deadline ]]; then
+            if [[ $unreadable -eq $polls ]]; then
+                echoerr "###-ERROR: ${Label} could not be checked - the chain did not answer any of ${polls} attempts over ${waited}s. The operation's own state is unknown; read it with 'evernode depool info' before retrying."
+            else
+                echoerr "###-ERROR: ${Label} did not take effect within ${waited}s, and its deadline has passed. Nothing further was sent. Read the wallet's pending transactions with 'evernode depool info': an entry still listed needs its remaining signatures, and no entry means the request never reached the wallet and can be made again."
+            fi
+            return 1
+        fi
+        sleep "$Interval"
+        waited=$((waited + Interval))
+    done
+}
+#=================================================
+# How long a pending transaction of this wallet stays alive, read from the
+# wallet instead of assumed. SafeMultisigWallet uses 3600 seconds but it is a
+# per-contract constant - SurfMultisigWallet uses 3601 - so the only reliable
+# source is the contract. Falls back to SafeMultisigWallet's value when the
+# getter cannot be read, which errs on the short side and so cannot make a
+# caller wait past a real expiry.
+# Input:
+#  - msig_address
+# Output: seconds
+function Get_MSIG_Expiration_Time() {
+    local MSIG_addr="$1"
+    local value=""
+    if Get_SC_current_state "$MSIG_addr" | grep -iq "written StateInit of account";then
+        value="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${MSIG_addr##*:}.boc" \
+            getParameters '{}' --abi "${INPL_SafeC_Wallet_ABI}" 2>/dev/null \
+            | jq -r '.expirationTime // empty')"
+    fi
+    if ! [[ $value =~ ^[0-9]+$ ]] || [[ $value -le 0 ]];then
+        value=3600
+    fi
+    printf "%s\n" "$value"
+}
+#=================================================
+# This wallet's participant record, read from freshly fetched DePool state.
+#
+# Get_DP_Part_Info runs the getter against the account boc already on disk, so
+# a poll built on it alone would read the same stale state for ever. Fetching
+# the DePool first is what keeps it current, and is also how Get_DP_Own_Stake
+# stays correct.
+# Input:
+#  - depool_address
+#  - msig_address
+# Output: the participant JSON, or "null" when this wallet holds nothing there
+function Get_DP_Own_Participation() {
+    local Depool_addr="$1"
+    local MSIG_addr="$2"
+    local participants
+    participants=$(Get_DP_Parts_List "$Depool_addr") || return 1
+    if ! jq -e --arg wallet "$MSIG_addr" \
+            '.participants | index($wallet) != null' <<< "$participants" >/dev/null; then
+        printf "null\n"
+        return 0
+    fi
+    Get_DP_Part_Info "$Depool_addr" "$MSIG_addr"
+}
+#=================================================
+# Effect predicates for Await_Effect.
+#
+# Each one answers a single question about the chain and sends nothing. They
+# all report the same three outcomes, because telling "the effect is not there"
+# from "the chain could not be read" is the difference between a failure an
+# operator can act on and one they cannot:
+#   0 the effect is observable
+#   1 it is not there yet
+#   2 the chain could not be read
+#
+# Each is also monotone: once true it stays true, so no poll can see the effect
+# flicker away and no ordering between polls matters.
+#=================================================
+# The stake this wallet holds in the DePool has reached a floor.
+# Input: depool_address, msig_address, expected nanotokens
+function Effect_Own_Stake_At_Least() {
+    local observed
+    observed=$(Get_DP_Own_Stake "$1" "$2") || return 2
+    [[ $observed =~ ^[0-9]+$ ]] || return 2
+    [[ $observed -ge $3 ]]
+}
+#=================================================
+# The stake this wallet holds in the DePool has fallen to a ceiling, which is
+# how an immediate withdrawal from the pooling round shows up.
+# Input: depool_address, msig_address, expected nanotokens
+function Effect_Own_Stake_At_Most() {
+    local observed
+    observed=$(Get_DP_Own_Stake "$1" "$2") || return 2
+    [[ $observed =~ ^[0-9]+$ ]] || return 2
+    [[ $observed -le $3 ]]
+}
+#=================================================
+# The DePool has recorded a withdrawal of exactly this size.
+#
+# A DePool does not pay a stake back at once: it records the request and
+# releases the funds when the round holding the stake completes. So the
+# observable effect of a withdrawal is the recorded request, not a balance.
+# Input: depool_address, msig_address, expected nanotokens
+function Effect_Pending_Withdrawal_Is() {
+    local participant observed
+    participant=$(Get_DP_Own_Participation "$1" "$2") || return 2
+    [[ $participant == "null" ]] && return 1
+    observed=$(jq -r '.withdrawValue | values' <<< "$participant") || return 2
+    [[ $observed =~ ^[0-9]+$ ]] || return 2
+    [[ $observed -eq $3 ]]
+}
+#=================================================
+# The DePool has this wallet's reinvestment flag in the requested state, which
+# is what withdrawing the entire stake, and cancelling it again, actually set.
+# Input: depool_address, msig_address, expected "true" or "false"
+function Effect_Reinvest_Is() {
+    local participant observed
+    participant=$(Get_DP_Own_Participation "$1" "$2") || return 2
+    [[ $participant == "null" ]] && return 1
+    observed=$(jq -r '.reinvest | values' <<< "$participant") || return 2
+    [[ $observed == "true" || $observed == "false" ]] || return 2
+    [[ $observed == "$3" ]]
+}
+#=================================================
+# No withdrawal is recorded and reinvestment is back on: both halves of what
+# cancelling a withdrawal does, so neither half can pass on its own.
+# Input: depool_address, msig_address
+function Effect_Withdrawal_Cancelled() {
+    local participant withdrawal reinvest
+    participant=$(Get_DP_Own_Participation "$1" "$2") || return 2
+    [[ $participant == "null" ]] && return 1
+    withdrawal=$(jq -r '.withdrawValue | values' <<< "$participant") || return 2
+    reinvest=$(jq -r '.reinvest | values' <<< "$participant") || return 2
+    [[ $withdrawal =~ ^[0-9]+$ ]] || return 2
+    [[ $reinvest == "true" || $reinvest == "false" ]] || return 2
+    [[ $withdrawal -eq 0 && $reinvest == "true" ]]
+}
+#=================================================
+# The DePool's own operating balance has risen to a floor, in nanotokens.
+#
+# Get_DP_Self_Balance fetches the DePool account and leaves the raw figure in
+# DP_balance_nT, which is the only nanotoken-precise reading available; its own
+# return value is rounded to three decimals. The caller supplies the floor with
+# an allowance, because a replenish arrives minus forward fees and the DePool
+# keeps spending its balance on ticks while we watch, so an exact equality
+# would never hold.
+# Input: depool_address, expected nanotokens
+function Effect_Self_Balance_At_Least() {
+    Get_DP_Self_Balance "$1" >/dev/null || return 2
+    [[ $DP_balance_nT =~ ^[0-9]+$ ]] || return 2
+    [[ $DP_balance_nT -ge $2 ]]
+}
+#=================================================
+# This DePool's own stake in the round it is being elected for.
+#
+# A DePool forwards a validator request only for a round it has a stake in. Its
+# v3 pipeline reinvests a completed round's stake into the current *pooling*
+# round rather than the next one being elected, so a single tranche funds
+# alternating rounds and the rounds in between are elected with nothing - which
+# looks exactly like a bid that failed to register.
+# Input:
+#  - depool_address
+#  - elections id
+# Output: the round's stake in nanotokens, or nothing when it cannot be read
+function Get_DP_Round_Stake_For_Election() {
+    local Depool_addr="$1"
+    local Elections_ID="$2"
+    local rounds stake
+    rounds=$(Get_DP_Rounds "$Depool_addr") || return 1
+    [[ -n $rounds ]] || return 1
+    stake=$(jq -r --arg at "$Elections_ID" \
+        '[.rounds[] | select((.supposedElectedAt|tonumber) == ($at|tonumber))] | .[0].stake // empty' \
+        <<< "$rounds" 2>/dev/null) || return 1
+    [[ -n $stake ]] || return 1
+    printf "%s\n" "$stake"
+}
+#=================================================
+# The DePool has entered one election.
+#
+# Ticking the DePool is what makes it bid, and the DePool's own rounds say
+# whether it did: one of them carries this election's id as its
+# supposedElectedAt. A signature count cannot stand in for that - the
+# confirmation that executes the wallet transaction ends in an internal message
+# the DePool can still refuse.
+#
+# Every round is searched rather than the one at a fixed position in the list.
+# The pipeline holds four rounds and rotates them, so which index carries the
+# round being elected depends on where the rotation has got to; reading a
+# position was the same mistake as taking the newest pending entry by
+# position, and it reported a DePool that had entered the election as one that
+# had not.
+# Input:
+#  - depool_address
+#  - elections id
+# Output: 0 the DePool is in this election · 1 not yet · 2 it could not be read
+function Effect_DePool_Set_For_Election() {
+    local Depool_addr="$1"
+    local Elections_ID="$2"
+    local rounds matched
+    rounds=$(Get_DP_Rounds "$Depool_addr") || return 2
+    [[ -n $rounds ]] || return 2
+    matched=$(jq -r --arg at "$Elections_ID" \
+        '[.rounds[] | select((.supposedElectedAt|tonumber) == ($at|tonumber))] | length' \
+        <<< "$rounds" 2>/dev/null) || return 2
+    [[ $matched =~ ^[0-9]+$ ]] || return 2
+    [[ $matched -gt 0 ]]
+}
+#=================================================
+# One pending transaction, by id.
+#
+# The id is matched exactly. Searching the wallet's answer as text would also
+# match an id that is merely a substring of another field - every entry carries
+# a 77-digit creator - and a confirmation sent for an id this wallet does not
+# hold is rejected before tvm.accept(), so it leaves nothing in any block to
+# explain itself.
+# Input:
+#  - msig_address
+#  - transaction id
+# Output: the entry as a JSON object, or nothing when the wallet does not hold
+#         it; 2 when the wallet could not be read, which is not the same thing
+function Get_Pending_Entry() {
+    local MSIG_ADDR="$1"
+    local Trans_ID="$2"
+    local pending entry
+    pending=$(Get_MSIG_Trans_List "$MSIG_ADDR") || return 2
+    if ! entry=$(jq -c --arg id "$Trans_ID" \
+            '[.transactions[] | select(.id == $id)] | .[0] // empty' <<< "$pending");then
+        return 2
+    fi
+    [[ -n $entry ]] && printf "%s\n" "$entry"
+    return 0
+}
+#=================================================
+# The wallet's custodians, as index and pubkey.
+# Input: msig_address
+# Output: the getCustodians answer as JSON
+function Get_MSIG_Custodians() {
+    local MSIG_ADDR="$1"
+    local Result
+    if [[ ! -f $SafeC_Wallet_ABI ]];then
+        echoerr "###-ERROR: Cannot find SafeCodeWallet ABI."
+        return 1
+    fi
+    if ! Get_SC_current_state "$MSIG_ADDR" | grep -iq "written StateInit of account";then
+        echoerr "###-ERROR: Cannot read the state of wallet ${MSIG_ADDR}."
+        return 2
+    fi
+    if ! Result="$($CALL_CLI -j run --boc "${INPL_ELECTIONS_WORK_DIR}/${MSIG_ADDR##*:}.boc" \
+            getCustodians '{}' --abi "${INPL_SafeC_Wallet_ABI}")";then
+        echoerr "###-ERROR: Cannot read the custodians of wallet ${MSIG_ADDR}."
+        return 3
+    fi
+    printf "%s\n" "$Result"
+}
+#=================================================
+# This node's key files that have not signed a pending transaction yet.
+#
+# A pending entry carries one bit per custodian index, so the wallet states
+# exactly who still owes a signature. Counting signatures instead - "received
+# plus one" - only lands on the right key when the submitting custodian
+# happened to be the first one, and otherwise re-sends with a key that has
+# already signed, which the wallet rejects before accept and so leaves nothing
+# to explain the failure.
+#
+# Key files are matched to custodian indices through their own public keys, so
+# the file names carry no meaning beyond finding them.
+# Input:
+#  - msig_address
+#  - msig_name (key files are <msig_name>_<n>.keys.json in KEYS_DIR)
+#  - the entry's confirmationsMask
+# Output: one "<custodian index> <key file name>" per line, lowest index first
+function Unsigned_Local_Keys() {
+    local MSIG_ADDR="$1"
+    local MSIG_NAME="$2"
+    local Mask="$3"
+    local custodians key_file key_decimal index
+    [[ $Mask =~ ^[0-9]+$ ]] || { echoerr "###-ERROR: unusable confirmation mask '${Mask}'."; return 1; }
+    custodians=$(Get_MSIG_Custodians "$MSIG_ADDR") || return 1
+    for key_file in "${KEYS_DIR}/${MSIG_NAME}"_*.keys.json; do
+        [[ -f $key_file ]] || continue
+        key_decimal=$(Custodian_Key_Decimal "$key_file") || continue
+        index=$(jq -r --arg key "$key_decimal" \
+            '.custodians[] | select(.pubkey == $key) | .index' <<< "$custodians")
+        [[ $index =~ ^[0-9]+$ ]] || continue
+        (( (Mask >> index) & 1 )) && continue
+        printf "%s %s\n" "$index" "${key_file##*/}"
+    done | sort -n
+}
+#=================================================
+# Wait until the wallet records the signature just sent.
+#
+# This is the whole point of signing one key at a time. A confirmation is its
+# own external message, and every reason one can fail - the key already signed,
+# the transaction no longer exists, the message expired in transit - is checked
+# before tvm.accept(), so a failed confirmation is recorded in no block at all.
+# The only positive evidence that it ran is the wallet's own mask gaining our
+# bit, or the transaction leaving the list because that signature completed it.
+# Input:
+#  - msig_address
+#  - transaction id
+#  - custodian index whose signature is expected
+#  - deadline as a unix epoch
+# Output: 0 recorded · 2 the transaction is no longer pending · 1 neither, by
+#         the deadline
+function Await_Signature_Recorded() {
+    local MSIG_ADDR="$1"
+    local Trans_ID="$2"
+    local Index="$3"
+    local Deadline="$4"
+    local entry status mask interval="${EFFECT_POLL_INTERVAL:-2}"
+    [[ $interval -ge 1 ]] || interval=1
+    while :; do
+        entry=$(Get_Pending_Entry "$MSIG_ADDR" "$Trans_ID")
+        status=$?
+        if [[ $status -eq 0 ]];then
+            if [[ -z $entry ]];then
+                return 2
+            fi
+            mask=$(jq -r '.confirmationsMask' <<< "$entry")
+            if [[ $mask =~ ^[0-9]+$ ]] && (( (mask >> Index) & 1 ));then
+                return 0
+            fi
+        fi
+        [[ $(date +%s) -ge $Deadline ]] && return 1
+        sleep "$interval"
+    done
+}
+#=================================================
+# Sign one pending transaction through to execution, one signature at a time.
+#
+# Sending every signature and reading the result once is what let a bid that
+# had actually reached the chain be reported as unsigned: the read raced the
+# block it was waiting for. Sending one signature and waiting for the wallet to
+# show it removes the race, and the entry leaving the list is then positive
+# proof that the last signature executed the transfer - provided we are still
+# inside the entry's own lifetime, which is what the caller's deadline
+# guarantees. Outside it, absence would also be what expiry looks like.
+# Input:
+#  - msig_address
+#  - msig_name
+#  - transaction id
+#  - deadline as a unix epoch, strictly inside the entry's lifetime
+#  - label for the operator-facing messages
+# Output: 0 when the transaction has executed · 3 when it still needs
+#         signatures no key on this node can give · 1 on any other failure
+function Sign_To_Execution() {
+    local MSIG_ADDR="$1"
+    local MSIG_NAME="$2"
+    local Trans_ID="$3"
+    local Deadline="$4"
+    local Label="$5"
+    local entry status unsigned index key_file mask received required sent=0
+    while :; do
+        if [[ $(date +%s) -ge $Deadline ]];then
+            echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} is still unsigned and its deadline has passed, so nothing further was sent."
+            return 1
+        fi
+        entry=$(Get_Pending_Entry "$MSIG_ADDR" "$Trans_ID")
+        status=$?
+        if [[ $status -ne 0 ]];then
+            echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info' before retrying."
+            return 1
+        fi
+        if [[ -z $entry ]];then
+            if [[ $sent -gt 0 ]];then
+                printf "%s\n" "+++-INFO: ${Label}: transaction ${Trans_ID} executed after ${sent} signature(s) from this node."
+            else
+                printf "%s\n" "---INFO: ${Label}: transaction ${Trans_ID} is no longer pending, so it was already completed."
+            fi
+            return 0
+        fi
+        received=$(jq -r '.signsReceived' <<< "$entry")
+        required=$(jq -r '.signsRequired' <<< "$entry")
+        mask=$(jq -r '.confirmationsMask' <<< "$entry")
+        if ! unsigned=$(Unsigned_Local_Keys "$MSIG_ADDR" "$MSIG_NAME" "$mask");then
+            return 1
+        fi
+        if [[ -z $unsigned ]];then
+            local expires_at
+            expires_at=$(Trans_Expires_At "$MSIG_ADDR" "$Trans_ID") || expires_at=""
+            echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} holds ${received} of the ${required} signatures it needs, and every key this node holds has already signed it. The remaining custodians have to sign it elsewhere${expires_at:+, before it expires at $(TD_unix2human "$expires_at")}."
+            return 3
+        fi
+        read -r index key_file <<< "$(head -n 1 <<< "$unsigned")"
+        printf "%s\n" "---INFO: ${Label}: signing transaction ${Trans_ID} as custodian ${index} with ${key_file} (${received} of ${required} signatures so far)."
+        if ! Send_MSIG_Trans_Confirmation "$Trans_ID" "$MSIG_ADDR" "$key_file" >/dev/null;then
+            # The message may have arrived anyway, and the wallet's own mask is
+            # the only thing that settles it, so this is a warning and the wait
+            # below is the verdict.
+            echoerr "###-WARNING: ${Label}: the node did not acknowledge the confirmation from custodian ${index}; waiting to see whether it arrived."
+        fi
+        sent=$((sent + 1))
+        Await_Signature_Recorded "$MSIG_ADDR" "$Trans_ID" "$index" "$Deadline"
+        case $? in
+            0) continue ;;
+            2) printf "%s\n" "+++-INFO: ${Label}: transaction ${Trans_ID} executed on the signature from custodian ${index}."
+               return 0 ;;
+        esac
+        echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}. A confirmation the wallet refuses is recorded in no block, so the chain cannot say why; check 'evernode depool info' for the signatures it does hold."
+        return 1
+    done
+}
+#=================================================
+# The moment a pending transaction stops being signable.
+# Input:
+#  - msig_address
+#  - transaction id
+# Output: the expiry as a unix epoch, or nothing when the id carries no usable
+#         creation time
+function Trans_Expires_At() {
+    local MSIG_ADDR="$1"
+    local Trans_ID="$2"
+    local created expiration
+    created=$(Trans_Created_At "$Trans_ID") || return 1
+    [[ $created -gt 0 && $created -le $(( $(date +%s) + 60 )) ]] || return 1
+    expiration=$(Get_MSIG_Expiration_Time "$MSIG_ADDR") || return 1
+    printf "%s\n" "$((created + expiration))"
+}
+#=================================================
+# Finish a DePool operation that has just been submitted: add the signatures it
+# still needs, then wait for the operation's own effect.
+#
+# This is the whole back half of every stake operation, in one place, because
+# that half is where each one used to improvise and where every fault was
+# found. Signing to the required count is not the end of an operation: the
+# confirmation that executes the wallet transaction ends in an internal message
+# the DePool can still refuse, and a transport that accepted a message has not
+# said the message ran.
+#
+# The deadline is the earliest real bound, never a round number:
+#   - creation + the wallet's own expirationTime, after which the pending
+#     transaction is dead and no further signature can revive it, and
+#   - this command's own patience, so an operator is not left waiting for an
+#     hour on a transfer that normally lands in seconds.
+# That patience is twice MSG_LIFETIME, so it always outlasts every message
+# this operation signed: by the time a failure is reported, nothing we sent
+# can still execute, which is what makes the report final rather than a guess.
+# When a resumed transaction is already close to expiry the first bound wins,
+# which is the case where waiting longer could not have helped anyway.
+#
+# Input:
+#  - trans_id, empty when Required_Signs is 1 and the submit transferred
+#    inline, so there is no transaction to confirm
+#  - msig_address
+#  - msig_name
+#  - label for the operator-facing messages
+#  - effect predicate and its arguments
+# Output: 0 when the effect is on chain, 1 otherwise
+function Complete_And_Await() {
+    local Trans_ID="$1"
+    local MSIG_ADDR="$2"
+    local MSIG_NAME="$3"
+    local Label="$4"
+    shift 4
+    local created="" expiration="" contract_deadline="" now deadline expired=false
+    now=$(date +%s)
+    if [[ -n $Trans_ID ]] && created=$(Trans_Created_At "$Trans_ID");then
+        expiration=$(Get_MSIG_Expiration_Time "$MSIG_ADDR")
+        # An id whose embedded time is zero or in the future is not one this
+        # wallet generated, so it bounds nothing; say so rather than compute a
+        # deadline in 1970 and report a healthy operation as failed.
+        if [[ $created -gt 0 && $created -le $((now + 60)) ]];then
+            contract_deadline=$((created + expiration))
+        else
+            echoerr "###-WARNING: transaction id ${Trans_ID} carries no usable creation time, so only this command's own patience bounds the wait."
+        fi
+    fi
+    if [[ -n $contract_deadline && $contract_deadline -le $now ]];then
+        # The pending transaction has already expired, so no further signature
+        # can reach it. The effect may still be on chain from an earlier
+        # attempt that was confirmed in time, so check once before reporting.
+        echoerr "###-WARNING: transaction ${Trans_ID} was created $((now - created))s ago and this wallet expires a pending transaction after ${expiration}s, so it can no longer be signed."
+        deadline=$now
+        expired=true
+    else
+        deadline=$(Min_Deadline "$contract_deadline" \
+            "$((now + ${EFFECT_WAIT_MAX:-$(( ${MSG_LIFETIME:-60} * 2 ))}))") || return 1
+    fi
+    # shellcheck disable=SC2154
+    if [[ ${Required_Signs:-1} -gt 1 ]] && ! $expired;then
+        [[ -n $Trans_ID ]] || { echoerr "###-ERROR: ${Label} has no transaction id to confirm."; return 1; }
+        # One signature at a time, each one confirmed against the wallet's own
+        # mask before the next is sent, and never past the entry's lifetime -
+        # which is what makes the entry leaving the list mean "it executed"
+        # instead of "it expired".
+        Sign_To_Execution "$MSIG_ADDR" "$MSIG_NAME" "$Trans_ID" "$deadline" "$Label" || return 1
+        # The wallet transaction has run, but the transfer it carried is a
+        # separate internal message, so give that its own room rather than
+        # whatever signing happened to leave over. A few blocks is enough: the
+        # external messages this operation signed have all executed by now, so
+        # the only thing still in flight belongs to the chain.
+        now=$(date +%s)
+        if [[ $deadline -lt $((now + ${EFFECT_MIN_WAIT:-10})) ]];then
+            deadline=$((now + ${EFFECT_MIN_WAIT:-10}))
+        fi
+    fi
+    Await_Effect "$Label" "$deadline" "${EFFECT_POLL_INTERVAL:-2}" "$@"
+}
+#=================================================
+# This node's ADNL for one election, taken from the node's own key ring.
+#
+# console's election-bid generates the key it signs the request with, so the
+# ADNL a bid will register under is only known after the request exists. The
+# lookup is by election id rather than by position, because a node keeps the
+# keys of past elections too.
+# Input:
+#  - election id
+# Output: the ADNL as 64 lower-case hex characters
+function Get_Engine_ADNL_For_Election() {
+    local Election_ID="$1"
+    local encoded adnl
+    [[ $Election_ID =~ ^[0-9]+$ ]] || return 1
+    encoded=$(jq -r --argjson id "$Election_ID" \
+        '.validator_keys // [] | map(select(.election_id == $id))
+            | .[0].validator_adnl_key_id // empty' \
+        "${NODE_CFG_DIR}/config.json") || return 1
+    [[ -n $encoded ]] || return 1
+    adnl=$(printf "%s" "$encoded" | base64 -d | od -An -v -t x1 | tr -d ' \n') || return 1
+    [[ ${#adnl} -eq 64 ]] || return 1
+    printf "%s\n" "$adnl"
+}
+#=================================================
+# The elector lists this node as a participant of the open election.
+#
+# This is the only positive statement that an election bid worked. The wallet's
+# pending list cannot provide one: a bid the multisig rejected is refused
+# before tvm.accept() and recorded nowhere, and an entry that has gone may have
+# executed, expired, or never existed. Nor can the elector be asked whether a
+# particular transfer arrived - only whether the stake it carried registered,
+# which is the thing that matters.
+# Input:
+#  - ADNL as 64 hex characters
+function Effect_Elector_Has_Our_ADNL() {
+    local status
+    Elector_ADNL_Search "$1" >/dev/null
+    status=$?
+    case $status in
+        0) return 0 ;;    # registered, with a stake
+        3) return 1 ;;    # elections closed; the deadline is that close time
+        4) return 1 ;;    # not registered yet
+        *) return 2 ;;    # the elector could not be read
+    esac
+}
+#=================================================
+# How many live transactions one custodian may have waiting in a wallet.
+# SafeMultisigWallet's MAX_QUEUED_REQUESTS, which the contract exposes through
+# no getter, so it has to be stated here. Expired entries are swept before the
+# check, so this counts only live ones.
+declare -r MSIG_MAX_QUEUED_REQUESTS=5
+#=================================================
+# A custodian's public key as the decimal string the wallet reports.
+# getTransactions() renders creator as a 77-digit decimal string, which is
+# exact in JSON but cannot be compared against a hex key without converting
+# it; and it is far beyond what jq or shell arithmetic can hold, so bc does it.
+# Input:
+#  - key file holding {"public": "<64 hex>"}
+# Output: the key as a decimal string
+function Custodian_Key_Decimal() {
+    local KeyFile="$1"
+    local hex decimal
+    hex=$(jq -r '.public // empty' "$KeyFile" 2>/dev/null) || return 1
+    [[ $hex =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    # bc wants upper-case hex digits, and breaks long output with "\<newline>".
+    decimal=$(printf "ibase=16\n%s\n" "$(tr '[:lower:]' '[:upper:]' <<< "$hex")" \
+        | $CALL_BC | tr -d '\\\n') || return 1
+    [[ $decimal =~ ^[0-9]+$ ]] || return 1
+    printf "%s\n" "$decimal"
+}
+#=================================================
+# Refuse to submit when this custodian's share of the wallet queue is full.
+#
+# A sixth live transaction from one custodian is rejected with error 113, and
+# that happens before tvm.accept(), so the submit is recorded in no block: the
+# operation simply has no effect and nothing on chain says why. There is no
+# way to detect it afterwards, which is what makes checking beforehand the
+# only option. The entries that fill the queue are this node's own orphans,
+# left by attempts that submitted and never finished signing.
+# Input:
+#  - msig_address
+#  - key file of the custodian that will submit
+# Output: 0 when there is room, 1 when there is not
+function Require_Queue_Space() {
+    local MSIG_ADDR="$1"
+    local KeyFile="$2"
+    local creator pending live
+    if ! creator=$(Custodian_Key_Decimal "$KeyFile");then
+        echoerr "###-ERROR: Cannot read the submitting custodian's public key from ${KeyFile}."
+        return 1
+    fi
+    pending=$(Get_MSIG_Trans_List "$MSIG_ADDR") || return 1
+    live=$(jq -r --arg creator "$creator" \
+        '[.transactions[] | select((.creator | tostring) == $creator)] | length' \
+        <<< "$pending") || return 1
+    [[ $live =~ ^[0-9]+$ ]] || return 1
+    if [[ $live -ge $MSIG_MAX_QUEUED_REQUESTS ]];then
+        echoerr "###-ERROR: this custodian already has ${live} transactions waiting in wallet ${MSIG_ADDR}, which is the wallet's limit of ${MSIG_MAX_QUEUED_REQUESTS}. A further submission would be rejected by the wallet without leaving any trace, so nothing was sent. Clear them first: read them with 'evernode depool info' and either finish one with 'evernode depool confirm --transaction-id <id>' or wait for them to expire."
+        return 1
+    fi
+    printf "%s\n" "---INFO: ${live} of ${MSIG_MAX_QUEUED_REQUESTS} queue slots for this custodian are in use."
+    return 0
+}
+#=================================================
+# An account's own balance has reached a floor, in nanotokens.
+# Read with Get_Account_Info, the same source a caller uses to decide that a
+# top-up is needed, so the decision and its verification cannot disagree.
+# Input: address, expected nanotokens
+function Effect_Account_Balance_At_Least() {
+    local info observed
+    info=$(Get_Account_Info "$1") || return 2
+    observed=$(awk '{print $2}' <<< "$info")
+    [[ $observed =~ ^[0-9]+$ ]] || return 2
+    [[ $observed -ge $2 ]]
+}
+#=================================================
+# Deliver a prepared message and identify the transaction it created.
+#
+# Send_Message is not used for this. It counts the pending entries addressed to
+# the destination and, if the count rose, returns the newest by `tail -n 1`.
+# Every DePool operation of every custodian targets the same address, so a
+# concurrent entry both inflates that count and can be the one returned - and
+# the caller then adds its signatures to a transfer it did not create, which is
+# the one way these scripts could execute somebody else's transaction. With one
+# required signature it instead compares the wallet's last_trans, which any
+# unrelated transaction advances, including an incoming transfer.
+#
+# Matching on destination, value, payload, bounce and send flags identifies our
+# own submission with no counting, and refuses rather than guess if two entries
+# match (Find_Matching_Pending_Trans).
+#
+# Delivery failure is not treated as the end: the message may still arrive, and
+# the content match is what decides. Re-delivering the same file cannot create a
+# second transaction, because it is the same message with the same hash.
+# Input:
+#  - msig_address
+#  - destination address
+#  - boc file to send, at the path the CLI sees
+#  - value in nanotokens
+#  - payload (base64 message body)
+# Output: the transaction id, or empty with 1 of N where the submit transferred
+#         inline and no transaction exists; 1 when nothing could be identified
+function Submit_And_Identify() {
+    local MSIG_ADDR="$1"
+    local Dest="$2"
+    local File="$3"
+    local Value="$4"
+    local PayLoad="$5"
+    local Key_File="${6:-}"
+    local attempt result identified=""
+    local interval="${LC_Send_MSG_Timeout:-10}"
+    # Anything already in the wallet when this attempt began belongs to an
+    # earlier one. Sixty seconds of slack absorbs the difference between this
+    # host's clock and the chain's, which is what stamps the id.
+    local window_start=$(( $(date +%s) - 60 ))
+    for (( attempt=0; attempt < 3; attempt++ )); do
+        result=$(Send_File_To_BC "$File")
+        if [[ $result != "success" ]];then
+            echoerr "###-WARNING: the node did not acknowledge the message (${result:-no answer}); checking whether it arrived anyway."
+        fi
+        # shellcheck disable=SC2154
+        if [[ ${Required_Signs:-1} -le 1 ]];then
+            # No transaction is created: submitTransaction transfers inline and
+            # returns 0, so the caller's effect predicate is the only check.
+            return 0
+        fi
+        identified=$(Find_Matching_Pending_Trans "$MSIG_ADDR" "$Dest" "$Value" "$PayLoad" \
+            "$Key_File" "$window_start") || return 1
+        if [[ -n $identified ]];then
+            printf "%s\n" "$identified"
+            return 0
+        fi
+        sleep "$interval"
+    done
+    echoerr "###-ERROR: the submission to ${Dest} did not appear in wallet ${MSIG_ADDR}, so it was never accepted and nothing was signed. Nothing was transferred; the operation can be made again."
+    return 1
+}

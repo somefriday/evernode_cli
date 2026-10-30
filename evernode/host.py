@@ -230,6 +230,11 @@ def install_host_dependencies():
         if compose_missing:
             packages.append("docker-compose-plugin")
         process.execute_command(packages, timeout=600)
+    # yq ships one binary per architecture; an amd64 download on an arm64 server
+    # installs a command that exists and cannot run.
+    architecture = process.execute_command(
+        ["dpkg", "--print-architecture"]
+    ).stdout.strip()
     process.execute_command(
         [
             "curl",
@@ -239,13 +244,15 @@ def install_host_dependencies():
             "-fL",
             "https://github.com/mikefarah/yq/releases/download/v"
             + YQ_VERSION
-            + "/yq_linux_amd64",
+            + "/yq_linux_"
+            + architecture,
             "-o",
             "/usr/local/bin/yq",
         ],
         timeout=300,
     )
     os.chmod("/usr/local/bin/yq", 0o755)
+    process.execute_command(["/usr/local/bin/yq", "--version"], timeout=60)
     process.execute_command(
         ["systemctl", "enable", "--now", "docker", "cron", "chrony"], timeout=120
     )

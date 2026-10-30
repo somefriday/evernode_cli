@@ -101,12 +101,13 @@ function Usage(){
     echo "    - Before making a vesting or lock stake, ensure that the donor address is set for each participant."
     echo "    - The beneficiary must already have an ordinary stake in the depool."
     echo "    - Ensure that the depool is open for participation before staking."
-    exit 0
+    exit "${1:-1}"
 }
 
 #===========================================================
-# Mandatory parameters for all operations
-if [[ $# -lt 4 ]]; then
+# Mandatory parameters for all operations.
+# WD-all and cancelWithdrawal take exactly these three and no amount.
+if [[ $# -lt 3 ]]; then
     echo "###-ERROR: Insufficient parameters provided."
     Usage
 fi
@@ -149,14 +150,9 @@ fi
 echo "MSIG address: $MSIG_addr"
 
 #===========================================================
-# If the access mode is set to console and the node is not synchronized, prompt the user to switch to dapp mode temporarily
-if Ask_to_switch_to_dapp; then
-    echo "Proceeding with dApp mode..."
-    export FORCE_USE_DAPP=true
-elif [[ $? -gt 1 ]]; then
-    echo "Operation cancelled by user."
-    exit 1
-fi
+# The node's own console is the only transport; an unusable node refuses the
+# operation here rather than routing around it. See functions.shinc.
+Require_Node_Console || exit 1
 
 #================================================================
 # Get custodians info

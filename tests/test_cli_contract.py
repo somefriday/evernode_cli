@@ -11,6 +11,37 @@ from support import make_node_configuration
 
 
 class CommandContractTests(unittest.TestCase):
+    def test_sync_wait_retries_console_startup_and_requires_two_good_samples(self):
+        good = {'sync_status': 'synchronization_finished', 'timediff': 1, 'shards_timediff': 1}
+        with (
+            patch('evernode.cli.require_root_privileges'),
+            patch('evernode.cli.storage.NodeStateStore') as store,
+            patch('evernode.cli.nodes.fetch_node_statistics', side_effect=[
+                good, process.OperationError('Connection refused (os error 111)'), good, good,
+            ]) as fetch,
+            patch('evernode.cli.time.sleep') as sleep,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            store.return_value.load_node_config.return_value = make_node_configuration('validator')
+            self.assertEqual(cli.main(['node', 'sync', '-n', 'validator', '--wait']), 0)
+        self.assertEqual(fetch.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
+
+    def test_sync_without_wait_and_unrelated_errors_fail_immediately(self):
+        for wait, error in [(False, 'Connection refused'), (True, 'invalid console JSON')]:
+            with (
+                self.subTest(wait=wait, error=error),
+                patch('evernode.cli.require_root_privileges'),
+                patch('evernode.cli.storage.NodeStateStore') as store,
+                patch('evernode.cli.nodes.fetch_node_statistics', side_effect=process.OperationError(error)) as fetch,
+                patch('evernode.cli.time.sleep') as sleep,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                store.return_value.load_node_config.return_value = make_node_configuration('validator')
+                self.assertEqual(cli.main(['node', 'sync', '-n', 'validator', *(['--wait'] if wait else [])]), 1)
+                self.assertEqual(fetch.call_count, 1)
+                sleep.assert_not_called()
+
     def test_creation_and_resume_flags_keep_their_public_names(self):
         parser = arguments.build_argument_parser()
         create = parser.parse_args(
@@ -148,9 +179,9 @@ class CommandContractTests(unittest.TestCase):
                 ],
             )
         self.assertTrue(
-            nodes.build_node_log_command(store, config, "elections")[-1].endswith(
-                "/logs/validator/validator.log"
-            )
+            nodes.build_node_log_command(store, config, "elections", follow=True)[
+                -1
+            ].endswith("/logs/validator/transactions.log")
         )
         args = arguments.build_argument_parser().parse_args(
             [
