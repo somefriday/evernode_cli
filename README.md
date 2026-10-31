@@ -88,6 +88,23 @@ accepts a tag from `image list`.
 
 ## New validator
 
+`node create` first asks which kind of validator this is, and the answer
+decides the rest of the setup:
+
+- **DePool** — the stake sits in a DePool contract that other people can also
+  stake into, and the node bids on the pool's behalf. This is the rest of this
+  section.
+- **Solo** — the node stakes its own money straight to the elector from its own
+  Safe wallet, with no DePool and no participants. See
+  [Solo validator](#solo-validator-no-depool).
+
+Every fixed choice during creation — validator type, network, workchain, DePool
+type, image — is a terminal menu, so nothing has to be spelled correctly from
+memory. Each also has a flag (`--validator-type`, `--network`, `--workchain`,
+`--depool-type`, `--image`) for scripted installs; a noninteractive run with no
+`--validator-type` creates a DePool validator, which is what every node created
+before this choice existed is.
+
 Create and synchronize the node:
 
 ```bash
@@ -100,6 +117,14 @@ generates the new Safe phrases and prints every phrase and the wallet address
 to the interactive terminal. It then requires `SAVED` before it records that
 stage. Save the output before funding the wallet and running its deployment
 command.
+
+**Keep those phrases offline for the life of the validator.** They are the one
+thing in this setup that cannot be recovered from anywhere else: the only other
+copy lives in the node's root-only `keys/` directory, so losing the server
+without them loses the money in the Safe. They are also what `wallet recover`
+needs to rebuild the validator elsewhere. Nothing the CLI does deletes them —
+`node remove --purge-data` clears only the database and logs — but nothing the
+CLI does can replace them either.
 
 ```bash
 sudo evernode wallet create -n validator01
@@ -141,6 +166,177 @@ public keys against the wallet's on-chain custodians, and does not print the
 phrases again. `depool verify` checks that the DePool links to that wallet.
 Wallet phrases do not restore the former node's ADNL, consensus, or console
 keys. Fence the former validator before starting elections on a replacement.
+
+## Solo validator (no DePool)
+
+A solo validator sends its own stake straight to the elector from its own Safe
+wallet. There is no DePool, so there are no participants, no proxies, no
+validator assurance and no reward fraction — and no DePool round pipeline to
+reason about. In exchange, every token staked is the operator's own, and the
+whole stake plus its reward comes back to the Safe at the end of each round.
+
+**The Safe has to be in the masterchain**, because that is the only workchain
+the elector accepts a stake from. `wallet create` deploys it there for you.
+This is separate from the workchain the node itself works in, which stays
+whatever you chose during creation.
+
+```bash
+sudo evernode node create -n validator01 --validator-type solo
+sudo evernode node sync -n validator01 --wait
+sudo evernode wallet create -n validator01     # prints the -1: address and phrases
+sudo evernode wallet deploy -n validator01     # fund that address first
+sudo evernode stake set -n validator01 --mode balanced
+sudo evernode election start -n validator01
+```
+
+DePool flags are refused for a solo node rather than silently ignored, and
+`depool` commands say to use `stake` instead (and the reverse for a DePool
+node), so the two modes cannot be mixed up on one node.
+
+### Import an existing masterchain Safe
+
+A solo validator can be rebuilt from the seed phrases of a Safe that already
+exists, on a new server or a replacement node. The address must be a
+masterchain one; a basechain Safe, including a DePool validator's, cannot
+validate solo however it was created, so moving a DePool node to solo means a
+new masterchain Safe rather than a reconfiguration.
+
+```bash
+sudo evernode node create -n validator01 \
+  --validator-type solo \
+  --import-wallet \
+  --wallet-address -1:YOUR_64_HEX_WALLET_ADDRESS \
+  --custodians 3 \
+  --required-signatures 2
+
+sudo evernode node sync -n validator01 --wait
+sudo evernode wallet recover -n validator01
+sudo evernode wallet verify -n validator01
+sudo evernode stake set -n validator01 --mode balanced
+sudo evernode election start -n validator01
+```
+
+`--depool-address` is not accepted — a solo import is complete with just its
+Safe — and `wallet verify` checks the recovered phrases against the wallet's
+on-chain custodians exactly as it does for a DePool node. `stake set` is part
+of this flow, not optional: an imported node has no stake on record, and
+`election start` refuses until it does.
+
+### What this validator stakes
+
+```bash
+sudo evernode stake set -n validator01                     # menu, with both amounts shown
+sudo evernode stake set -n validator01 --mode balanced
+sudo evernode stake set -n validator01 --mode single
+sudo evernode stake set -n validator01 --amount 100000
+sudo evernode stake status -n validator01
+```
+
+**A stake is locked until its round finishes, and the next round's election
+opens while this one is still running.** So validating *every* round means
+having two stakes in flight at once — and two is the ceiling, because the
+money from a finished round comes back in time to fund the election two rounds
+out. That single fact is what the two modes are about:
+
+| | Stake per election | Validates | Needs |
+|---|---|---|---|
+| `--mode balanced` | half the spendable balance | every round | both halves in flight |
+| `--mode single` | all of it | every other round | one stake in flight |
+
+**They earn the same.** A reward is proportional to the stake, so half the
+stake every round and the full stake every other round come to the same thing
+over two rounds. Balancing buys continuity, not yield. Choose `balanced` if
+your stake is large enough that a single bid risks the elector's truncation
+cap (it returns anything above `max_factor` times the smallest stake in the
+set, earning nothing); choose `single` if halving would drop a bid near the
+network's minimum stake or out of the elected set, because then balancing
+turns half the rounds into none.
+
+**A mode is arithmetic done once, not a rule that keeps adapting.** `stake set`
+reads the balance and the chain's limits at the moment you run it, computes a
+fixed number of tokens, prints the arithmetic, and writes that number. The
+election scripts only ever read a fixed amount afterwards. Nothing re-sizes a
+bid later, which is deliberate: a bid cannot be taken back, so sizing it
+inside a live election window — on a balance that may still be waiting for a
+recovery — is the one decision here with no way to correct it until the round
+ends.
+
+- `--amount N` names the number yourself.
+- Run `stake set` with neither flag and it offers a menu with what each mode
+  would stake on this wallet right now.
+- `--all-balance` is a deprecated alias for `--mode single`.
+
+`stake set` refuses a number the chain would reject — below the network's
+minimum stake, above its maximum, or `--mode balanced` when half the balance
+is under the minimum (it says to use `--mode single` instead). It warns, rather
+than refuses, when the amount funds only one round at a time, when the wallet
+cannot fund even one bid yet, and when part of the money is still at the
+elector awaiting recovery.
+
+`stake status` reports what this node is configured to stake, what the chain
+says — the active election id, the wallet's balance and status, how much the
+elector owes this wallet, any unsigned Safe transaction to it — and the two
+derived numbers that matter: `spendable_tokens`, and `rounds_funded` with a
+plain `funding` verdict of "funds consecutive rounds", "funds every other
+round" or "funds no bid". Those are computed from the chain, not from what you
+intended.
+
+**Compounding is a decision, not a side effect.** The reward returns to the
+Safe and stays there; re-running `stake set --mode balanced` re-reads the
+balance and raises the number in one command. That is also how you take a
+top-up into use. It is deliberately manual, because raising a stake can push
+you over the truncation cap or change whether you win a slot.
+
+`election start` refuses on a solo node with no stake on record, so a
+validator cannot reach an election with nothing decided.
+
+### Getting the stake back
+
+A finished round's stake is **recovered automatically** by the scheduled
+election cycle, before it places the next bid, so in normal operation there is
+nothing to do. The manual commands exist for when the schedule is stopped:
+
+```bash
+sudo evernode stake recover -n validator01
+sudo evernode stake confirm -n validator01 --transaction-id 7702496769499467587
+```
+
+`stake recover` asks the elector for everything it owes this wallet, signs with
+every required local custodian key, and waits for the money to arrive before
+reporting success. What the elector owes is recorded against the **wallet
+address**, not the validator keys, so regenerating a node's keys — which
+creating or importing a node does — never orphans a stake.
+
+`stake confirm` adds this node's remaining signatures to one named pending
+transaction, for a multi-custodian Safe where an attempt was interrupted
+mid-signing. It is the same command as `depool confirm`, with the same rules:
+the id is required, matched exactly, and bulk signing is refused.
+
+**Check once that automatic recovery is working.** Compare
+`recoverable_nanotokens` in `stake status` against the cron log after a round
+has finished: the log should report a nonzero `recover_amount`. A node whose
+workspace scripts predate this CLI's fix to the elector's recovery getter
+reports `Nothing to recover` every cycle while the elector still owes it money,
+and keeps bidding until the Safe runs dry. `node sync-scripts` delivers the
+fix; `stake recover` collects what was left behind.
+
+### The scheduled cycle
+
+A solo node runs its own election sequence, `run-solo-election-sequence.sh`,
+which `election status` names under `sequence`. It differs from the DePool one
+on purpose. A DePool bid goes into the DePool that preparation ticks, so there
+a failed preparation has to stop the cycle. A solo bid goes to the elector and
+needs nothing preparation produces — preparation only asks for finished rounds
+back — so a recovery that cannot run does not cancel the bid for the election
+that is open now, which is the one thing the node cannot come back to later.
+Each outcome is named in the cron log instead, and the last preparation output
+is kept at `elections/last-preparation.log`.
+
+That also means an interrupted attempt is recovered without help: preparation
+stops at the half-signed request it finds, and the bid step finishes that one
+instead of adding a second. The cycle waits for a recovery to reach the wallet
+only when one was actually submitted, so a cycle with nothing to recover spends
+none of the election window waiting.
 
 ## Operate a node
 
@@ -187,6 +383,9 @@ sudo evernode depool info -n validator01      # 3. resolve any unsigned transact
 sudo evernode node stop -n validator01        # 4. only now take it out
 ```
 
+On a solo validator, step 3 is `stake status` and `stake confirm` instead of
+`depool info` and `depool confirm`.
+
 1. **Stop the schedule first**, so the node cannot win a place in the next set
    while you are waiting for the current one to end.
 2. **Wait until the chain says it owes nothing.** In `election status`, both
@@ -194,12 +393,18 @@ sudo evernode node stop -n validator01        # 4. only now take it out
    takes at most one round.
 3. **Clear any unsigned Safe transaction.** An interrupted election attempt
    leaves one, it blocks later DePool operations, and the node you are about to
-   stop is where you would finish it. `depool confirm --transaction-id` does it.
+   stop is where you would finish it. `depool confirm --transaction-id` does it,
+   or `stake confirm --transaction-id` on a solo validator. One holding fewer
+   than its required signatures never executes and the Safe drops it after an
+   hour, so nothing is lost either way — but until then the node will not bid.
 4. **Then stop, restart or remove.**
 
 `--force` skips the membership check. Use it when you are deliberately fencing a
 validator you have already replaced, accepting that it loses the blocks it owes
 for the rest of the round.
+
+`election stop` accepts `--yes` like the other commands, though it never
+prompts: stopping only makes a node bid less.
 
 `node stop` also disables that node's election schedule, so a stopped node stops
 bidding and leaves the sets after the current round. That is deliberate: after
@@ -216,6 +421,9 @@ nothing about admission to a validator set, so `chain.validating` and
 `chain.elected_for_next_round` are read from the node, not inferred.
 
 ## Inspect and move DePool funds
+
+This section is about a DePool validator. A solo validator's stake is in
+[Solo validator](#solo-validator-no-depool) instead.
 
 ```bash
 sudo evernode depool info -n validator01

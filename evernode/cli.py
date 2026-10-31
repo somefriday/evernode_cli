@@ -18,6 +18,7 @@ from . import (
     provisioning,
     resources,
     setup_actions,
+    stake,
     storage,
     ui,
 )
@@ -196,7 +197,11 @@ def describe_election_state(store, config):
 
 def main(argv=None):
     p = arguments.build_argument_parser()
-    args = p.parse_args(argv)
+    args = p.parse_args(
+        arguments.normalize_address_arguments(
+            sys.argv[1:] if argv is None else argv
+        )
+    )
     if args.group is None:
         p.print_help()
         if os.geteuid() == 0:
@@ -291,6 +296,7 @@ def main(argv=None):
                     raise process.OperationError(
                         "Complete wallet/DePool setup before enabling elections"
                     )
+                stake.require_recorded_stake(config)
                 if not nodes.is_node_synchronized(nodes.fetch_node_statistics(config)):
                     raise process.OperationError(
                         "Node is not synchronized; election schedule was not enabled"

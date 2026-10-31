@@ -39,15 +39,28 @@ if args.rounds < 1 or args.min_remaining < 0:
     parser.error('--rounds must be positive and --min-remaining nonnegative')
 case = args.case
 item = CASES[case]
-sequence = root(case) / 'run-election-sequence.sh'
-stock = sequence.read_text()
-updated, count = re.subn(r'^sleep \d+$', f'sleep {args.sequence_delay}', stock, flags=re.M)
-assert count == 1
-sequence.write_text(updated)
-sequence.chmod(0o700)
-record({'kind': 'timing-adaptation', 'case': case, 'stock_sequence': stock,
-        'test_sequence': sequence.read_text(),
-        'reason': 'This local network has a 120-second election window; production windows last hours'})
+# A solo node runs its own generated sequence, which takes the wait it needs
+# from the environment. That one is driven verbatim; only the DePool sequence,
+# whose wait is a literal sleep, has to be rewritten for this network.
+solo = case == 'solo'
+environment = dict(os.environ)
+if solo:
+    sequence = root(case) / 'run-solo-election-sequence.sh'
+    environment['ELECTION_SETTLE_SECONDS'] = str(args.sequence_delay)
+    record({'kind': 'timing-adaptation', 'case': case, 'sequence': str(sequence),
+            'stock_sequence': sequence.read_text(), 'test_sequence': 'unchanged',
+            'adaptation': f'ELECTION_SETTLE_SECONDS={args.sequence_delay}',
+            'reason': 'This local network has a 120-second election window; production windows last hours'})
+else:
+    sequence = root(case) / 'run-election-sequence.sh'
+    stock = sequence.read_text()
+    updated, count = re.subn(r'^sleep \d+$', f'sleep {args.sequence_delay}', stock, flags=re.M)
+    assert count == 1
+    sequence.write_text(updated)
+    sequence.chmod(0o700)
+    record({'kind': 'timing-adaptation', 'case': case, 'sequence': str(sequence),
+            'stock_sequence': stock, 'test_sequence': sequence.read_text(),
+            'reason': 'This local network has a 120-second election window; production windows last hours'})
 
 # Signing needs no timing adaptation: each signature is added one at a time and
 # checked against the wallet's own record of who has signed, so there is no
@@ -118,7 +131,8 @@ def observe():
             print(f'[{case}] starting generated runner for {election} '
                   f'({closes - now}s of window left)', flush=True)
             worker = subprocess.Popen(['bash', str(root(case) / 'run-elections.sh')],
-                                      stdout=log, stderr=log, start_new_session=True)
+                                      stdout=log, stderr=log, start_new_session=True,
+                                      env=environment)
         time.sleep(args.poll)
     record({'kind': 'case-timeout', 'case': case, 'rounds_validated': len(observed)})
     raise SystemExit(f'Only {len(observed)} of {args.rounds} rounds validated within the deadline')

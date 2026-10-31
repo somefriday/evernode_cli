@@ -9,7 +9,7 @@ from . import configuration, process, scripts, storage
 ADDRESS_PATTERN = re.compile(r"^-?[0-9]+:[0-9a-fA-F]{64}$")
 
 
-def validate_wallet_profile(profile):
+def validate_wallet_profile(profile, *, validator_type="depool"):
     if not isinstance(profile, dict) or set(profile) != {
         "mode",
         "custodians",
@@ -35,13 +35,30 @@ def validate_wallet_profile(profile):
             not isinstance(value, str) or not ADDRESS_PATTERN.fullmatch(value)
         ):
             raise process.OperationError(f"Invalid {key.replace('_', ' ')}")
-    if profile["mode"] == "import" and (
-        profile["wallet_address"] is None or profile["depool_address"] is None
-    ):
+    # A solo validator has no DePool, so an import of one is complete with
+    # just its Safe; requiring a DePool address would make the mode
+    # unreachable, and accepting one would describe a contract it never uses.
+    if validator_type == "solo" and profile["depool_address"] is not None:
         raise process.OperationError(
-            "An imported validator requires expected wallet and DePool addresses"
+            "A solo validator stakes from its own Safe and has no DePool address"
         )
+    if profile["mode"] == "import":
+        if profile["wallet_address"] is None:
+            raise process.OperationError(
+                "An imported validator requires its existing wallet address"
+            )
+        if validator_type != "solo" and profile["depool_address"] is None:
+            raise process.OperationError(
+                "An imported validator requires expected wallet and DePool addresses"
+            )
     return profile
+
+
+def node_wallet_profile(config):
+    """Validate a saved profile against what this node's type requires."""
+    return validate_wallet_profile(
+        config["wallet"], validator_type=configuration.validator_type(config)
+    )
 
 
 def seed_directory(store, config):
@@ -72,7 +89,7 @@ def ensure_unassigned(store, config, wallet_address=None, depool_address=None):
 
 def store_import_seeds(store, config, phrases):
     """Write phrases only to the files read by Msig-prep.sh, mode 0600."""
-    profile = validate_wallet_profile(config["wallet"])
+    profile = node_wallet_profile(config)
     if len(phrases) != profile["custodians"]:
         raise process.OperationError("Seed phrase count does not match custodian count")
     directory = seed_directory(store, config)
@@ -153,7 +170,7 @@ def _check_new_wallet_files(keys, name, custodians):
 
 def prepare_wallet(store, config, *, imported=False):
     """Use the reference generator and return only non-secret wallet facts."""
-    profile = validate_wallet_profile(config["wallet"])
+    profile = node_wallet_profile(config)
     if imported:
         directory = seed_directory(store, config)
         if not directory.is_dir():
@@ -276,7 +293,7 @@ def require_validator_type(config, expected, alternative):
 
 
 def _require_stage(config, mode, stage):
-    profile = validate_wallet_profile(config["wallet"])
+    profile = node_wallet_profile(config)
     if profile["mode"] != mode:
         raise process.OperationError(
             f"This action is available only for a {mode} wallet setup"
@@ -465,7 +482,7 @@ OPERATIONAL_STAGES = ("ready-for-elections", "imported")
 
 def _require_operational_depool(config):
     """Stake operations need a deployed or imported DePool, in either mode."""
-    profile = validate_wallet_profile(config["wallet"])
+    profile = node_wallet_profile(config)
     if config.get("setup_stage") not in OPERATIONAL_STAGES:
         raise process.OperationError(
             "Complete wallet/DePool setup before running DePool stake operations"
@@ -530,7 +547,7 @@ def confirm_wallet_transaction(store, config, transaction_id, check):
     resolves it the same way. The reference script refuses to sign a list, so
     the operator names the transaction they reviewed.
     """
-    profile = validate_wallet_profile(config["wallet"])
+    profile = node_wallet_profile(config)
     if config.get("setup_stage") not in OPERATIONAL_STAGES:
         raise process.OperationError(
             "This action needs a finished setup; run: "
@@ -670,9 +687,13 @@ def next_setup_command(config):
             ("new", "depool-deployed"): f"evernode depool stake-initial -n {name}",
             ("import", "wallet-verified"): f"evernode depool verify -n {name}",
         },
-        # A solo validator needs a stake on record before it can bid.
+        # A solo validator needs a stake on record before it can bid, whether
+        # its Safe is new or recovered from phrases; an imported node would
+        # otherwise reach elections with no decided amount.
         "solo": {
-            ("new", "wallet-deployed"): f"evernode stake set -n {name} --amount AMOUNT",
+            ("new", "wallet-deployed"): f"evernode stake set -n {name} --mode balanced",
+            ("import", "imported"): f"evernode stake set -n {name} --mode balanced",
+            ("import", "ready-for-elections"): f"evernode election start -n {name}",
         },
     }[configuration.validator_type(config)]
     profile = config.get("wallet")

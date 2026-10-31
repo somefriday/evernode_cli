@@ -12,9 +12,86 @@ from . import configuration, process, storage
 
 TRUE_VALUES = (True, 1, "1", "true", "True", "yes", "Yes")
 
+# Seconds a submitted recovery is given to reach the wallet before the bid
+# reads its balance. Production election windows last hours, so this is only
+# ever a small part of one; the generated script reads it from the environment
+# so a short-window test network can shorten it without editing the script.
+RECOVERY_SETTLE_SECONDS = 120
+
+DEPOOL_SEQUENCE_FILE = "run-election-sequence.sh"
+SOLO_SEQUENCE_FILE = "run-solo-election-sequence.sh"
+
 
 def node_election_cron_path(name):
     return Path("/etc/cron.d") / ("evernode-" + configuration.validate_node_name(name))
+
+
+def election_sequence_path(store, config):
+    """The sequence cron runs for this node, which differs by validator type."""
+    solo = configuration.validator_type(config) == "solo"
+    return store.node_directory(config["name"]) / (
+        SOLO_SEQUENCE_FILE if solo else DEPOOL_SEQUENCE_FILE
+    )
+
+
+def _depool_sequence_program(scripts_dir):
+    """Prepare, then bid, aborting if preparation fails.
+
+    This is deliberately the same scheduled sequence as validation_new.md.
+    part_check.sh is a read-only post-submission inspection, not a cron step.
+    Preparation here also ticks the DePool that the bid is placed into, so a
+    preparation that did not finish must stop the cycle rather than bid into a
+    DePool whose rounds were never advanced.
+    """
+    return (
+        "#!/bin/bash\nset -euo pipefail\ncd "
+        + shlex.quote(str(scripts_dir))
+        + "\n"
+        "./prepare_elections.sh\nsleep 120\n./take_part_in_elections.sh\n"
+    )
+
+
+def _solo_sequence_program(scripts_dir, preparation_log):
+    """Recover finished rounds, then bid, because the two are independent.
+
+    A solo validator stakes straight to the elector, so nothing the bid needs
+    is produced by preparation: preparation only asks the elector for rounds
+    that have finished. A recovery that cannot run must therefore not cancel
+    the bid for the election that is open now, which is the one thing the node
+    cannot do later. Each outcome is named in the cron log instead.
+
+    The wait exists only to let a recovery that was actually submitted reach
+    the wallet before the bid reads its balance, so a cycle with nothing to
+    recover does not spend any of the election window waiting.
+    """
+    return f"""#!/bin/bash
+# Solo (msig) election cycle, written by evernode election start.
+set -uo pipefail
+cd {shlex.quote(str(scripts_dir))}
+log={shlex.quote(str(preparation_log))}
+./prepare_elections.sh 2>&1 | tee "$log"
+status=${{PIPESTATUS[0]}}
+case $status in
+    0) ;;
+    3)
+        # An interrupted attempt leaves a half-signed request to the elector.
+        # Preparation refuses to add a second one, and the bid step finishes
+        # the one already in the wallet instead of queueing another.
+        echo "+++-INFO: preparation stopped at a pending request to the elector;"
+        echo "+++-INFO: the bid step will finish that one rather than add another."
+        ;;
+    *)
+        echo "+++-WARNING: preparation exited ${{status}}; bidding anyway, because a"
+        echo "+++-WARNING: solo bid goes to the elector and does not depend on it."
+        ;;
+esac
+if grep -qE 'recover_amount = [1-9][0-9]* nanotokens' "$log";then
+    settle=${{ELECTION_SETTLE_SECONDS:-{RECOVERY_SETTLE_SECONDS}}}
+    echo "---INFO: waiting ${{settle}}s for the recovered stake to reach the wallet"
+    sleep "$settle"
+fi
+./take_part_in_elections.sh
+"""
 
 
 def disable_node_election_schedule(name):
@@ -46,17 +123,25 @@ def enable_node_election_schedule(store, config, executable="/usr/local/bin/ever
     ):
         storage.validate_private_path(directory)
     runner = workspace / "run-elections.sh"
-    sequence = workspace / "run-election-sequence.sh"
+    sequence = election_sequence_path(store, config)
     lock = workspace / "elections" / "evernode-election.lock"
     log = workspace / "logs" / "validator" / "election-cron.log"
-    # This is deliberately the same scheduled sequence as validation_new.md.
-    # part_check.sh is a read-only post-submission inspection, not a cron step.
-    sequence.write_text(
-        "#!/bin/bash\nset -euo pipefail\ncd "
-        + shlex.quote(str(workspace / "scripts"))
-        + "\n"
-        "./prepare_elections.sh\nsleep 120\n./take_part_in_elections.sh\n"
-    )
+    # A node enabled before the sequences were separated has the other type's
+    # file sitting beside this one. Nothing references it, but leaving it there
+    # makes it unclear which script cron runs.
+    for other in (DEPOOL_SEQUENCE_FILE, SOLO_SEQUENCE_FILE):
+        stale = workspace / other
+        if stale != sequence and stale.is_file() and not stale.is_symlink():
+            stale.unlink()
+    if configuration.validator_type(config) == "solo":
+        sequence.write_text(
+            _solo_sequence_program(
+                workspace / "scripts",
+                workspace / "elections" / "last-preparation.log",
+            )
+        )
+    else:
+        sequence.write_text(_depool_sequence_program(workspace / "scripts"))
     os.chmod(sequence, 0o700)
     runner.write_text(
         "#!/bin/bash\nset -euo pipefail\nexec flock -n "
@@ -87,6 +172,7 @@ def election_schedule_status(store, config):
         and not path.is_symlink()
         and path.read_text().startswith("# Managed by evernode\n"),
         "cron_file": str(path),
+        "sequence": str(election_sequence_path(store, config)),
         "log": str(
             store.node_directory(config["name"])
             / "logs"

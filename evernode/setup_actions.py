@@ -53,11 +53,19 @@ def _confirmation_question(args, name):
     if (args.group, args.action) == ("depool", "replenish"):
         return f"Send {args.amount} tokens from {name}'s Safe to its DePool balance?"
     if (args.group, args.action) == ("stake", "set"):
-        target = "its whole balance" if args.all_balance else f"{args.amount} tokens"
+        if args.amount is not None:
+            return (
+                f"Stake {args.amount} tokens from {name}'s Safe in every "
+                "election? A stake is locked until its round finishes, so "
+                "consecutive rounds need about twice that on the wallet."
+            )
+        mode = "single" if args.all_balance else args.mode
+        target = (
+            f"the {mode} amount" if mode else "an amount chosen from the menu next"
+        )
         return (
-            f"Stake {target} from {name}'s Safe in every election? A stake is "
-            "locked until its round finishes, so consecutive rounds need about "
-            "twice that on the wallet."
+            f"Record what {name} stakes in every election, computing {target} "
+            "from its spendable balance now?"
         )
     if (args.group, args.action) == ("stake", "recover"):
         return f"Ask the elector to return {name}'s finished-round stake to its Safe?"
@@ -80,6 +88,9 @@ ELECTION_LOCKED_ACTIONS = (
     ("depool", "replenish"),
     ("stake", "recover"),
     ("stake", "confirm"),
+    # Not a transaction, but it rewrites the env.sh a running election reads
+    # while it is sizing a bid.
+    ("stake", "set"),
 )
 
 
@@ -148,7 +159,10 @@ def handle_setup_action(store, args):
             )
         elif action == ("stake", "set"):
             result_config, result = stake.set_stake(
-                store, config, amount=args.amount, all_balance=args.all_balance
+                store,
+                config,
+                amount=args.amount,
+                mode="single" if args.all_balance else args.mode,
             )
         elif action == ("stake", "status"):
             result_config, result = config, stake.describe_stake(store, config)

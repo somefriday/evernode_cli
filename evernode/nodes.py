@@ -22,7 +22,7 @@ from . import (
 )
 
 
-def fetch_node_statistics(config):
+def _run_console(config, command, timeout=15):
     container = configuration.node_container_name(config)
     obj = docker.inspect_container(container)
     if not obj or obj["State"]["Status"] != "running":
@@ -39,9 +39,9 @@ def fetch_node_statistics(config):
             "/ever-node/node_cfg/console.json",
             "-j",
             "-c",
-            "getstatsnew",
+            command,
         ],
-        timeout=15,
+        timeout=timeout,
     )
     try:
         value = json.loads(result.stdout)
@@ -52,6 +52,28 @@ def fetch_node_statistics(config):
     if not isinstance(value, dict):
         raise process.OperationError("Console JSON must be an object")
     return value
+
+
+def fetch_node_statistics(config):
+    return _run_console(config, "getstatsnew")
+
+
+def fetch_chain_parameter(config, number):
+    """Read one network configuration parameter through this node's console.
+
+    Limits and timings that decide whether a stake can work at all are network
+    state, not settings of this installation, so they are read from the chain
+    rather than assumed. The console wraps each one in a 'pNN' key.
+    """
+    if not isinstance(number, int) or not 0 <= number <= 100:
+        raise process.OperationError("Unsupported configuration parameter")
+    value = _run_console(config, f"getconfig {number}")
+    parameter = value.get(f"p{number}")
+    if not isinstance(parameter, dict):
+        raise process.OperationError(
+            f"The chain did not report configuration parameter {number}"
+        )
+    return parameter
 
 
 def is_node_synchronized(value):
@@ -214,6 +236,13 @@ def _local_sync_preflight(store, source_name, target_name):
     ):
         raise process.OperationError(
             "Local sync requires two initialized, non-removed nodes"
+        )
+    if not shutil.which("rsync"):
+        # The copy itself is an rsync, so a missing one would otherwise fail
+        # mid-operation with an errno and no indication of the remedy.
+        raise process.OperationError(
+            "Local sync copies the database with rsync, which is not installed; "
+            "run: evernode host setup"
         )
     if _has_election_schedule(source_name) or _has_election_schedule(target_name):
         raise process.OperationError(

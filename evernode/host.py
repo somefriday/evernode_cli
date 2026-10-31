@@ -18,6 +18,9 @@ REQUIRED_COMMANDS = (
     "cron",
     "chronyc",
     "gawk",
+    # node lsync copies one node's database to another with rsync, which a
+    # minimal server image does not carry.
+    "rsync",
     "yq",
 )
 REQUIRED_SERVICES = ("docker", "cron", "chrony")
@@ -197,6 +200,7 @@ def install_host_dependencies():
             "jq",
             "bc",
             "gawk",
+            "rsync",
             "util-linux",
             "procps",
             "cron",

@@ -2,8 +2,37 @@
 
 import argparse
 from pathlib import Path
+import re
 
 from . import __version__
+
+# Options whose value is a chain address, which may begin with a minus.
+ADDRESS_OPTIONS = ("--wallet-address", "--depool-address")
+ADDRESS_VALUE = re.compile(r"^-[0-9]+:[0-9a-fA-F]{64}$")
+
+
+def normalize_address_arguments(argv):
+    """Allow a masterchain address to be written after a space.
+
+    Every solo validator's Safe is in workchain -1, so its address starts
+    with '-1:'. argparse reads any value beginning with '-' as the next
+    option, which makes '--wallet-address -1:...' impossible to type and is
+    exactly the form a solo import needs. Joining the pair here accepts it
+    while leaving anything that is not an address to argparse's own error.
+    """
+    result = []
+    joined = False
+    for index, item in enumerate(argv):
+        if joined:
+            joined = False
+            continue
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        if item in ADDRESS_OPTIONS and following and ADDRESS_VALUE.match(following):
+            result.append(f"{item}={following}")
+            joined = True
+            continue
+        result.append(item)
+    return result
 
 
 def build_argument_parser():
@@ -241,12 +270,20 @@ def build_argument_parser():
         "set", help="Record what this validator stakes in each election"
     )
     q.add_argument("-n", "--name", required=True)
-    target = q.add_mutually_exclusive_group(required=True)
+    # Both forms end in a fixed number of tokens; a mode only says what
+    # arithmetic to do on the spendable balance once, now.
+    target = q.add_mutually_exclusive_group()
     target.add_argument("--amount", type=int, help="Whole tokens staked per election")
+    target.add_argument(
+        "--mode",
+        choices=("balanced", "single"),
+        help="Compute the stake now: balanced splits the spendable balance "
+        "across two rounds, single puts all of it in one",
+    )
     target.add_argument(
         "--all-balance",
         action="store_true",
-        help="Stake the wallet balance, which the reference scripts split across rounds",
+        help="Deprecated alias for --mode single",
     )
     q.add_argument("--yes", action="store_true")
     q = stake.add_parser(
@@ -282,6 +319,12 @@ def build_argument_parser():
     q = elections.add_parser("stop")
     q.add_argument("-n", "--name")
     q.add_argument("--all", action="store_true")
+    # Stopping needs no confirmation - it only makes a node bid less - but a
+    # script that passes --yes to every mutating command should not fail here
+    # while the same flag works on start.
+    q.add_argument(
+        "--yes", action="store_true", help="Accepted for symmetry; stopping never prompts"
+    )
     q.add_argument("--dry-run", action="store_true")
     image = groups.add_parser("image").add_subparsers(dest="action", required=True)
     q = image.add_parser("build")

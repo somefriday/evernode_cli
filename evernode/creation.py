@@ -342,7 +342,8 @@ def handle_node_creation(store, args):
             "required_signatures": required,
             "wallet_address": wallet_address,
             "depool_address": depool_address,
-        }
+        },
+        validator_type=validator_type,
     )
     wallets.ensure_unassigned(store, config, wallet_address, depool_address)
     config["setup_stage"] = "preparing"
