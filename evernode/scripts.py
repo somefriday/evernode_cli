@@ -419,6 +419,156 @@ jq -cn --arg requested "$recoverable" --arg before "$wallet_before" \
 """
 
 
+WALLET_PENDING_TO = r"""set -eo pipefail
+set +u
+source ./env.sh
+source ./functions.shinc
+read -r wallet_status wallet_balance _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
+pending="$(Get_MSIG_Trans_List "$EVERNODE_WALLET")"
+jq -cn --arg dest "$PENDING_DEST" --arg status "$wallet_status" \
+    --arg balance "$wallet_balance" --argjson pending "$pending" \
+    '{wallet_status: $status, wallet_balance_nanotokens: $balance,
+      pending_transactions: [$pending.transactions[] | select(.dest == $dest)]}'
+"""
+
+
+def read_wallet_pending_to(store, config, wallet_address, destination, timeout=300):
+    """What a Safe holds and what it has left unsigned against one address.
+
+    An unsigned instruction blocks the next one, so the address it is
+    addressed to is what matters: the elector for a solo validator, the
+    nominator contract for a nominator validator.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment["EVERNODE_WALLET"] = wallet_address
+    environment["PENDING_DEST"] = destination
+    result = process.execute_command(
+        ["bash", "-c", WALLET_PENDING_TO],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not read the wallet's pending transactions to " + destination
+        ) from exc
+
+
+NOMINATOR_FUND_DEPLOYER = r"""set -eo pipefail
+set +u
+source ./env.sh
+source ./functions.shinc
+source ./managed_ops.shinc
+if [[ -z ${FUND_DEST:-} ]] || [[ -z ${FUND_VALUE:-} ]] || [[ -z ${FUND_BUDGET:-} ]];then
+    echoerr "###-ERROR: the deployer address, funding value and budget are all required."
+    exit 1
+fi
+read -r _ wallet_before _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
+if [[ $wallet_before -lt $(( FUND_VALUE + 1000000000 )) ]];then
+    echoerr "###-ERROR: the wallet holds ${wallet_before} nanotokens, which does not cover ${FUND_VALUE} plus its own fees."
+    exit 1
+fi
+# The deployer does not exist yet, so this transfer must not bounce: a bounce
+# would hand the money back and leave nothing to create the contract with.
+request=$(jq -cn --arg dest "$FUND_DEST" --argjson value "$FUND_VALUE" \
+    '{dest: $dest, value: $value, bounce: false, allBalance: false, payload: ""}')
+if ! $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/nominator-fund.boc" \
+        --lifetime "$MSG_LIFETIME" \
+        --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+        --abi "$INPL_SafeC_Wallet_ABI" "$EVERNODE_WALLET" submitTransaction \
+        "$request" >/dev/null;then
+    echoerr "###-ERROR: could not build the wallet transaction that funds the deployer."
+    exit 1
+fi
+if ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$FUND_DEST" \
+        "${INPL_ELECTIONS_WORK_DIR}/nominator-fund.boc" "$FUND_VALUE" "" \
+        "${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" false);then
+    echoerr "###-ERROR: the funding transaction did not reach the wallet."
+    exit 1
+fi
+# The budget, not the value sent, is the threshold: the transfer pays its own
+# forwarding fee out of what arrives.
+Complete_And_Await "$trans_id" "$EVERNODE_WALLET" "$VALIDATOR_NAME" \
+    "Funding the nominator deployer" Effect_Account_Balance_At_Least \
+    "$FUND_DEST" "$FUND_BUDGET" || exit 1
+read -r deployer_status deployer_balance _ <<< "$(Get_Account_Info "$FUND_DEST")"
+jq -cn --arg id "${trans_id:-}" --arg status "$deployer_status" \
+    --arg balance "$deployer_balance" \
+    '{transaction_id: $id, deployer_status: $status,
+      deployer_balance_nanotokens: $balance}'
+"""
+
+
+def fund_nominator_deployer(
+    store, config, wallet_address, deployer, value, budget, timeout=900
+):
+    """Send the one-shot deployer its funds from the node's own Safe.
+
+    The Safe is the wallet this mode already uses to instruct the contract, so
+    the deployment is signed the same way every other wallet operation is -
+    including the multi-custodian handshake, which a deployment needs as much
+    as a bid does.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "EVERNODE_WALLET": wallet_address,
+            "FUND_DEST": deployer,
+            "FUND_VALUE": str(value),
+            "FUND_BUDGET": str(budget),
+        }
+    )
+    result = process.execute_command(
+        ["bash", "-c", NOMINATOR_FUND_DEPLOYER],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not confirm that the nominator deployer was funded"
+        ) from exc
+
+
+ELECTOR_CREDIT_STATUS = r"""
+elections_id="$(Get_Current_Elections_ID)" || elections_id=0
+jq -cn --arg elector "$elector_addr" --arg type "$elector_type" \
+    --arg election "${elections_id:-0}" --arg recoverable "$recoverable" \
+    '{elector: $elector, elector_type: $type, active_election_id: $election,
+      recoverable_nanotokens: $recoverable}'
+"""
+
+
+def read_elector_credit(store, config, address, timeout=300):
+    """Read what the elector owes one address, which need not be a wallet.
+
+    A nominator contract holds the stake, so the credit is recorded against
+    the contract rather than against a multisig. This asks only the elector,
+    without the multisig getters a Safe would answer.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment["EVERNODE_WALLET"] = address
+    result = process.execute_command(
+        ["bash", "-c", SOLO_STAKE_PRELUDE + ELECTOR_CREDIT_STATUS],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not read what the elector owes " + address
+        ) from exc
+
+
 def read_solo_stake_state(store, config, wallet_address, timeout=300):
     """Read what the elector and the Safe say about a solo validator's stake.
 

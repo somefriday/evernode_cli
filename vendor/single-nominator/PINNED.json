@@ -1,0 +1,19 @@
+{
+  "upstreamRepository": "https://github.com/ton-blockchain/single-nominator.git",
+  "upstreamCommit": "b6455fcf7fbaf068d0fe723a5a11988ef67f6ea7",
+  "upstreamVersion": "v1.1",
+  "note": "Contract source is upstream's, unmodified. The compiler is the latest release; it reproduces upstream's published code hash.",
+  "sourceDigests": {
+    "contracts/single-nominator.fc": "54a0b53fcd49c09522955ab61f8ee109775631d80d91b8d1467959acc92bbd37",
+    "contracts/imports/stdlib.fc": "fabe28724c4f627779733715a0ff47b401f59f7f688bc399269f80d244fab0af"
+  },
+  "compiler": {
+    "@ton-community/func-js": "0.11.0",
+    "@ton-community/func-js-bin": "0.4.6-wasmfix.debugger.1",
+    "@ton/core": "0.63.1",
+    "@ton/crypto": "3.3.0",
+    "@ton/crypto-primitives": "2.1.0"
+  },
+  "codeHash": "cc0d39589eb2c0cfe0fde28456657a3bdd3d953955ae3f98f25664ab3c904fbd",
+  "codeHashBase64": "zA05WJ6ywM/g/eKEVmV6O909lTlVrj+Y8lZkqzyQT70="
+}

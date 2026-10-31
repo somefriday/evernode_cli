@@ -94,6 +94,9 @@ Trans_QTY=$(echo "${Trans_List}" | jq -r ".transactions|length")
 
 if [[ ${Trans_QTY} -gt 0 ]];then
     declare -i Exist_El_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${elector_addr}\")]|length")
+    if [[ "$STAKE_MODE" == "nominator" ]];then
+        declare -i Exist_Nom_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${NOMINATOR_ADDR}\")]|length")
+    fi
     if [[ "$STAKE_MODE" == "depool" ]];then
         Depool_addr=$(cat "${KEYS_DIR}/depool.addr")
         dp_proxy0=$(cat "${KEYS_DIR}/proxy0.addr")
@@ -106,6 +109,7 @@ fi
 echo "Total pending transactions qty:      ${Trans_QTY}"
 [[ $Exist_DP_Trans_Qty -ne 0 ]] && echo "To DePool transactions qty:  ${Exist_DP_Trans_Qty}"
 [[ $Exist_El_Trans_Qty -ne 0 ]] && echo "To Elector transactions qty: ${Exist_El_Trans_Qty}"
+[[ $Exist_Nom_Trans_Qty -ne 0 ]] && echo "To nominator transactions qty: ${Exist_Nom_Trans_Qty}"
 [[ $Exist_Proxy0_Trans_Qty -ne 0 ]] && echo "To Proxy0 transactions qty:  ${Exist_Proxy0_Trans_Qty}"
 [[ $Exist_Proxy1_Trans_Qty -ne 0 ]] && echo "To Proxy1 transactions qty:  ${Exist_Proxy1_Trans_Qty}"
 echo

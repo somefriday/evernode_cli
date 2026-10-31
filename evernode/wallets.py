@@ -35,19 +35,21 @@ def validate_wallet_profile(profile, *, validator_type="depool"):
             not isinstance(value, str) or not ADDRESS_PATTERN.fullmatch(value)
         ):
             raise process.OperationError(f"Invalid {key.replace('_', ' ')}")
-    # A solo validator has no DePool, so an import of one is complete with
-    # just its Safe; requiring a DePool address would make the mode
-    # unreachable, and accepting one would describe a contract it never uses.
-    if validator_type == "solo" and profile["depool_address"] is not None:
+    # Neither a solo nor a nominator validator has a DePool, so an import of
+    # one is complete with just its Safe; requiring a DePool address would
+    # make those modes unreachable, and accepting one would describe a
+    # contract they never use. A nominator's own contract is not a DePool and
+    # is derived rather than supplied.
+    if validator_type != "depool" and profile["depool_address"] is not None:
         raise process.OperationError(
-            "A solo validator stakes from its own Safe and has no DePool address"
+            f"A {validator_type} validator has no DePool address"
         )
     if profile["mode"] == "import":
         if profile["wallet_address"] is None:
             raise process.OperationError(
                 "An imported validator requires its existing wallet address"
             )
-        if validator_type != "solo" and profile["depool_address"] is None:
+        if validator_type == "depool" and profile["depool_address"] is None:
             raise process.OperationError(
                 "An imported validator requires expected wallet and DePool addresses"
             )
@@ -84,6 +86,35 @@ def ensure_unassigned(store, config, wallet_address=None, depool_address=None):
         if wanted & assigned:
             raise process.OperationError(
                 "Wallet or DePool address is already assigned to managed node " + name
+            )
+
+
+def ensure_owner_is_external(store, config, owner):
+    """Refuse an owner wallet that this server already controls.
+
+    The point of nominator staking is that the key able to withdraw the
+    principal is not on the validator. An owner address that is one of this
+    host's managed wallets would silently give that back.
+    """
+    wanted = str(owner).lower()
+    for name in store.list_node_names():
+        saved = store.load_node_config(name)
+        profile = saved.get("wallet")
+        if not isinstance(profile, dict):
+            continue
+        for key in ("wallet_address", "depool_address"):
+            value = profile.get(key)
+            if value and value.lower() == wanted:
+                raise process.OperationError(
+                    f"{owner} is managed by node {name} on this server, so "
+                    "its key is here too. A nominator owner has to be a cold "
+                    "wallet this host does not hold."
+                )
+        held = (saved.get("settings") or {}).get("NOMINATOR_ADDR")
+        if held and held.lower() == wanted:
+            raise process.OperationError(
+                f"{owner} is node {name}'s nominator contract, not a wallet "
+                "that can own one"
             )
 
 
@@ -270,11 +301,13 @@ def wallet_workchain(config):
     """The workchain this node's Safe belongs in.
 
     A solo validator stakes straight to the elector, which accepts a stake
-    only from the masterchain, so its Safe has to live there. A DePool
-    validator stakes through its DePool and keeps the node's own workchain,
-    where fees are lower.
+    only from the masterchain, so its Safe has to live there. A nominator
+    validator's Safe instructs a masterchain contract, which refuses any
+    other workchain, so it belongs there too. A DePool validator stakes
+    through its DePool and keeps the node's own workchain, where fees are
+    lower.
     """
-    if configuration.validator_type(config) == "solo":
+    if configuration.validator_type(config) in ("solo", "nominator"):
         return -1
     settings = dict(
         configuration.DEFAULT_ENVIRONMENT, **(config.get("settings") or {})
@@ -391,15 +424,22 @@ def wallet_verify(store, config):
         store.node_directory(config["name"]) / "keys", config["name"]
     )
     _check_imported_wallet(profile, local_public_keys, observed)
-    if configuration.validator_type(config) == "solo":
-        # Nothing links a solo validator to a second contract, so verifying
-        # the wallet completes the import. Its own stake is set separately.
+    if configuration.validator_type(config) in ("solo", "nominator"):
+        # Nothing this CLI manages links these modes to a second contract that
+        # verifying the wallet could check: a solo validator stakes from the
+        # Safe itself, and a nominator validator's contract is derived from it
+        # and checked by 'nominator verify'. So the import ends here.
         config["setup_stage"] = "imported"
+        nominator = configuration.validator_type(config) == "nominator"
         return config, {
             "stage": config["setup_stage"],
             "wallet": observed,
-            "next": f"Run: evernode stake status -n {config['name']} to see what "
-            "the elector still holds for this wallet, then evernode stake set",
+            "next": (
+                f"Run: evernode nominator prepare -n {config['name']}"
+                if nominator
+                else f"Run: evernode stake status -n {config['name']} to see what "
+                "the elector still holds for this wallet, then evernode stake set"
+            ),
         }
     config["setup_stage"] = "wallet-verified"
     return config, {
@@ -686,6 +726,22 @@ def next_setup_command(config):
             ("new", "depool-prepared"): f"evernode depool deploy -n {name}",
             ("new", "depool-deployed"): f"evernode depool stake-initial -n {name}",
             ("import", "wallet-verified"): f"evernode depool verify -n {name}",
+        },
+        # A nominator validator's principal lives in a contract, so the
+        # contract has to exist and be checked before a stake means anything.
+        "nominator": {
+            # The contract's address is derived from this node's Safe, so the
+            # Safe comes first and the shared wallet stages apply unchanged.
+            # Only once it exists can the contract be prepared.
+            ("new", "wallet-deployed"): f"evernode nominator prepare -n {name}",
+            ("new", "nominator-prepared"): f"evernode nominator deploy -n {name}",
+            ("new", "nominator-deployed"): f"evernode nominator verify -n {name}",
+            ("new", "nominator-verified"): f"evernode stake set -n {name} --mode balanced",
+            ("import", "imported"): f"evernode nominator prepare -n {name}",
+            ("import", "nominator-prepared"): f"evernode nominator deploy -n {name}",
+            ("import", "nominator-deployed"): f"evernode nominator verify -n {name}",
+            ("import", "nominator-verified"): f"evernode stake set -n {name} --mode balanced",
+            ("import", "ready-for-elections"): f"evernode election start -n {name}",
         },
         # A solo validator needs a stake on record before it can bid, whether
         # its Safe is new or recovered from phrases; an imported node would

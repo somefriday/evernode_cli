@@ -11,7 +11,9 @@ from . import process
 DEFAULT_ORCHESTRATION_REPOSITORY = "https://github.com/Custler/Ever-Validator.git"
 NODE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
-VALIDATOR_TYPES = ("depool", "solo")
+VALIDATOR_TYPES = ("depool", "solo", "nominator")
+# What each validator type is called in the reference scripts' own vocabulary.
+STAKE_MODES = {"depool": "depool", "solo": "msig", "nominator": "nominator"}
 DEFAULT_ENVIRONMENT = {
     "NODE_WC": 0,
     "CRONTAB_INTERVAL": 10,
@@ -25,6 +27,17 @@ DEFAULT_ENVIRONMENT = {
     "MSIG_FIX_STAKE": 0,
     "VAL_ACC_RESERVED": 50,
     "MAX_FACTOR": 3,
+    # Nominator staking: the contract that holds the principal, the cold
+    # owner that may withdraw it, what an instruction attaches for gas, what
+    # the contract keeps liquid, and the deployment budget. The two deploy
+    # values are budgets at one set of network prices, not constants.
+    "NOMINATOR_ADDR": "",
+    "NOMINATOR_OWNER": "",
+    "NOMINATOR_OP_FEE": 2000000000,
+    "NOMINATOR_RESERVE": 1000000000,
+    "NOMINATOR_DEPLOY_VALUE": 10000000000,
+    "NOMINATOR_DEPLOY_MARGIN": 1000000000,
+    "NOMINATOR_TOOLS_IMAGE": "",
 }
 
 
@@ -174,6 +187,14 @@ def write_node_environment(path, values):
                 "CRON_MARKER",
                 "DOCKER_STATSD_CONTAINER_NAME",
                 "METRICS_HOST_PORT",
+                # Nominator staking is this CLI's addition, so no upstream
+                # env.sh declares it. Appending keeps the mode usable with a
+                # project source that predates it.
+                "NOMINATOR_ADDR",
+                "NOMINATOR_OWNER",
+                "NOMINATOR_OP_FEE",
+                "NOMINATOR_RESERVE",
+                "NOMINATOR_TOOLS_IMAGE",
             }:
                 raise process.OperationError(f"Unsupported project: env.sh lacks {key}")
             text += "\n# Added by evernode-manager\n" + assignment + "\n"
@@ -191,8 +212,10 @@ def build_node_environment(config):
         "RUN_MODE": "docker",
         "NODE_ROLE": "validator",
         "NODE_WC": settings["NODE_WC"],
-        # The kit calls solo staking 'msig': the validator's own Safe stakes.
-        "STAKE_MODE": "msig" if validator_type(config) == "solo" else "depool",
+        # The kit calls solo staking 'msig': the validator's own Safe
+        # stakes. Nominator staking keeps the same elector conversation and
+        # changes only who sends it, so the kit calls it 'nominator'.
+        "STAKE_MODE": STAKE_MODES[validator_type(config)],
         "FORCE_USE_DAPP": "false",
         "DOCKER_USE_CUSTOM_IMAGE": "true",
         "DOCKER_IMAGE_REPO": config["image"].rsplit(":", 1)[0],
@@ -220,5 +243,13 @@ def build_node_environment(config):
         "MSIG_FIX_STAKE": settings["MSIG_FIX_STAKE"],
         "VAL_ACC_RESERVED": settings["VAL_ACC_RESERVED"],
         "MAX_FACTOR": settings["MAX_FACTOR"],
+        "NOMINATOR_ADDR": settings["NOMINATOR_ADDR"],
+        "NOMINATOR_OWNER": settings["NOMINATOR_OWNER"],
+        "NOMINATOR_OP_FEE": settings["NOMINATOR_OP_FEE"],
+        "NOMINATOR_RESERVE": settings["NOMINATOR_RESERVE"],
+        # The election scripts splice the stake into the elector's request with
+        # the cell tool, which has to be the image the contract was compiled
+        # and hash-checked in.
+        "NOMINATOR_TOOLS_IMAGE": settings["NOMINATOR_TOOLS_IMAGE"],
         "IS_ENVIRONMENT_CONFIGURED": "true",
     }

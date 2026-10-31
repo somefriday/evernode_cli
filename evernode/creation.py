@@ -188,6 +188,7 @@ def handle_node_creation(store, args):
         [
             ("depool", "DePool - stake through a DePool contract, shared with participants"),
             ("solo", "Solo - stake directly from this validator's own Safe wallet"),
+            ("nominator", "Nominator - stake from a contract a cold owner controls"),
         ],
         flag="--validator-type",
         # Existing automation predates this choice, so a noninteractive run
@@ -195,6 +196,7 @@ def handle_node_creation(store, args):
         default="depool",
     )
     solo = validator_type == "solo"
+    nominator = validator_type == "nominator"
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
         importing = input(
@@ -207,7 +209,16 @@ def handle_node_creation(store, args):
         args.balance_threshold,
         args.depool_type,
     )
-    if solo and any(value is not None for value in depool_arguments):
+    if nominator and args.owner_address is None and not sys.stdin.isatty():
+        raise process.OperationError(
+            "A nominator validator's stake is held by a contract owned by a "
+            "cold wallet; name it with --owner-address"
+        )
+    if args.owner_address is not None and not nominator:
+        raise process.OperationError(
+            "--owner-address applies only to a nominator validator"
+        )
+    if (solo or nominator) and any(value is not None for value in depool_arguments):
         raise process.OperationError(
             "DePool parameters do not apply to a solo validator, which stakes "
             "from its own Safe wallet; set its stake with evernode stake set"
@@ -242,7 +253,9 @@ def handle_node_creation(store, args):
     )
     depool_type = (
         configuration.DEFAULT_ENVIRONMENT["DePool_TYPE"]
-        if solo
+        # Neither of these modes has a DePool, so neither should be asked
+        # which kind it wants.
+        if solo or nominator
         else ui.select_choice(
             args.depool_type,
             "DePool type",
@@ -252,7 +265,7 @@ def handle_node_creation(store, args):
             default="EverX",
         )
     )
-    if solo or importing:
+    if solo or nominator or importing:
         # A solo validator has no DePool, and an imported DePool's terms are
         # on-chain contract state. Keep the internal environment schema
         # complete without pretending these defaults describe either.
@@ -281,6 +294,18 @@ def handle_node_creation(store, args):
         "memory": memory,
         "validator_type": validator_type,
     }
+    owner = args.owner_address
+    if nominator:
+        owner = ui.prompt_for_value(owner, "Cold owner wallet address")
+        # The contract stores the owner in its initial data and has no
+        # change-owner operation, so a wrong address here is permanent.
+        if not str(owner).startswith("-1:"):
+            raise process.OperationError(
+                "The owner authorizes withdrawals from a masterchain "
+                "contract; its address must start with -1:"
+            )
+        if not wallets.ADDRESS_PATTERN.fullmatch(str(owner)):
+            raise process.OperationError("Invalid owner address")
     if (
         network not in ("main", "devnet")
         or depool_type not in ("EverX", "StEver")
@@ -294,6 +319,8 @@ def handle_node_creation(store, args):
         )
     config["settings"] = {
         "NODE_WC": workchain,
+        "NOMINATOR_OWNER": owner or "",
+        "NOMINATOR_ADDR": "",
         # A solo stake is set after the wallet is deployed, by stake set.
         "MSIG_FIX_STAKE": configuration.DEFAULT_ENVIRONMENT["MSIG_FIX_STAKE"],
         "VAL_ACC_RESERVED": configuration.DEFAULT_ENVIRONMENT["VAL_ACC_RESERVED"],
@@ -311,27 +338,37 @@ def handle_node_creation(store, args):
     config["metrics_port"] = docker.select_available_node_port(
         store, 9102, "tcp", args.metrics_port
     )
+    # A nominator validator's Safe only instructs its contract, so one
+    # custodian is the usual choice: the key it holds cannot move the
+    # principal. More are still allowed, and the kit signs them the same way
+    # it signs a solo validator's.
     custodians = (
         args.custodians
         if args.custodians is not None
-        else int(ui.prompt_for_value(None, "Multisig custodians", "3"))
+        else int(
+            ui.prompt_for_value(None, "Multisig custodians", "1" if nominator else "3")
+        )
     )
     required = (
         args.required_signatures
         if args.required_signatures is not None
-        else int(ui.prompt_for_value(None, "Required signatures", "2"))
+        else int(
+            ui.prompt_for_value(None, "Required signatures", "1" if nominator else "2")
+        )
     )
     wallet_address = args.wallet_address
     depool_address = args.depool_address
     if importing:
         wallet_address = ui.prompt_for_value(wallet_address, "Existing wallet address")
-        if solo:
-            # The elector only accepts a stake sent from the masterchain, so a
-            # basechain wallet cannot validate solo however it was created.
+        if solo or nominator:
+            # The elector only accepts a stake sent from the masterchain. A
+            # solo validator sends it itself; a nominator validator's wallet
+            # has to instruct a masterchain contract, which refuses anything
+            # else with WRONG_VALIDATOR_WC. Neither can use a basechain Safe.
             if not str(wallet_address).startswith("-1:"):
                 raise process.OperationError(
-                    "A solo validator stakes from the masterchain; its wallet "
-                    "address must start with -1:"
+                    f"A {validator_type} validator stakes from the "
+                    "masterchain; its wallet address must start with -1:"
                 )
         elif depool_address is None and sys.stdin.isatty():
             depool_address = input("Existing DePool address: ").strip() or None
@@ -345,6 +382,8 @@ def handle_node_creation(store, args):
         },
         validator_type=validator_type,
     )
+    if nominator:
+        wallets.ensure_owner_is_external(store, config, owner)
     wallets.ensure_unassigned(store, config, wallet_address, depool_address)
     config["setup_stage"] = "preparing"
     if importing and not sys.stdin.isatty():

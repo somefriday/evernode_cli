@@ -49,6 +49,23 @@ def inspect_container(name):
     return json.loads(result.stdout)[0]
 
 
+def image_exists(reference):
+    """Report whether a locally tagged image is present.
+
+    A missing image and an unreachable daemon are different problems, so the
+    daemon is checked before a missing image is reported as absent.
+    """
+    result = process.execute_command(
+        ["docker", "image", "inspect", reference], check=False
+    )
+    if result.returncode:
+        process.execute_command(["docker", "info", "--format", "{{.ServerVersion}}"])
+        if "No such image" in result.stderr or "no such image" in result.stderr:
+            return False
+        raise process.OperationError(result.stderr.strip())
+    return True
+
+
 def inspect_managed_container(name, node):
     obj = inspect_container(name)
     if (

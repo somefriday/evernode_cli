@@ -15,7 +15,7 @@ still be waiting for a recovery, is the one decision in this system with no
 way to correct it until the round ends.
 """
 
-from . import configuration, nodes, process, scripts, ui, wallets
+from . import configuration, nodes, nominator, process, scripts, ui, wallets
 
 NANO = 10**9
 
@@ -35,6 +35,39 @@ STAKE_MODES = {
     ),
 }
 ROUNDS_IN_FLIGHT = 2
+
+
+def _account_noun(config):
+    """What holds the stake in this mode, so the advice names the right thing.
+
+    A solo validator stakes from its own Safe; a nominator validator stakes
+    from a contract its Safe merely instructs. Telling an operator to fund
+    "this wallet" when the money has to reach the contract would send it to
+    the account that must not hold it.
+    """
+    if configuration.validator_type(config) == "nominator":
+        return "contract"
+    return "wallet"
+
+
+def _staking_account(store, config):
+    """The address whose balance this validator stakes, by validator type.
+
+    A solo validator stakes its own Safe. A nominator validator stakes a
+    contract a cold owner holds, so the balance that matters, and the credit
+    the elector records, belong to that contract rather than to the wallet
+    this server can sign for.
+    """
+    if configuration.validator_type(config) == "nominator":
+        return nominator.nominator_address(config)
+    return _solo(store, config)[1]
+
+
+def _observe(store, config):
+    """Read the staking account the way its kind has to be read."""
+    if configuration.validator_type(config) == "nominator":
+        return nominator.staking_state(store, config)
+    return scripts.read_solo_stake_state(store, config, _solo(store, config)[1])
 
 
 def _solo(store, config):
@@ -65,7 +98,7 @@ def require_recorded_stake(config):
     sizing depends on a threshold this CLI does not expose. No managed node is
     allowed to reach an election in that state, however it was set up.
     """
-    if configuration.validator_type(config) != "solo":
+    if configuration.validator_type(config) not in ("solo", "nominator"):
         return
     if recorded_stake_tokens(config) <= 0:
         raise process.OperationError(
@@ -151,9 +184,9 @@ def _funding(spendable, stake_nanotokens):
 
 def describe_stake(store, config):
     """Report the configured stake beside what the chain says about it."""
-    _, address = _solo(store, config)
+    address = _staking_account(store, config)
     settings = _settings(config)
-    observed = scripts.read_solo_stake_state(store, config, address)
+    observed = _observe(store, config)
     facts = _chain_facts(config)
     fixed = settings["MSIG_FIX_STAKE"]
     spendable = _spendable_nanotokens(observed, settings)
@@ -203,13 +236,14 @@ def set_stake(store, config, amount=None, mode=None):
     to be inferred. Afterwards the election scripts only ever read a fixed
     amount, which is the one sizing they handle without a hidden threshold.
     """
-    _, address = _solo(store, config)
+    address = _staking_account(store, config)
+    noun = _account_noun(config)
     if amount is not None and mode is not None:
         raise process.OperationError("Use --amount N or --mode, not both")
     if amount is not None and amount <= 0:
         raise process.OperationError("A stake must be a positive number of tokens")
     settings = _settings(config)
-    observed = scripts.read_solo_stake_state(store, config, address)
+    observed = _observe(store, config)
     facts = _chain_facts(config)
     spendable = _spendable_nanotokens(observed, settings)
     mode = _resolve_mode(mode, amount, spendable, facts)
@@ -224,8 +258,8 @@ def set_stake(store, config, amount=None, mode=None):
     else:
         if spendable <= 0:
             raise process.OperationError(
-                "This wallet holds nothing to stake beyond the "
-                f"{settings['VAL_ACC_RESERVED']} tokens reserved for fees; "
+                f"This {noun} holds nothing to stake beyond the "
+                f"{settings['VAL_ACC_RESERVED']} tokens held back; "
                 "fund it first, or name an amount with --amount"
             )
         tokens = spendable // (divisor * NANO)
@@ -236,13 +270,13 @@ def set_stake(store, config, amount=None, mode=None):
     if stake_nanotokens < minimum:
         if mode == "balanced":
             raise process.OperationError(
-                f"Half of this wallet is {tokens} tokens, below the "
+                f"Half of this {noun} is {tokens} tokens, below the "
                 f"{minimum // NANO} the elector accepts, so this much capital "
                 "can only validate every other round: use --mode single"
             )
         if mode == "single":
             raise process.OperationError(
-                f"This wallet has {spendable // NANO} tokens spendable, below "
+                f"This {noun} has {spendable // NANO} tokens spendable, below "
                 f"the {minimum // NANO} the elector accepts as a stake; fund it "
                 "first"
             )
@@ -266,14 +300,14 @@ def set_stake(store, config, amount=None, mode=None):
 
     if stake_nanotokens > spendable:
         warnings.append(
-            f"This wallet cannot fund one bid of {tokens} tokens yet; it has "
+            f"This {noun} cannot fund one bid of {tokens} tokens yet; it has "
             f"{spendable // NANO} spendable. Fund it before the next election."
         )
     elif stake_nanotokens * ROUNDS_IN_FLIGHT > spendable:
         warnings.append(
             "This funds one round at a time, not consecutive rounds: a stake "
             "is locked until its round finishes, so bidding in the next one "
-            f"needs about {2 * tokens} tokens spendable, and this wallet has "
+            f"needs about {2 * tokens} tokens spendable, and this {noun} has "
             f"{spendable // NANO}."
         )
     recoverable = int(observed["recoverable_nanotokens"])
@@ -291,7 +325,9 @@ def set_stake(store, config, amount=None, mode=None):
 
     settings["MSIG_FIX_STAKE"] = tokens
     config["settings"] = settings
-    if config.get("setup_stage") in ("wallet-deployed", "imported"):
+    if config.get("setup_stage") in (
+        "wallet-deployed", "imported", "nominator-verified"
+    ):
         config["setup_stage"] = "ready-for-elections"
     configuration.write_node_environment(
         store.node_directory(config["name"]) / "scripts" / "env.sh",
@@ -322,5 +358,7 @@ def set_stake(store, config, amount=None, mode=None):
 
 def recover(store, config):
     """Ask the elector to return the stake of rounds that have finished."""
-    _, address = _solo(store, config)
-    return scripts.recover_solo_stake(store, config, address)
+    if configuration.validator_type(config) == "nominator":
+        # The hot wallet asks, but the money returns to the contract.
+        return nominator.recover(store, config)
+    return scripts.recover_solo_stake(store, config, _solo(store, config)[1])

@@ -27,10 +27,15 @@ def node_election_cron_path(name):
 
 
 def election_sequence_path(store, config):
-    """The sequence cron runs for this node, which differs by validator type."""
-    solo = configuration.validator_type(config) == "solo"
+    """The sequence cron runs for this node, which differs by validator type.
+
+    A nominator validator shares the solo sequence: in both modes recovery and
+    bidding are independent, because the stake goes to the elector rather than
+    through a DePool whose rounds the preparation step has to advance first.
+    """
+    direct = configuration.validator_type(config) in ("solo", "nominator")
     return store.node_directory(config["name"]) / (
-        SOLO_SEQUENCE_FILE if solo else DEPOOL_SEQUENCE_FILE
+        SOLO_SEQUENCE_FILE if direct else DEPOOL_SEQUENCE_FILE
     )
 
 
@@ -54,18 +59,19 @@ def _depool_sequence_program(scripts_dir):
 def _solo_sequence_program(scripts_dir, preparation_log):
     """Recover finished rounds, then bid, because the two are independent.
 
-    A solo validator stakes straight to the elector, so nothing the bid needs
-    is produced by preparation: preparation only asks the elector for rounds
-    that have finished. A recovery that cannot run must therefore not cancel
-    the bid for the election that is open now, which is the one thing the node
-    cannot do later. Each outcome is named in the cron log instead.
+    A solo validator stakes straight to the elector and a nominator validator
+    stakes through its own contract, so in neither case does the bid need
+    anything preparation produces: preparation only asks the elector for
+    rounds that have finished. A recovery that cannot run must therefore not
+    cancel the bid for the election that is open now, which is the one thing
+    the node cannot do later. Each outcome is named in the cron log instead.
 
-    The wait exists only to let a recovery that was actually submitted reach
-    the wallet before the bid reads its balance, so a cycle with nothing to
-    recover does not spend any of the election window waiting.
+    The wait exists only to let a recovery that was actually submitted arrive
+    before the bid reads the staking account's balance, so a cycle with
+    nothing to recover does not spend any of the election window waiting.
     """
     return f"""#!/bin/bash
-# Solo (msig) election cycle, written by evernode election start.
+# Direct-to-elector election cycle, written by evernode election start.
 set -uo pipefail
 cd {shlex.quote(str(scripts_dir))}
 log={shlex.quote(str(preparation_log))}
@@ -133,7 +139,7 @@ def enable_node_election_schedule(store, config, executable="/usr/local/bin/ever
         stale = workspace / other
         if stale != sequence and stale.is_file() and not stale.is_symlink():
             stale.unlink()
-    if configuration.validator_type(config) == "solo":
+    if configuration.validator_type(config) in ("solo", "nominator"):
         sequence.write_text(
             _solo_sequence_program(
                 workspace / "scripts",

@@ -239,6 +239,12 @@ export ContractsDIR="${NODE_TOP_DIR}/contracts"
 INPL_ContractsDIR="${ContractsDIR}"; $USE_IN_DOCKER_CONTEXT && INPL_ContractsDIR="/ever-node/contracts"; export INPL_ContractsDIR
 export Elector_ABI="${ContractsDIR}/EverX/elector/Elector.abi.json"
 INPL_Elector_ABI="${Elector_ABI}"; $USE_IN_DOCKER_CONTEXT && INPL_Elector_ABI="/ever-node/contracts/EverX/elector/Elector.abi.json"; export INPL_Elector_ABI
+# Different chains run different elector builds, and no single interface
+# description decodes all of them. These are the candidates, most specific
+# first; Resolve_Elector_ABI tries each against the live elector and keeps
+# whichever actually decodes, so supporting another build means adding a file
+# here rather than changing code. See Elector-ever-node.PROVENANCE.md.
+export Elector_ABI_CANDIDATES="${INPL_Elector_ABI} $(dirname "${INPL_Elector_ABI}")/Elector-ever-node.abi.json"
 #=====================================================
 # Set depool dir based on DePool type
 case "${DePool_TYPE}" in

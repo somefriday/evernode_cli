@@ -7,7 +7,12 @@ import re
 from . import __version__
 
 # Options whose value is a chain address, which may begin with a minus.
-ADDRESS_OPTIONS = ("--wallet-address", "--depool-address")
+ADDRESS_OPTIONS = (
+    "--wallet-address",
+    "--depool-address",
+    "--owner-address",
+    "--validator-address",
+)
 ADDRESS_VALUE = re.compile(r"^-[0-9]+:[0-9a-fA-F]{64}$")
 
 
@@ -73,7 +78,7 @@ def build_argument_parser():
     c.add_argument("--ip")
     c.add_argument(
         "--validator-type",
-        choices=["depool", "solo"],
+        choices=["depool", "solo", "nominator"],
         help="How this validator stakes: through a DePool, or solo from its own Safe",
     )
     c.add_argument("--network", choices=["main", "devnet"])
@@ -107,6 +112,11 @@ def build_argument_parser():
     )
     c.add_argument("--custodians", type=int)
     c.add_argument("--required-signatures", type=int)
+    c.add_argument(
+        "--owner-address",
+        help="Cold owner of a nominator validator's stake; masterchain, and "
+        "never a wallet this server holds",
+    )
     c.add_argument("--wallet-address")
     c.add_argument("--depool-address")
     c.add_argument(
@@ -305,6 +315,43 @@ def build_argument_parser():
         "recover", help="Ask the elector to return the stake of finished rounds"
     )
     q.add_argument("-n", "--name", required=True)
+    q.add_argument("--yes", action="store_true")
+    nominator = groups.add_parser(
+        "nominator",
+        help="Staking contract of a validator whose capital a cold owner holds",
+    ).add_subparsers(dest="action", required=True)
+    for command in ("prepare", "deploy", "verify"):
+        q = nominator.add_parser(command)
+        q.add_argument("-n", "--name", required=True)
+        if command == "prepare":
+            q.add_argument(
+                "--contract-source",
+                help="Vendored single-nominator directory; defaults to the "
+                "sibling of this node's recorded project source",
+            )
+        q.add_argument("--yes", action="store_true")
+    q = nominator.add_parser("info", help="Where this validator's money is")
+    q.add_argument("-n", "--name", required=True)
+    q = nominator.add_parser(
+        "withdraw", help="Prepare an owner withdrawal; signing happens elsewhere"
+    )
+    q.add_argument("-n", "--name", required=True)
+    target = q.add_mutually_exclusive_group(required=True)
+    target.add_argument("--amount", type=int, help="Whole tokens to withdraw")
+    target.add_argument(
+        "--all", dest="withdraw_all", action="store_true",
+        help="Every liquid token above the contract's reserve",
+    )
+    q = nominator.add_parser(
+        "rotate", help="Prepare an owner replacement of the hot wallet"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--validator-address", required=True)
+    q = nominator.add_parser(
+        "submit", help="Broadcast a message the owner signed elsewhere"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--message", required=True, help="Path to the signed BOC")
     q.add_argument("--yes", action="store_true")
     elections = groups.add_parser("election").add_subparsers(
         dest="action", required=True

@@ -231,7 +231,7 @@ def main(argv=None):
             return creation.handle_node_creation(store, args)
         if args.group == "node" and args.action == "resources":
             return resources.show_node_resources(store, args.name)
-        if args.group in ("wallet", "depool", "stake"):
+        if args.group in ("wallet", "depool", "stake", "nominator"):
             return setup_actions.handle_setup_action(store, args)
         if args.group == "node" and args.action == "sync-scripts":
             return handle_script_refresh(store, args)

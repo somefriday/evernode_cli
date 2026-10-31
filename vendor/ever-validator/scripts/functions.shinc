@@ -779,12 +779,67 @@ function Get_Engine_ADNL() {
 #   "absent" - if not found
 #   "null" - if elections closed
 #   "stake time max_factor addr" - if found
+# Read the elector's `get` method with an interface description it actually
+# answers to, rather than trusting one to be right.
+#
+# No single description decodes every elector build (see
+# Elector-ever-node.PROVENANCE.md), and reading the wrong one is not a
+# cosmetic problem: it is what stopped validators bidding at all, because the
+# callers treated an unreadable answer as a fatal fault.
+#
+# The candidates are tried in order and the first that decodes *and agrees
+# with a second, independently decodable reading* wins. That second reading
+# matters: a description could parse the bytes into plausible nonsense, so the
+# election id inside the decoded structure is compared with the elector's own
+# active_election_id, whose single uint32 decodes under every build.
+#
+# This function deliberately exports nothing and caches nothing.
+#  - Nothing exported: every caller reaches it through a command
+#    substitution, so an assignment here could never be seen by the caller
+#    anyway. Returning the decoded answer is the only honest interface.
+#  - Nothing cached: the cost is one local run per candidate against a state
+#    file already on disk, while a cache would add an invalidation rule that
+#    goes stale exactly when an elector is upgraded - the moment it matters.
+#
+# Only `get` needs this. The other getters these scripts use
+# (active_election_id, compute_returned_stake) are a single integer each and
+# decode under every description, so they are left alone.
+#
+# Prints the decoded response on success. Returns 1 when nothing decoded it.
+function Resolve_Elector_ABI() {
+    local boc="$1"
+    local candidate decoded active elect_at
+    for candidate in ${Elector_ABI_CANDIDATES:-$INPL_Elector_ABI}; do
+        decoded=$($CALL_CLI -j run --boc "$boc" get '{}' --abi "$candidate" 2>/dev/null) || continue
+        # Only what this reading is for: whether an election is open and who
+        # is in it. Demanding more would reject a description that answers the
+        # question perfectly well but exposes a different set of fields.
+        jq -e 'type == "object" and (.election_open | type == "boolean")
+               and (.cur_elect.members | type == "object")' <<< "$decoded" >/dev/null 2>&1 || continue
+        # Cross-check against a reading that cannot be misinterpreted.
+        active=$($CALL_CLI -j run --boc "$boc" active_election_id '{}' \
+            --abi "$candidate" 2>/dev/null | jq -r '.value0 // empty' 2>/dev/null)
+        elect_at=$(jq -r '.cur_elect.elect_at // empty' <<< "$decoded")
+        if [[ $active =~ ^[0-9]+$ ]] && [[ $active -ne 0 ]] \
+           && [[ $elect_at =~ ^[0-9]+$ ]] && [[ $active -ne $elect_at ]];then
+            echoerr "###-WARNING: ${candidate##*/} decoded the elector but its election id ${elect_at} disagrees with active_election_id ${active}; ignoring it."
+            continue
+        fi
+        echoerr "---INFO: elector read with ${candidate##*/}"
+        printf "%s\n" "$decoded"
+        return 0
+    done
+    echoerr "###-WARNING: no bundled elector interface description decodes this elector, so its participant list cannot be read. Tried: ${Elector_ABI_CANDIDATES:-$INPL_Elector_ABI}. Validation continues without that confirmation; add the matching Elector abi beside them to restore it."
+    return 1
+}
+
 function Elector_ADNL_Search() {
     local ERR_WRONG_ADNL_LENGTH=1
     local ERR_ELECTOR_TYPE=2
     local ERR_ELECTIONS_CLOSED=3
     local ERR_ADNL_ABSENT=4
     local ERR_UNKNOWN_ELECTOR_TYPE=5
+    local ERR_ELECTOR_UNREADABLE=6
     local Result="absent"
     local Elector_Parts_List=""
     local Elections_Open=""
@@ -822,13 +877,11 @@ function Elector_ADNL_Search() {
             Result="$stake $time $max_factor $addr"
             ;;
         solidity)
-            if ! Elector_Parts_List=$($CALL_CLI -j run --boc "${NET_ELECTOR_BOC}" get '{}' --abi "${INPL_Elector_ABI}"); then
-                log_error_stack "Cannot read Solidity elector participants"
-                return $ERR_ELECTOR_TYPE
-            fi
-            if ! jq -e 'type == "object" and has("election_open") and (.cur_elect.members | type == "object")' <<< "$Elector_Parts_List" >/dev/null; then
-                log_error_stack "Invalid Solidity elector response; check the elector ABI"
-                return $ERR_ELECTOR_TYPE
+            # Use a description this elector answers to, not whichever one
+            # env.sh happened to name.
+            if ! Elector_Parts_List=$(Resolve_Elector_ABI "${NET_ELECTOR_BOC}");then
+                echo "unreadable"
+                return $ERR_ELECTOR_UNREADABLE
             fi
             local Elections_Open=$(jq -r .election_open <<< "${Elector_Parts_List}")
             case "$Elections_Open" in

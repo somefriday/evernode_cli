@@ -282,15 +282,22 @@ else:
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
 
-    def test_solidity_elector_abi_decode_error_fails_closed(self):
+    def test_an_elector_no_description_decodes_is_its_own_outcome(self):
+        """Unreadable is not the same as "wrong elector type", and not fatal.
+
+        Every bundled description failing used to be reported as a fatal
+        elector-type fault, which stopped the node bidding. It now has its own
+        code so the caller can bid anyway and say what it could not confirm.
+        """
         program = ('source ./env.sh; source ./functions.shinc; '
                    'Get_Current_Elector_Type() { echo "elector solidity"; }; '
                    'Elector_ADNL_Search ' + 'a' * 64)
         result = subprocess.run(['bash', '-c', program], cwd=self.script_dir,
                                 env=dict(os.environ, TEST_ELECTOR_RESPONSE='Failed to decode output messages'),
                                 capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('check the elector ABI', result.stderr)
+        self.assertEqual(result.returncode, 6, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), 'unreadable')
+        self.assertIn('no bundled elector interface description', result.stderr)
 
     def test_inherited_nounset_does_not_break_reference_scripts(self):
         with patch.dict(os.environ, SHELLOPTS="nounset"):

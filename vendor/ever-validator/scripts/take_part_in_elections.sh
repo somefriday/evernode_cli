@@ -65,6 +65,9 @@ case "$STAKE_MODE" in
     msig)
         echo "+++-WARNING(${SelfScriptName} line $LINENO): Staking mode is set to $STAKE_MODE"
         ;;
+    nominator)
+        echo "+++-WARNING(${SelfScriptName} line $LINENO): Staking mode is set to $STAKE_MODE"
+        ;;
     *)
         echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown staking mode $STAKE_MODE. Check STAKE_MODE in env.sh "
         ;;
@@ -95,8 +98,20 @@ else
     fi
 fi
 
+if [[ "$STAKE_MODE" == "nominator" ]];then
+    if [[ -z ${NOMINATOR_ADDR:-} ]];then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Staking mode is nominator but NOMINATOR_ADDR is not set in env.sh."
+        exit 1
+    fi
+    if [[ "${NOMINATOR_ADDR%%:*}" != "-1" ]];then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The nominator contract must be in the masterchain (-1:xx), not ${NOMINATOR_ADDR}."
+        exit 1
+    fi
+fi
+
 echo "---INFO: validator account address: $Validator_addr"
 [[ "$STAKE_MODE" == "depool" ]] && echo "---INFO: depool   contract address: $Depool_addr"
+[[ "$STAKE_MODE" == "nominator" ]] && echo "---INFO: nominator contract address: $NOMINATOR_ADDR"
 
 #=================================================
 # check validator account
@@ -289,6 +304,9 @@ fi
 # Checking if you have already participated
 echo "---INFO: Checking if you have already participated in this elections ($elections_id)"
 declare -i ADNL_Stake ADNL_Time ADNL_Max_Factor
+# Whether the elector's own participant list can be consulted. When it cannot,
+# the bid still goes out and the verdict comes from what the money did.
+Elector_Readable=true
 # Check node ADNL present in Elector's participants list
 # "CurrADNL Curr_ID Next_ADNL Next_ID"
 if ! Engine_ADNLs=$(Get_Engine_ADNL); then
@@ -312,8 +330,25 @@ if [[ "$Engine_ADNLs" != "null" ]];then
             3) echo "###-ERROR(${SelfScriptName} line $LINENO): Elections is closed" ;;
             4) echo "---INFO: ADNL not found in Elector's participants list; preparing a new bid" ;;
             5) echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown Elector type: $ELECTOR_TYPE" ;;
+            6) echo "+++-WARNING(${SelfScriptName} line $LINENO): The elector's participant list cannot be read with any bundled interface description, so whether this node already bid has to be decided from what this node itself recorded." ;;
         esac
-        if [[ $error_code -ne 4 ]] || [[ $ADNL_Found != "absent" ]]; then
+        # An elector this node cannot read must not stop it validating. The
+        # question the list answers is only "did I already bid in this
+        # election", and bidding twice would spend the stake twice - so it is
+        # answered from the request file this node writes immediately before
+        # it sends a bid. Erring towards "already bid" costs one round;
+        # erring the other way costs principal, so the file is trusted.
+        if [[ $error_code -eq 6 ]];then
+            Elector_Readable=false
+            if [[ -f ${CURR_ELECTIONS_DIR}/${elections_id}_query.boc ]];then
+                echo "+++-WARNING(${SelfScriptName} line $LINENO): This node has a request on file for elections ${elections_id}, so it has already bid and will not bid again. Acceptance could not be confirmed; check the elector directly before assuming the round was missed."
+                echo
+                echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date +'%F %T %Z')"
+                echo "================================================================================================"
+                exit 0
+            fi
+            echo "---INFO: no request on file for elections ${elections_id}; bidding."
+        elif [[ $error_code -ne 4 ]] || [[ $ADNL_Found != "absent" ]]; then
             exit 1
         fi
     fi
@@ -340,10 +375,12 @@ fi
 declare -i Trans_QTY=$(echo "$Trans_List" | jq -r ".transactions|length")
 declare -i Exist_El_Trans_Qty=0
 declare -i Exist_DP_Trans_Qty=0
+declare -i Exist_Nom_Trans_Qty=0
 declare -i Exist_Proxy0_Trans_Qty=0
 declare -i Exist_Proxy1_Trans_Qty=0
 if [[ $Trans_QTY -gt 0 ]];then
     [[ "$STAKE_MODE" == "msig" ]]   && Exist_El_Trans_Qty=$(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$elector_addr\")]|length")
+    [[ "$STAKE_MODE" == "nominator" ]] && Exist_Nom_Trans_Qty=$(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$NOMINATOR_ADDR\")]|length")
     if [[ "$STAKE_MODE" == "depool" ]];then
         Exist_DP_Trans_Qty=$(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$Depool_addr\")]|length")
         Exist_Proxy0_Trans_Qty=$(echo "$Trans_List" | jq -r "[.transactions[]|select(.dest == \"$dp_proxy0\")]|length")
@@ -366,6 +403,14 @@ case "$STAKE_MODE" in
             echo "###-ERROR(${SelfScriptName} line $LINENO): You have unsigned transactions to Elector. Wait until they will be confirmed."
             Send_msg_toTelBot "$VALIDATOR_NAME Server" \
                 "${Tg_Warn_sign} WARNING($SelfScriptName line $LINENO): You have unsigned transactions to Elector. Wait until they will be confirmed." > /dev/null 2>&1
+            exit 3
+        fi
+        ;;
+    nominator)
+        if [[ $Exist_Nom_Trans_Qty -gt 0 ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): You have unsigned transactions to the nominator contract. Wait until they will be confirmed."
+            Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+                "${Tg_Warn_sign} WARNING($SelfScriptName line $LINENO): You have unsigned transactions to the nominator contract. Wait until they will be confirmed." > /dev/null 2>&1
             exit 3
         fi
         ;;
@@ -434,6 +479,8 @@ else
             jq ".wallet_id = \"${DP_Round_Proxy}\"" "${NODE_CFG_DIR}/console.json" > "${NODE_CFG_DIR}/console.tmp" ;;
         msig)
             jq ".wallet_id = \"${Validator_addr}\"" "${NODE_CFG_DIR}/console.json" > "${NODE_CFG_DIR}/console.tmp" ;;
+        nominator)
+            jq ".wallet_id = \"${NOMINATOR_ADDR}\"" "${NODE_CFG_DIR}/console.json" > "${NODE_CFG_DIR}/console.tmp" ;;
         *)
             echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown staking mode $STAKE_MODE. Check STAKE_MODE in env.sh "
             exit 1
@@ -487,6 +534,65 @@ case "$STAKE_MODE" in
         fi
         echo "---INFO: You stake: $(printf "%'9.2f" "$(echo $((NANOSTAKE)) / 1000000000 | jq -nf /dev/stdin)") Tk / $NANOSTAKE nTk"
         ;;
+    nominator)
+        # The contract holds the principal and takes the stake from its own
+        # balance, so the wallet attaches only what the instruction costs and
+        # the amount to stake travels inside the payload. That is the same
+        # shape as depool mode, not solo mode.
+        if [[ $MSIG_FIX_STAKE -le 0 ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): MSIG_FIX_STAKE is not set, so there is no stake to bid with. Run: evernode stake set"
+            exit 1
+        fi
+        declare -i Nominator_Balance_nT=0
+        if ! result=$(Get_Account_Info "${NOMINATOR_ADDR}");then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot read the nominator contract account ${NOMINATOR_ADDR}."
+            exit 1
+        fi
+        read -r Nominator_Acc_Status Nominator_Balance_nT _ <<< "$result"
+        if [[ "$Nominator_Acc_Status" != "Active" ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The nominator contract ${NOMINATOR_ADDR} is ${Nominator_Acc_Status}, not Active. Nothing can be staked from it."
+            exit 1
+        fi
+        # The contract refuses a stake that would take it below its storage
+        # reserve, so check that here rather than letting it throw 0x2004.
+        declare -i Nominator_Reserve_nT=$(( ${NOMINATOR_RESERVE:-1000000000} ))
+        declare -i Nominator_Stake_nT=$(( MSIG_FIX_STAKE * 1000000000 ))
+        if [[ $(( Nominator_Stake_nT + Nominator_Reserve_nT )) -gt $Nominator_Balance_nT ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The nominator contract holds $(( Nominator_Balance_nT / 1000000000 )) tokens, which does not cover a stake of ${MSIG_FIX_STAKE} plus its $(( Nominator_Reserve_nT / 1000000000 )) token reserve. A stake still frozen at the elector cannot be used again until its round retires."
+            exit 1
+        fi
+        declare -i Nominator_Fee_nT=$(( ${NOMINATOR_OP_FEE:-2000000000} ))
+        if [[ $Validator_Acc_Balance_nT -lt $(( Nominator_Fee_nT + 1000000000 )) ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The wallet holds $(( Validator_Acc_Balance_nT / 1000000000 )) tokens, which is not enough gas to instruct the contract. Top it up; the principal stays in the contract."
+            exit 1
+        fi
+        # The contract expects the elector's own request with the amount it
+        # should take inserted after the query id, and forwards the rest
+        # untouched. Only the cell tool can splice that, so it runs in the
+        # pinned image the contract was compiled with.
+        if [[ -z ${NOMINATOR_TOOLS_IMAGE:-} ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): NOMINATOR_TOOLS_IMAGE is not set in env.sh, so the election request cannot be prepared. Run: evernode nominator prepare"
+            exit 1
+        fi
+        echo -n "---INFO: Insert the stake of ${MSIG_FIX_STAKE} tokens into the election request ... "
+        if ! docker run --rm --network none -v "${CURR_ELECTIONS_DIR}:/work" \
+                -w /opt/nominator "$NOMINATOR_TOOLS_IMAGE" \
+                "node tools/cells.cjs body stake /work/${elections_id}_stake.boc /work/${elections_id}_query.boc ${Nominator_Stake_nT}" >/dev/null;then
+            echo
+            echo "###-ERROR(${SelfScriptName} line $LINENO): Could not build the nominator election request from ${elections_id}_query.boc."
+            exit 1
+        fi
+        echo "DONE"
+        validator_query_payload=$(base64 "${CURR_ELECTIONS_DIR}/${elections_id}_stake.boc" | tr -d "\n")
+        if [[ -z $validator_query_payload ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The nominator election request is empty! It is unasseptable!"
+            exit 1
+        fi
+        echo "---INFO: The contract stakes: $(printf "%'9.2f" "$(echo $((Nominator_Stake_nT)) / 1000000000 | jq -nf /dev/stdin)") Tk / $Nominator_Stake_nT nTk"
+        NANOSTAKE=$Nominator_Fee_nT
+        declare -r Stake_DST_Addr=$NOMINATOR_ADDR
+        declare -ir Initial_Tx_Qty=$Exist_Nom_Trans_Qty
+        ;;
     depool)
         NANOSTAKE=$((1 * 1000000000))
         declare -r Stake_DST_Addr=$Depool_addr
@@ -500,6 +606,13 @@ esac
 #####################################################################################################
 ###############  Send request to participate in elections ###########################################
 #####################################################################################################
+# Sampled before anything is sent, so an unreadable elector can still be
+# answered by what the money did. Read for every mode, used only when needed.
+declare -i Staking_Balance_Before=0
+case "$STAKE_MODE" in
+    msig)      Staking_Balance_Before=$Validator_Acc_Balance_nT ;;
+    nominator) Staking_Balance_Before=$Nominator_Balance_nT ;;
+esac
 declare -i New_Trans_Qty=0
 # ===============================================================
 # make boc for sending
@@ -618,6 +731,48 @@ if ! Bid_ADNL=$(Get_Engine_ADNL_For_Election "$elections_id");then
         | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     exit 1
 fi
+# When the elector's list cannot be read, the registration itself cannot be
+# confirmed - but the money can. The stake leaves the staking account only if
+# the elector accepted it: a refused stake is returned straight away. So the
+# verdict becomes "it left and stayed gone", which is weaker evidence than the
+# participant list and far stronger than nothing. A bid that moved funds
+# correctly must never be reported as a failure.
+if ! $Elector_Readable;then
+    Staking_Account=""
+    case "$STAKE_MODE" in
+        msig)      Staking_Account="$Validator_addr" ;;
+        nominator) Staking_Account="$NOMINATOR_ADDR" ;;
+    esac
+    if [[ -z $Staking_Account ]];then
+        # A DePool stakes from its own rounds, so no single account's balance
+        # answers this. Report the submission and what was not checked.
+        echo "+++-WARNING: The bid in elections $elections_id was submitted, but the elector's participant list cannot be read with any bundled interface description, so its acceptance was not confirmed. Check the elector before assuming the round was won or missed." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        echo
+        echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
+        echo "================================================================================================"
+        exit 0
+    fi
+    declare -i Stake_Gone_Below=$(( Staking_Balance_Before - NANOSTAKE + 2000000000 ))
+    if Await_Effect "The stake leaving ${Staking_Account}" "$Bid_Deadline" \
+            "$LC_Send_MSG_Timeout" Effect_Account_Balance_At_Most \
+            "$Staking_Account" "$Stake_Gone_Below";then
+        echo "+++-INFO: The stake of $(( NANOSTAKE / 1000000000 )) tokens left ${Staking_Account} and was not returned, so the elector accepted the bid in elections $elections_id. Its participant list could not be read to confirm the registration itself." \
+            | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        echo
+        echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
+        echo "================================================================================================"
+        exit 0
+    fi
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The stake for elections $elections_id is still in ${Staking_Account}, so the elector did not take it: either the request never arrived or it was refused and returned. The elector's participant list could not be read to say which." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+        "$Tg_SOS_sign ###-ERROR: The stake for elections $elections_id did not leave the staking account." > /dev/null 2>&1
+    echo
+    echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
+    echo "================================================================================================"
+    exit 1
+fi
 if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
         "$LC_Send_MSG_Timeout" Effect_Elector_Has_Our_ADNL "$Bid_ADNL";then
     echo "+++-INFO: The elector lists this node as a participant of elections $elections_id." \
@@ -627,9 +782,26 @@ if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
     echo "================================================================================================"
     exit 0
 fi
-# Say why, when the DePool itself can say it. A round elected with no stake
-# cannot produce a bid however well the wallet transaction was signed, so a
-# retry cannot help; the operator needs to know where the stake actually is.
+# Say why, when the sending contract itself can say it. A round elected with no
+# stake cannot produce a bid however well the wallet transaction was signed, so
+# a retry cannot help; the operator needs to know where the stake actually is.
+if [[ "$STAKE_MODE" == "nominator" ]];then
+    # The elector returns a rejected stake to the contract and keeps no record
+    # of it, so a bid that was refused looks exactly like one never made. The
+    # contract's balance is what distinguishes them.
+    Nominator_Balance_After_nT=0
+    if result=$(Get_Account_Info "${NOMINATOR_ADDR}" 2>/dev/null);then
+        read -r _ Nominator_Balance_After_nT _ <<< "$result"
+    fi
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector. The nominator contract ${NOMINATOR_ADDR} now holds $(( Nominator_Balance_After_nT / 1000000000 )) tokens. If that still includes the stake, the elector refused the request and returned it: compare the configured stake against the elector's minimum and the stake already frozen for an earlier round. If it does not, the stake is at the elector and only the registration failed." \
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+        "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector." > /dev/null 2>&1
+    echo
+    echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
+    echo "================================================================================================"
+    exit 1
+fi
 Round_Stake="$(Get_DP_Round_Stake_For_Election "$Stake_DST_Addr" "$elections_id" 2>/dev/null)"
 if [[ $Round_Stake =~ ^0+$ ]];then
     echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector: the DePool holds no stake in the round being elected, so it had nothing to bid with. This is not a failure of this attempt and a retry cannot change it. A stake bids in the round that was collecting when it was made, and is then locked until that round completes, so the rounds collecting after it are empty until it returns. To bid in consecutive elections, add a stake to each round while it is the collecting one, at least as large as the validator assurance. Read 'evernode depool info' for which round is collecting and what each round holds; staking now does not move a locked stake into the round being elected." \

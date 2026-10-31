@@ -97,6 +97,9 @@ decides the rest of the setup:
 - **Solo** — the node stakes its own money straight to the elector from its own
   Safe wallet, with no DePool and no participants. See
   [Solo validator](#solo-validator-no-depool).
+- **Nominator** — the stake sits in a contract a cold owner controls, and the
+  server holds only a wallet that may bid and recover, never withdraw. See
+  [Nominator validator](#nominator-validator-cold-owner-holds-the-stake).
 
 Every fixed choice during creation — validator type, network, workchain, DePool
 type, image — is a terminal menu, so nothing has to be spelled correctly from
@@ -338,6 +341,144 @@ instead of adding a second. The cycle waits for a recovery to reach the wallet
 only when one was actually submitted, so a cycle with nothing to recover spends
 none of the election window waiting.
 
+## Nominator validator (cold owner holds the stake)
+
+A solo validator stakes from a Safe whose keys live on the validator server,
+so whoever takes the server can take the stake. A **nominator** validator
+keeps the principal in a single-nominator contract in the masterchain that
+knows two addresses:
+
+- the **owner**, a cold wallet that may withdraw, replace the hot wallet and
+  upgrade the contract. Its key is never on this server.
+- the **hot wallet**, which may only tell the contract to bid and to recover.
+  It pays gas and nothing else. This is the node's ordinary Safe, created and
+  deployed by the same commands every other validator uses.
+
+A compromised server can therefore stop the validator and waste its gas, but
+cannot move the principal to an address of its choosing.
+
+Because the Safe is the hot wallet, a nominator validator's elections run
+through exactly the same scripts as a solo validator's: the only difference is
+that the instruction goes to the contract instead of to the elector, and the
+contract pays the stake out of its own balance. There is no separate cycle
+command and no second signing scheme.
+
+```bash
+sudo evernode node create -n validator01 --validator-type nominator \
+  --owner-address -1:YOUR_64_HEX_COLD_OWNER \
+  --custodians 1 --required-signatures 1
+sudo evernode node sync -n validator01 --wait
+
+# 1. the hot wallet: an ordinary Safe, which pays for instructions only
+sudo evernode wallet create -n validator01
+# Fund the address it prints with gas: about 15 tokens is plenty.
+sudo evernode wallet deploy -n validator01
+
+# 2. the contract, whose address is derived from that Safe and the cold owner
+sudo evernode nominator prepare -n validator01
+sudo evernode nominator deploy -n validator01
+sudo evernode nominator verify -n validator01
+
+# 3. the principal, sent to the contract address from the owner's own wallet,
+#    then the stake and the schedule
+sudo evernode stake set -n validator01 --mode balanced
+sudo evernode election start -n validator01
+```
+
+One custodian is the usual choice here, and the default the prompts offer:
+the key this Safe holds cannot move the principal, so a second signature
+protects nothing that the cold owner does not already protect. More custodians
+are still allowed and are signed exactly as a solo validator's are.
+
+**The order matters.** The contract's address is a pure function of its code,
+the cold owner and this Safe, so the Safe has to exist first — `nominator
+prepare` refuses otherwise, and names the command to run. For the same reason
+the owner **cannot be changed afterwards**: a different owner is a different
+contract at a different address. `node create` refuses an owner address that
+is a wallet this server already manages, and `nominator prepare` refuses an
+owner equal to the Safe, since either would put the withdrawal key back on the
+validator and remove the only thing this mode adds.
+
+`nominator deploy` also refuses if the Safe has changed since `prepare`, since
+the prepared address would no longer be instructable.
+
+### The bytecode, and what it is not
+
+The contract is TON's single-nominator v1.1, unmodified, vendored under
+`vendor/single-nominator/` with its upstream commit, source digests, compiler
+version and expected code hash recorded in `PINNED.json`. `nominator prepare`
+compiles it and refuses to go on unless the result is that hash, and the
+contract-tool image repeats the check at build time, so a usable image is
+itself evidence that the bytecode is the reviewed one.
+
+**This is not a production safety certification.** Upstream's audit covers
+TON. A review of this contract on Everscale reproduced an Everscale-specific
+parser difference that lets an authorized hot wallet destroy the owner's
+principal in fees through oversized stake payloads — the hot key is the one on
+this server. Unchanged v1.1 is deployed here deliberately, as the audited
+upstream code; the finding applies to it. Treat the hot wallet as able to
+waste principal, not merely gas, and keep its exposure small.
+
+### Where the money is
+
+```bash
+sudo evernode nominator info -n validator01
+```
+
+Stake passes through places, not through names for one balance: liquid in the
+contract, committed to an open election, frozen for a round being validated,
+recoverable credit at the elector, then liquid again. `nominator info` reads
+the account and the live elector for each, because the contract's own
+`get_pool_data()` is a compatibility stub that reports fixed values and knows
+nothing about frozen stake.
+
+It also reports the Safe's gas separately, and any instruction to the contract
+the Safe has left unsigned. A nominator validator has three balances to keep
+healthy — principal in the contract, gas in the Safe, and the node itself —
+and running the Safe dry stops bidding while everything looks funded.
+
+`stake set --mode balanced|single` works exactly as for a solo validator, and
+divides the **contract's** liquid balance rather than the Safe's.
+
+### Owner operations are prepared here and signed elsewhere
+
+```bash
+sudo evernode nominator withdraw -n validator01 --amount 1000
+sudo evernode nominator withdraw -n validator01 --all
+sudo evernode nominator rotate -n validator01 --validator-address -1:NEW_HOT_WALLET
+sudo evernode nominator submit -n validator01 --message /path/owner-signed.boc
+```
+
+These print the message body, the destination, the value to attach, and what
+to sign — and stop. **No owner key is ever read, stored or asked for by this
+CLI.** Sign on the machine that holds the owner's key, then hand the signed
+message back with `nominator submit`, which only broadcasts it through the
+node's console. An external message expires about a minute after signing, so
+sign immediately before submitting.
+
+`--all` sends the contract's `w` comment, which sweeps every liquid token
+above its reserve: that is principal, not only reward, and it cannot touch
+stake still frozen at the elector. `rotate` changes who may instruct the
+contract; it does not move frozen stake and does not rotate the node's
+consensus or ADNL keys. After a rotation, run `nominator prepare` again so
+this node records the wallet the contract now accepts.
+
+### The scheduled cycle
+
+`evernode election start` schedules the same sequence a solo validator runs:
+recover whatever the elector owes, then bid if an election is open. Recovery
+and bidding are independent, because the bid needs nothing recovery produces
+and the open election is the one thing the node cannot come back to later.
+
+Two things differ from solo staking, and both are handled by the scripts:
+the recovered stake arrives in the **contract**, not the Safe, and the amount
+to stake travels inside the elector's request, so the Safe's own message
+carries only gas and the principal never passes through it.
+
+Run exactly one election controller against a node. A second `election-bid`
+for the same election registers another local key and overwrites the mapping
+needed to validate the elected one.
+
 ## Operate a node
 
 New nodes use `evernode-<validator-name>` and `statsd-<validator-name>` as their
@@ -384,7 +525,8 @@ sudo evernode node stop -n validator01        # 4. only now take it out
 ```
 
 On a solo validator, step 3 is `stake status` and `stake confirm` instead of
-`depool info` and `depool confirm`.
+`depool info` and `depool confirm`; on a nominator validator it is
+`nominator info` and `stake confirm`.
 
 1. **Stop the schedule first**, so the node cannot win a place in the next set
    while you are waiting for the current one to end.

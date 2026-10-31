@@ -573,7 +573,7 @@ class FocusedFeatureTests(unittest.TestCase):
             patch("evernode.setup_actions.sys.stdin") as stdin,
             patch("evernode.setup_actions.sys.stdout") as stdout,
             patch(
-                "evernode.setup_actions._require_synchronized_setup_node",
+                "evernode.setup_actions._require_setup_node",
                 return_value=config,
             ),
             patch("evernode.setup_actions.ui.confirm_operation"),

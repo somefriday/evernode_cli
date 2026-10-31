@@ -78,6 +78,7 @@ if ! elections_id="$(Get_Current_Elections_ID)";then
 fi
 echo "INFO: Elections ID:      ${elections_id}"
 [[ "$STAKE_MODE" == "depool" ]] && echo "INFO: DePool Address:    $Depool_addr"
+[[ "$STAKE_MODE" == "nominator" ]] && echo "INFO: Nominator Address: $NOMINATOR_ADDR"
 echo "INFO: Validator Address: $Validator_addr"
 
 if ! Engine_ADNL_Info="$(Get_Engine_ADNL)";then
@@ -153,6 +154,12 @@ new_val_round_date="$(echo "$elections_id" | gawk '{print strftime("%Y-%m-%d %H:
 proxy_recover_amount
 
 ADNL_FOUND="$(Elector_ADNL_Search "$ADNL_KEY")"
+if [[ "$ADNL_FOUND" == "unreadable" ]];then
+    # This is a report, so say what could not be read rather than raising an
+    # alarm about a participant list nothing managed to look at.
+    echo "+++-WARNING(${SelfScriptName} line $LINENO): The elector's participant list cannot be read with any bundled interface description, so this node's registration cannot be confirmed here. The bid itself is reported by the election cycle."
+    exit 0
+fi
 if [[ "$ADNL_FOUND" == "absent" ]];then
     echo -e "${Tg_SOS_sign}###-ERROR(${SelfScriptName} line $LINENO): Can't find you in participant list in Elector. account: ${Depool_addr}"
     Send_msg_toTelBot "$VALIDATOR_NAME Server:" \

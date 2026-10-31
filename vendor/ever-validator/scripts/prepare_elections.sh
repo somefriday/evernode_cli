@@ -187,10 +187,14 @@ Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
 declare -i Trans_QTY=$(echo "${Trans_List}" | jq -r ".transactions|length")
 declare -i Exist_El_Trans_Qty=0
 declare -i Exist_DP_Trans_Qty=0
+declare -i Exist_Nom_Trans_Qty=0
 declare -i Exist_Proxy0_Trans_Qty=0
 declare -i Exist_Proxy1_Trans_Qty=0
 if [[ ${Trans_QTY} -gt 0 ]];then
     Exist_El_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${elector_addr}\")]|length")
+    if [[ "$STAKE_MODE" == "nominator" ]];then
+        Exist_Nom_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${NOMINATOR_ADDR}\")]|length")
+    fi
     if [[ "$STAKE_MODE" == "depool" ]];then
         Exist_DP_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${Depool_addr}\")]|length")
         Exist_Proxy0_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[]|select(.dest == \"${dp_proxy0}\")]|length")
@@ -218,6 +222,12 @@ if [[ $Exist_El_Trans_Qty -gt 0 ]] && [[ "$STAKE_MODE" == "msig" ]];then
         "${Tg_Warn_sign} WARNING($SelfScriptName line $LINENO): You have unsigned transactions to Elector on the validator address!! Sign it first before continue!" > /dev/null 2>&1
     exit 3
 fi
+if [[ $Exist_Nom_Trans_Qty -gt 0 ]] && [[ "$STAKE_MODE" == "nominator" ]];then
+    echo -e "\n+++-WARNING(${SelfScriptName} line $LINENO): : You have unsigned transactions to the nominator contract on the validator address!! Sign it first before continue!"
+    Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+        "${Tg_Warn_sign} WARNING($SelfScriptName line $LINENO): You have unsigned transactions to the nominator contract on the validator address!! Sign it first before continue!" > /dev/null 2>&1
+    exit 3
+fi
 if [[ $Exist_DP_Trans_Qty -gt 0 ]] && [[ "$STAKE_MODE" == "depool" ]];then
     echo -e "\n+++-WARNING(${SelfScriptName} line $LINENO): : You have unsigned transactions to DePool on the validator address!! Sign it first before continue!"
     Send_msg_toTelBot "$VALIDATOR_NAME Server" \
@@ -230,11 +240,30 @@ fi
 ################################################################################################
 ############### Recovery stake for msig staking mode ###########################################
 ################################################################################################
-if [[ "$STAKE_MODE" == "msig" ]];then
+if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
     if [[ "$Work_Chain" != "-1" ]];then
         echo "###-ERROR(${SelfScriptName} line $LINENO): Staking mode: $STAKE_MODE; Validator address has to be in masterchain (-1:xx) !!!"
         exit 1
     fi
+
+    # Solo staking stakes from the wallet, so the wallet is what the elector
+    # owes and the recovery goes straight to the elector. A nominator
+    # validator stakes from its contract, so the elector owes the contract and
+    # the recovery is addressed to the contract, which forwards it. The wallet
+    # only ever carries the instruction.
+    Recover_Subject="$Validator_addr"
+    Recover_Dest="$elector_addr"
+    declare -i Recover_Value=1000000000
+    if [[ "$STAKE_MODE" == "nominator" ]];then
+        if [[ -z ${NOMINATOR_ADDR:-} ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): Staking mode is nominator but NOMINATOR_ADDR is not set in env.sh."
+            exit 1
+        fi
+        Recover_Subject="$NOMINATOR_ADDR"
+        Recover_Dest="$NOMINATOR_ADDR"
+        Recover_Value=$(( ${NOMINATOR_OP_FEE:-2000000000} ))
+    fi
+    Recover_Subject_HEX="${Recover_Subject##*:}"
 
     echo "+++-WARNING(${SelfScriptName} line $LINENO): Staking mode is set to $STAKE_MODE. Preparation is recover stake only. Depool will not be ticked."
     if [[ $elections_id -eq 0 ]];then
@@ -248,13 +277,13 @@ if [[ "$STAKE_MODE" == "msig" ]];then
     # check availabylity to recover amount
     case ${ELECTOR_TYPE} in
         "fift")
-            recover_amount=$($CALL_CLI runget --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "0x${Val_Adrr_HEX}" 2>&1 | \
+            recover_amount=$($CALL_CLI runget --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "0x${Recover_Subject_HEX}" 2>&1 | \
                 grep "Result:" | awk -F'"' '{print $2}')
             ;;
         "solidity")
             # compute_returned_stake takes the wallet as a number: a bare hex
             # string is rejected, so the address keeps its 0x prefix.
-            recover_amount=$($CALL_CLI run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "{\"wallet_addr\":\"0x${Val_Adrr_HEX}\"}" --abi "${INPL_Elector_ABI}" 2>&1 | \
+            recover_amount=$($CALL_CLI run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "{\"wallet_addr\":\"0x${Recover_Subject_HEX}\"}" --abi "${INPL_Elector_ABI}" 2>&1 | \
                 grep -i "value0" | awk '{print $2}' | tr -d '"')
             ;;
         *)
@@ -286,7 +315,7 @@ if [[ "$STAKE_MODE" == "msig" ]];then
         --sign "${INPL_KEYS_DIR}/${MSIG_KEY_FILES_ARRAY[0]##*/}" ${SIG_ID_OPTION} \
         --abi "$INPL_SafeC_Wallet_ABI" \
         "$Validator_addr" submitTransaction \
-        "{\"dest\":\"$elector_addr\",\"value\":1000000000,\"bounce\":true,\"allBalance\":false,\"payload\":\"$recover_query_payload\"}" 2>&1)"
+        "{\"dest\":\"$Recover_Dest\",\"value\":$Recover_Value,\"bounce\":true,\"allBalance\":false,\"payload\":\"$recover_query_payload\"}" 2>&1)"
 
         if ! echo "$LC_OUTPUT" | grep -iq 'Message saved to file';then
             echo -e "\n----------------------------------------------\n$LC_OUTPUT\n----------------------------------------------\n"
@@ -305,11 +334,11 @@ if [[ "$STAKE_MODE" == "msig" ]];then
         # each signature is evidenced before the next is sent, and the effect
         # is the recovered stake arriving in the wallet.
         declare -i Recover_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
-        declare -i Wallet_Before=$(( $(echo "$(Get_Account_Info "${Validator_addr}")" | awk '{print $2}') ))
+        declare -i Wallet_Before=$(( $(echo "$(Get_Account_Info "${Recover_Subject}")" | awk '{print $2}') ))
         New_Elect_Trans_ID=""
         if [[ ${Required_Signs} -gt 1 ]];then
-            New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$elector_addr" \
-                "1000000000" "$recover_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}") || exit 1
+            New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Recover_Dest" \
+                "$Recover_Value" "$recover_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}") || exit 1
             if [[ -n $New_Elect_Trans_ID ]];then
                 echo "---INFO: Resuming the matching recovery request $New_Elect_Trans_ID already in the wallet."
             else
@@ -318,8 +347,8 @@ if [[ "$STAKE_MODE" == "msig" ]];then
         fi
         if [[ -z $New_Elect_Trans_ID ]];then
             echo -n "---INFO: Send query to Elector... "
-            if ! New_Elect_Trans_ID=$(Submit_And_Identify "$Validator_addr" "$elector_addr" \
-                    "${INPL_CURR_ELECTIONS_DIR}/recover-msg.boc" "1000000000" \
+            if ! New_Elect_Trans_ID=$(Submit_And_Identify "$Validator_addr" "$Recover_Dest" \
+                    "${INPL_CURR_ELECTIONS_DIR}/recover-msg.boc" "$Recover_Value" \
                     "$recover_query_payload" "${MSIG_KEY_FILES_ARRAY[0]}");then
                 echo "###-ERROR(${SelfScriptName} line $LINENO): The stake recovery request was not accepted by the wallet, so nothing was signed and nothing was recovered." \
                     | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
@@ -348,22 +377,22 @@ if [[ "$STAKE_MODE" == "msig" ]];then
         fi
         #=================================================
         # A signed wallet transaction is not a recovered stake: the elector
-        # returns it as a transfer, so wait for the wallet's own balance to
-        # carry it. One token was sent with the request and fees are paid from
-        # it, so the threshold allows two.
+        # returns it as a transfer, so wait for the staking account's own
+        # balance to carry it. The value sent with the request pays the fees,
+        # so the threshold allows that much again plus a token.
         declare -i Recover_Now=$(date +%s)
         if [[ $Recover_Deadline -lt $((Recover_Now + ${EFFECT_MIN_WAIT:-10})) ]];then
             Recover_Deadline=$((Recover_Now + ${EFFECT_MIN_WAIT:-10}))
         fi
         if ! Await_Effect "The recovery of ${recover_amount} nanotokens" "$Recover_Deadline" \
-                "${EFFECT_POLL_INTERVAL:-2}" Effect_Account_Balance_At_Least "$Validator_addr" \
-                "$(( Wallet_Before + recover_amount - 2000000000 ))";then
-            echo "###-ERROR(${SelfScriptName} line $LINENO): The recovered stake has not arrived in ${Validator_addr}." \
+                "${EFFECT_POLL_INTERVAL:-2}" Effect_Account_Balance_At_Least "$Recover_Subject" \
+                "$(( Wallet_Before + recover_amount - Recover_Value - 1000000000 ))";then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The recovered stake has not arrived in ${Recover_Subject}." \
                 | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
             Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR: Stake recovery did not arrive!!!" > /dev/null 2>&1
             exit 1
         fi
-        echo "+++-INFO: The recovered stake has arrived in ${Validator_addr}." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        echo "+++-INFO: The recovered stake has arrived in ${Recover_Subject}." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     else
         echo "--- INFO(${SelfScriptName} line $LINENO): Nothing to recover."
     fi

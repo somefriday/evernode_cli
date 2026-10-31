@@ -1,17 +1,26 @@
 """Named Safe wallet and DePool setup stages for synchronized nodes."""
 
 import contextlib
+from pathlib import Path
 import sys
 
-from . import configuration, elections, nodes, process, scripts, stake, ui, wallets
+from . import configuration, elections, nominator, nodes, process, scripts, stake, ui, wallets
 
 
-def _require_synchronized_setup_node(store, name):
+# Preparing the nominator contract compiles code and derives an address. It
+# spends nothing, sends nothing and reads no chain state, so requiring a
+# synchronized console would only stop an operator inspecting what they are
+# about to deploy before the node has caught up.
+OFFLINE_ACTIONS = (("nominator", "prepare"),)
+
+
+def _require_setup_node(store, name, action):
     config = store.load_node_config(name)
     # One guard decides whether this node's console can serve an operation, so
     # every command refuses for the same reason in the same words. It is the
     # only transport there is; see signing-reliability-design.md, D13.
-    scripts.require_node_console(config)
+    if action not in OFFLINE_ACTIONS:
+        scripts.require_node_console(config)
     if "wallet" not in config:
         raise process.OperationError(
             "This legacy node has no wallet setup profile; create a new managed node"
@@ -67,6 +76,21 @@ def _confirmation_question(args, name):
             f"Record what {name} stakes in every election, computing {target} "
             "from its spendable balance now?"
         )
+    if (args.group, args.action) == ("nominator", "prepare"):
+        return (
+            f"Compile the single-nominator contract for {name} and derive its "
+            "address? Nothing is deployed or spent yet."
+        )
+    if (args.group, args.action) == ("nominator", "deploy"):
+        return (
+            f"Deploy {name}'s nominator contract? This spends gas from its "
+            "Safe to fund a one-shot deployer."
+        )
+    if (args.group, args.action) == ("nominator", "submit"):
+        return (
+            f"Broadcast {args.message} as {name}'s owner-signed message? "
+            "Review what it authorizes before submitting it."
+        )
     if (args.group, args.action) == ("stake", "recover"):
         return f"Ask the elector to return {name}'s finished-round stake to its Safe?"
     if (args.group, args.action) == ("stake", "confirm"):
@@ -91,6 +115,8 @@ ELECTION_LOCKED_ACTIONS = (
     # Not a transaction, but it rewrites the env.sh a running election reads
     # while it is sizing a bid.
     ("stake", "set"),
+    ("nominator", "deploy"),
+    ("nominator", "submit"),
 )
 
 
@@ -102,6 +128,9 @@ def handle_setup_action(store, args):
         ("depool", "verify"),
         ("depool", "info"),
         ("stake", "status"),
+        ("nominator", "info"),
+        ("nominator", "withdraw"),
+        ("nominator", "rotate"),
     )
     secret_action = action in (("wallet", "create"), ("depool", "prepare"))
     if secret_action and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -112,7 +141,7 @@ def handle_setup_action(store, args):
         stack.enter_context(store.acquire_operation_lock(name))
         if action in ELECTION_LOCKED_ACTIONS:
             stack.enter_context(elections.hold_election_lock(store, name))
-        config = _require_synchronized_setup_node(store, name)
+        config = _require_setup_node(store, name, action)
         if mutating:
             ui.confirm_operation(args.yes, _confirmation_question(args, name))
         if action == ("wallet", "create"):
@@ -168,6 +197,33 @@ def handle_setup_action(store, args):
             result_config, result = config, stake.describe_stake(store, config)
         elif action == ("stake", "recover"):
             result_config, result = config, stake.recover(store, config)
+        elif action == ("nominator", "prepare"):
+            result_config, result = nominator.prepare(
+                store,
+                config,
+                source=args.contract_source,
+                recipe=Path(__file__).resolve().parent
+                / "assets"
+                / "nominator-tools.Dockerfile",
+            )
+        elif action == ("nominator", "deploy"):
+            result_config, result = nominator.deploy(store, config)
+        elif action == ("nominator", "verify"):
+            result_config, result = nominator.verify(store, config)
+        elif action == ("nominator", "info"):
+            result_config, result = config, nominator.info(store, config)
+        elif action == ("nominator", "withdraw"):
+            result_config, result = config, nominator.withdraw(
+                store, config, amount=args.amount, withdraw_all=args.withdraw_all
+            )
+        elif action == ("nominator", "rotate"):
+            result_config, result = config, nominator.rotate(
+                store, config, validator_address=args.validator_address
+            )
+        elif action == ("nominator", "submit"):
+            result_config, result = config, nominator.submit(
+                store, config, message=args.message
+            )
         elif action == ("stake", "confirm"):
             result_config, result = wallets.stake_confirm(
                 store, config, transaction_id=args.transaction_id

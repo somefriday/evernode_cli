@@ -83,6 +83,7 @@ function Find_Matching_Pending_Trans() {
     local PayLoad="$4"
     local Key_File="${5:-}"
     local Window_Start="${6:-}"
+    local Bounce="${7:-true}"
     local pending creator="" candidate kept="" count=0
     pending=$(Get_MSIG_Trans_List "$MSIG_ADDR") || return 1
     # Matching content alone is not identity. Every operation of every
@@ -96,8 +97,9 @@ function Find_Matching_Pending_Trans() {
     fi
     for candidate in $(jq -r --arg dest "$Dest" --arg payload "$PayLoad" \
             --arg value "$Value" --arg creator "$creator" \
+            --argjson bounce "$Bounce" \
             '.transactions[] | select(.dest == $dest and .payload == $payload
-                and .value == $value and .bounce == true and .sendFlags == "3"
+                and .value == $value and .bounce == $bounce and .sendFlags == "3"
                 and ($creator == "" or .creator == $creator)) | .id' \
             <<< "$pending"); do
         [[ $candidate =~ ^[0-9]+$ ]] || continue
@@ -798,6 +800,18 @@ function Require_Queue_Space() {
 # Read with Get_Account_Info, the same source a caller uses to decide that a
 # top-up is needed, so the decision and its verification cannot disagree.
 # Input: address, expected nanotokens
+# The mirror of Effect_Account_Balance_At_Least, for an effect that is a
+# payment leaving an account rather than arriving in one.
+function Effect_Account_Balance_At_Most() {
+    local Account="$1"
+    local Ceiling="$2"
+    local info balance
+    info=$(Get_Account_Info "$Account") || return 2
+    read -r _ balance _ <<< "$info"
+    [[ $balance =~ ^[0-9]+$ ]] || return 2
+    [[ $balance -le $Ceiling ]]
+}
+
 function Effect_Account_Balance_At_Least() {
     local info observed
     info=$(Get_Account_Info "$1") || return 2
@@ -839,6 +853,7 @@ function Submit_And_Identify() {
     local Value="$4"
     local PayLoad="$5"
     local Key_File="${6:-}"
+    local Bounce="${7:-true}"
     local attempt result identified=""
     local interval="${LC_Send_MSG_Timeout:-10}"
     # Anything already in the wallet when this attempt began belongs to an
@@ -857,7 +872,7 @@ function Submit_And_Identify() {
             return 0
         fi
         identified=$(Find_Matching_Pending_Trans "$MSIG_ADDR" "$Dest" "$Value" "$PayLoad" \
-            "$Key_File" "$window_start") || return 1
+            "$Key_File" "$window_start" "$Bounce") || return 1
         if [[ -n $identified ]];then
             printf "%s\n" "$identified"
             return 0
