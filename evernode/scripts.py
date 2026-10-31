@@ -314,6 +314,171 @@ jq -cn --argjson c "$custodians" --argjson p "$parameters" \
     }
 
 
+SOLO_STAKE_PRELUDE = r"""set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
+source ./env.sh
+source ./functions.shinc
+read -r elector_addr elector_type <<< "$(Get_Current_Elector_Type)"
+wallet_hex=${EVERNODE_WALLET##*:}
+Get_SC_current_state "$elector_addr" >/dev/null
+elector_boc="${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc"
+# What the elector owes this wallet from rounds that have already finished.
+# compute_returned_stake takes the wallet as a number, so the address has to
+# carry its 0x prefix; a bare hex string is rejected outright.
+case $elector_type in
+    fift)
+        answer=$($CALL_CLI runget --boc "$elector_boc" \
+            compute_returned_stake "0x${wallet_hex}" 2>&1 || true)
+        recoverable=$(grep "Result:" <<< "$answer" | awk -F'"' '{print $2}')
+        ;;
+    solidity)
+        argument=$(jq -cn --arg address "0x${wallet_hex}" '{wallet_addr: $address}')
+        answer=$($CALL_CLI -j run --boc "$elector_boc" \
+            compute_returned_stake "$argument" --abi "${INPL_Elector_ABI}" 2>&1 || true)
+        recoverable=$(jq -r '.value0 // 0' <<< "$answer" 2>/dev/null || echo 0)
+        ;;
+    *)
+        echoerr "###-ERROR: unknown elector type ${elector_type}"
+        exit 1
+        ;;
+esac
+# Owed nothing is the normal state, so an empty or absent answer is zero, not
+# a failure that aborts the report.
+[[ $recoverable =~ ^[0-9]+$ ]] || recoverable=0
+"""
+
+SOLO_STAKE_STATUS = r"""
+elections_id="$(Get_Current_Elections_ID)" || elections_id=0
+read -r wallet_status wallet_balance _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
+pending="$(Get_MSIG_Trans_List "$EVERNODE_WALLET")"
+jq -cn --arg elector "$elector_addr" --arg type "$elector_type" \
+    --arg election "${elections_id:-0}" --arg recoverable "$recoverable" \
+    --arg status "$wallet_status" --arg balance "$wallet_balance" \
+    --argjson pending "$pending" \
+    '{elector: $elector, elector_type: $type, active_election_id: $election,
+      recoverable_nanotokens: $recoverable, wallet_status: $status,
+      wallet_balance_nanotokens: $balance,
+      pending_elector_transactions:
+        [$pending.transactions[] | select(.dest == $elector)]}'
+"""
+
+SOLO_STAKE_RECOVER = r"""
+source ./managed_ops.shinc
+# The signing handshake only runs when the wallet needs more than one
+# signature, and the threshold is a property of the wallet, not of env.sh.
+if ! custodians=$(Get_Account_Custodians_Info "$EVERNODE_WALLET");then
+    echoerr "###-ERROR: could not read the wallet's custodians, so it is unknown how many signatures a recovery needs."
+    exit 1
+fi
+read -r Total_Custodians Required_Signs <<< "$custodians"
+if [[ ! $Required_Signs =~ ^[0-9]+$ ]] || [[ $Required_Signs -lt 1 ]];then
+    echoerr "###-ERROR: the wallet reported no usable signature threshold (${custodians})."
+    exit 1
+fi
+if [[ $recoverable -le 0 ]];then
+    jq -cn '{recovered_nanotokens: "0", note: "The elector owes this wallet nothing"}'
+    exit 0
+fi
+read -r _ wallet_before _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
+if ! $CALL_CONS -c "recover_stake ${INPL_ELECTIONS_WORK_DIR}/recover-query.boc";then
+    echoerr "###-ERROR: the node could not build a stake recovery request."
+    exit 1
+fi
+payload=$(base64 "${ELECTIONS_WORK_DIR}/recover-query.boc" | tr -d '[:space:]')
+if [[ -z $payload ]];then
+    echoerr "###-ERROR: the stake recovery request the node built is empty."
+    exit 1
+fi
+request=$(jq -cn --arg dest "$elector_addr" --arg payload "$payload" \
+    '{dest: $dest, value: 1000000000, bounce: true, allBalance: false,
+      payload: $payload}')
+if ! $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/recover-msg.boc" \
+        --lifetime "$MSG_LIFETIME" \
+        --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+        --abi "$INPL_SafeC_Wallet_ABI" "$EVERNODE_WALLET" submitTransaction \
+        "$request" >/dev/null;then
+    echoerr "###-ERROR: could not build the wallet transaction for stake recovery."
+    exit 1
+fi
+if ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$elector_addr" \
+        "${INPL_ELECTIONS_WORK_DIR}/recover-msg.boc" 1000000000 "$payload" \
+        "${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json");then
+    echoerr "###-ERROR: the stake recovery request did not reach the wallet."
+    exit 1
+fi
+Complete_And_Await "$trans_id" "$EVERNODE_WALLET" "$VALIDATOR_NAME" \
+    "Stake recovery" Effect_Account_Balance_At_Least "$EVERNODE_WALLET" \
+    "$(( wallet_before + recoverable - 2000000000 ))" || exit 1
+read -r _ wallet_after _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
+jq -cn --arg requested "$recoverable" --arg before "$wallet_before" \
+    --arg after "$wallet_after" --arg id "$trans_id" \
+    '{recovered_nanotokens: $requested, transaction_id: $id,
+      wallet_balance_before_nanotokens: $before,
+      wallet_balance_after_nanotokens: $after}'
+"""
+
+
+def read_solo_stake_state(store, config, wallet_address, timeout=300):
+    """Read what the elector and the Safe say about a solo validator's stake.
+
+    Every value is a getter or an account read, so this is a report: the stake
+    the elector still owes this wallet, whether an election is open, the Safe's
+    balance, and any transaction to the elector that is still unsigned.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment["EVERNODE_WALLET"] = wallet_address
+    result = process.execute_command(
+        ["bash", "-c", SOLO_STAKE_PRELUDE + SOLO_STAKE_STATUS],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not read the elector and wallet state for this validator"
+        ) from exc
+
+
+def recover_solo_stake(store, config, wallet_address, timeout=900):
+    """Ask the elector to return finished rounds, and see the balance rise.
+
+    This is the same request the scheduled election preparation makes, sent on
+    its own so it does not have to wait for an election window. It submits one
+    transaction and signs it through against the wallet's own record of who has
+    signed, exactly as every other operation does.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment["EVERNODE_WALLET"] = wallet_address
+    result = process.execute_command(
+        ["bash", "-c", SOLO_STAKE_PRELUDE + SOLO_STAKE_RECOVER],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+        sensitive=True,
+        check=False,
+    )
+    if result.returncode:
+        path = _record_script_failure(
+            store.node_directory(config["name"]), "stake-recover", result
+        )
+        reported = script_diagnostics(result)
+        raise process.OperationError(
+            "Stake recovery did not complete"
+            + ("\n" + "\n".join(reported) if reported else "")
+            + "\nFull output: "
+            + str(path)
+        )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError("Could not read the recovery result") from exc
+
+
 def read_depool_state(store, config, depool_address, wallet_address, timeout=300):
     """Read DePool settings, rounds, pending Safe transactions and own stake.
 

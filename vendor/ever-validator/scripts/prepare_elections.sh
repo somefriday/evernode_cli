@@ -252,7 +252,9 @@ if [[ "$STAKE_MODE" == "msig" ]];then
                 grep "Result:" | awk -F'"' '{print $2}')
             ;;
         "solidity")
-            recover_amount=$($CALL_CLI run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "{\"wallet_addr\":\"${Val_Adrr_HEX}\"}" --abi "${INPL_Elector_ABI}" 2>&1 | \
+            # compute_returned_stake takes the wallet as a number: a bare hex
+            # string is rejected, so the address keeps its 0x prefix.
+            recover_amount=$($CALL_CLI run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "{\"wallet_addr\":\"0x${Val_Adrr_HEX}\"}" --abi "${INPL_Elector_ABI}" 2>&1 | \
                 grep -i "value0" | awk '{print $2}' | tr -d '"')
             ;;
         *)

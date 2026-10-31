@@ -182,33 +182,80 @@ def handle_node_creation(store, args):
     ):
         raise process.OperationError("Source options cannot be used with --image")
     container_name, statsd_name = docker.select_container_names(store, name)
+    validator_type = ui.select_choice(
+        args.validator_type,
+        "validator type",
+        [
+            ("depool", "DePool - stake through a DePool contract, shared with participants"),
+            ("solo", "Solo - stake directly from this validator's own Safe wallet"),
+        ],
+        flag="--validator-type",
+        # Existing automation predates this choice, so a noninteractive run
+        # keeps the behaviour it had: a DePool validator.
+        default="depool",
+    )
+    solo = validator_type == "solo"
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
         importing = input(
             "Recover an existing Safe wallet from seed phrases? [y/N]: "
         ).strip().lower() in ("y", "yes")
-    if importing and any(
-        value is not None
-        for value in (
-            args.validator_assurance,
-            args.min_stake,
-            args.reward_fraction,
-            args.balance_threshold,
+    depool_arguments = (
+        args.validator_assurance,
+        args.min_stake,
+        args.reward_fraction,
+        args.balance_threshold,
+        args.depool_type,
+    )
+    if solo and any(value is not None for value in depool_arguments):
+        raise process.OperationError(
+            "DePool parameters do not apply to a solo validator, which stakes "
+            "from its own Safe wallet; set its stake with evernode stake set"
         )
-    ):
+    if importing and any(value is not None for value in depool_arguments[:4]):
         raise process.OperationError(
             "DePool deployment parameters do not apply to an imported DePool"
         )
-    network = ui.prompt_for_value(args.network, "Network", "main")
-    workchain = ui.prompt_integer(args.workchain, "Wallet workchain", 0)
+    network = ui.select_choice(
+        args.network,
+        "network",
+        [("main", "main - the Everscale main network"),
+         ("devnet", "devnet - the development network")],
+        flag="--network",
+        default="main",
+    )
+    # This is the workchain the node itself works in. Where its Safe wallet
+    # lives follows from the validator type, not from this: a solo validator
+    # stakes straight to the elector, which accepts a stake only from the
+    # masterchain, so its Safe is always in -1 whatever the node does.
+    workchain = int(
+        ui.select_choice(
+            None if args.workchain is None else str(args.workchain),
+            "node workchain",
+            [("0", "0 - basechain"), ("-1", "-1 - masterchain")],
+            flag="--workchain",
+            default="0",
+        )
+    )
     cron_interval = ui.prompt_integer(
         args.cron_interval, "Election check interval in minutes", 10
     )
-    depool_type = ui.prompt_for_value(args.depool_type, "DePool type", "EverX")
-    if importing:
-        # Existing DePool terms are on-chain contract state. Keep the internal
-        # environment schema complete without pretending these defaults alter
-        # or describe the imported contract.
+    depool_type = (
+        configuration.DEFAULT_ENVIRONMENT["DePool_TYPE"]
+        if solo
+        else ui.select_choice(
+            args.depool_type,
+            "DePool type",
+            [("EverX", "EverX - the DePool v3 contract bundled with this CLI"),
+             ("StEver", "StEver - the stEVER liquid staking DePool")],
+            flag="--depool-type",
+            default="EverX",
+        )
+    )
+    if solo or importing:
+        # A solo validator has no DePool, and an imported DePool's terms are
+        # on-chain contract state. Keep the internal environment schema
+        # complete without pretending these defaults describe either.
         assurance = configuration.DEFAULT_ENVIRONMENT["ValidatorAssuranceT"]
         min_stake = configuration.DEFAULT_ENVIRONMENT["MinStakeT"]
         reward_fraction = configuration.DEFAULT_ENVIRONMENT["ParticipantRewardFraction"]
@@ -232,6 +279,7 @@ def handle_node_creation(store, args):
         "network": network,
         "ip": ip,
         "memory": memory,
+        "validator_type": validator_type,
     }
     if (
         network not in ("main", "devnet")
@@ -246,6 +294,10 @@ def handle_node_creation(store, args):
         )
     config["settings"] = {
         "NODE_WC": workchain,
+        # A solo stake is set after the wallet is deployed, by stake set.
+        "MSIG_FIX_STAKE": configuration.DEFAULT_ENVIRONMENT["MSIG_FIX_STAKE"],
+        "VAL_ACC_RESERVED": configuration.DEFAULT_ENVIRONMENT["VAL_ACC_RESERVED"],
+        "MAX_FACTOR": configuration.DEFAULT_ENVIRONMENT["MAX_FACTOR"],
         "CRONTAB_INTERVAL": cron_interval,
         "DePool_TYPE": depool_type,
         "ValidatorAssuranceT": assurance,
@@ -273,7 +325,15 @@ def handle_node_creation(store, args):
     depool_address = args.depool_address
     if importing:
         wallet_address = ui.prompt_for_value(wallet_address, "Existing wallet address")
-        if depool_address is None and sys.stdin.isatty():
+        if solo:
+            # The elector only accepts a stake sent from the masterchain, so a
+            # basechain wallet cannot validate solo however it was created.
+            if not str(wallet_address).startswith("-1:"):
+                raise process.OperationError(
+                    "A solo validator stakes from the masterchain; its wallet "
+                    "address must start with -1:"
+                )
+        elif depool_address is None and sys.stdin.isatty():
             depool_address = input("Existing DePool address: ").strip() or None
     config["wallet"] = wallets.validate_wallet_profile(
         {

@@ -368,9 +368,11 @@ class FocusedFeatureTests(unittest.TestCase):
             ) as integer,
         ):
             self.assertEqual(creation.handle_node_creation(self.store, args), 0)
+        # The workchain is a fixed choice and is selected, not typed, so the
+        # only value still entered as an integer here is the cron interval.
         self.assertEqual(
             [call.args[1] for call in integer.call_args_list],
-            ["Wallet workchain", "Election check interval in minutes"],
+            ["Election check interval in minutes"],
         )
 
     def test_import_prompt_labels_depool_address_as_required(self):

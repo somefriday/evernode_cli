@@ -4,7 +4,7 @@ import json
 import os
 import re
 
-from . import process, scripts, storage
+from . import configuration, process, scripts, storage
 
 ADDRESS_PATTERN = re.compile(r"^-?[0-9]+:[0-9a-fA-F]{64}$")
 
@@ -171,7 +171,7 @@ def prepare_wallet(store, config, *, imported=False):
         "--",
         "Safe",
         str(profile["custodians"]),
-        "0",
+        str(wallet_workchain(config)),
         timeout=300,
         sensitive=True,
     )
@@ -247,6 +247,32 @@ def _install_imported_wallet_files(store, config, address):
             raise process.OperationError(f"Invalid imported keypair {index}") from exc
         storage.write_json_atomically(keys / path.name, keypair)
     storage.write_private_text_atomically(keys / f"{name}.addr", address + "\n")
+
+
+def wallet_workchain(config):
+    """The workchain this node's Safe belongs in.
+
+    A solo validator stakes straight to the elector, which accepts a stake
+    only from the masterchain, so its Safe has to live there. A DePool
+    validator stakes through its DePool and keeps the node's own workchain,
+    where fees are lower.
+    """
+    if configuration.validator_type(config) == "solo":
+        return -1
+    settings = dict(
+        configuration.DEFAULT_ENVIRONMENT, **(config.get("settings") or {})
+    )
+    return settings["NODE_WC"]
+
+
+def require_validator_type(config, expected, alternative):
+    """Keep DePool actions off a solo validator, and the reverse."""
+    actual = configuration.validator_type(config)
+    if actual != expected:
+        raise process.OperationError(
+            f"This node is a {actual} validator; use evernode {alternative}"
+        )
+    return actual
 
 
 def _require_stage(config, mode, stage):
@@ -337,7 +363,7 @@ def wallet_deploy(store, config):
     config["setup_stage"] = "wallet-deployed"
     return config, {
         "stage": config["setup_stage"],
-        "next": f"Run: evernode depool prepare -n {config['name']}",
+        "next": next_setup_command(config) or "",
     }
 
 
@@ -348,6 +374,16 @@ def wallet_verify(store, config):
         store.node_directory(config["name"]) / "keys", config["name"]
     )
     _check_imported_wallet(profile, local_public_keys, observed)
+    if configuration.validator_type(config) == "solo":
+        # Nothing links a solo validator to a second contract, so verifying
+        # the wallet completes the import. Its own stake is set separately.
+        config["setup_stage"] = "imported"
+        return config, {
+            "stage": config["setup_stage"],
+            "wallet": observed,
+            "next": f"Run: evernode stake status -n {config['name']} to see what "
+            "the elector still holds for this wallet, then evernode stake set",
+        }
     config["setup_stage"] = "wallet-verified"
     return config, {
         "stage": config["setup_stage"],
@@ -357,6 +393,7 @@ def wallet_verify(store, config):
 
 
 def depool_prepare(store, config):
+    require_validator_type(config, "depool", "stake")
     profile = _require_stage(config, "new", "wallet-deployed")
     scripts.execute_validator_script(
         store, config, "DePool-prep.sh", timeout=300, sensitive=True
@@ -384,6 +421,7 @@ def depool_prepare(store, config):
 
 
 def depool_deploy(store, config):
+    require_validator_type(config, "depool", "stake")
     profile = _require_stage(config, "new", "depool-prepared")
     scripts.execute_validator_script(
         store, config, "DePool_deploy.sh", timeout=600, sensitive=True
@@ -399,6 +437,7 @@ def depool_deploy(store, config):
 
 
 def depool_stake_initial(store, config):
+    require_validator_type(config, "depool", "stake")
     _require_stage(config, "new", "depool-deployed")
     assurance = str(config.get("settings", {}).get("ValidatorAssuranceT", 50000))
     scripts.execute_validator_script(
@@ -437,6 +476,7 @@ def _require_operational_depool(config):
 
 
 def depool_info(store, config):
+    require_validator_type(config, "depool", "stake")
     """Read the DePool, its rounds and this node's own participant stake."""
     profile = _require_operational_depool(config)
     observed = scripts.read_depool_state(
@@ -450,6 +490,7 @@ def depool_info(store, config):
 
 
 def depool_stake(store, config, *, amount):
+    require_validator_type(config, "depool", "stake")
     """Add an ordinary stake to this node's DePool from its own Safe.
 
     A DePool v3 round pipeline holds four rounds, and a completed round's stake
@@ -479,16 +520,22 @@ def depool_stake(store, config, *, amount):
     }
 
 
-def depool_confirm(store, config, *, transaction_id):
+def confirm_wallet_transaction(store, config, transaction_id, check):
     """Add the remaining signatures to one explicitly named Safe transaction.
 
     A multisig transaction that keeps fewer than its required signatures never
-    executes and blocks later DePool operations, which is the stuck state an
-    interrupted election attempt leaves behind. The reference script refuses to
-    sign a list, so the operator must name the transaction it reviewed in
-    ``depool info``.
+    executes and blocks later operations on that wallet, which is the stuck
+    state an interrupted election attempt leaves behind. This is a property of
+    the Safe, not of a DePool, so a solo validator reaches the same state and
+    resolves it the same way. The reference script refuses to sign a list, so
+    the operator names the transaction they reviewed.
     """
-    profile = _require_operational_depool(config)
+    profile = validate_wallet_profile(config["wallet"])
+    if config.get("setup_stage") not in OPERATIONAL_STAGES:
+        raise process.OperationError(
+            "This action needs a finished setup; run: "
+            + (next_setup_command(config) or "evernode node status")
+        )
     if not re.fullmatch(r"[0-9]{1,30}", str(transaction_id)):
         raise process.OperationError("Transaction id must be a decimal number")
     scripts.execute_validator_script(
@@ -504,11 +551,24 @@ def depool_confirm(store, config, *, transaction_id):
         "operation": "confirm",
         "wallet_address": profile["wallet_address"],
         "transaction_id": str(transaction_id),
-        "next": f"Check: evernode depool info -n {config['name']}",
+        "next": f"Check: evernode {check} -n {config['name']}",
     }
 
 
+def depool_confirm(store, config, *, transaction_id):
+    require_validator_type(config, "depool", "stake")
+    _require_operational_depool(config)
+    return confirm_wallet_transaction(store, config, transaction_id, "depool info")
+
+
+def stake_confirm(store, config, *, transaction_id):
+    """A solo validator's wallet can hold a half-signed transaction too."""
+    require_validator_type(config, "solo", "depool")
+    return confirm_wallet_transaction(store, config, transaction_id, "stake status")
+
+
 def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=False):
+    require_validator_type(config, "depool", "stake")
     """Withdraw this node's own ordinary stake, or cancel a pending withdrawal.
 
     DePool withdrawals are not immediate: the contract releases a stake when
@@ -550,6 +610,7 @@ def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=Fa
 
 
 def depool_replenish(store, config, *, amount):
+    require_validator_type(config, "depool", "stake")
     """Top up the DePool's own operating balance from this node's Safe."""
     profile = _require_operational_depool(config)
     if amount < 1:
@@ -573,6 +634,7 @@ def depool_replenish(store, config, *, amount):
 
 
 def depool_verify(store, config):
+    require_validator_type(config, "depool", "stake")
     profile = _require_stage(config, "import", "wallet-verified")
     observed = scripts.verify_imported_depool(store, config, profile["depool_address"])
     if observed["validator_wallet"].lower() != profile["wallet_address"].lower():
@@ -593,21 +655,29 @@ def depool_verify(store, config):
 
 def next_setup_command(config):
     name = config["name"]
-    actions = {
+    shared = {
         ("new", "node-started"): f"evernode wallet create -n {name}",
         ("new", "wallet-created"): f"evernode wallet deploy -n {name}",
-        ("new", "wallet-deployed"): f"evernode depool prepare -n {name}",
-        ("new", "depool-prepared"): f"evernode depool deploy -n {name}",
-        ("new", "depool-deployed"): f"evernode depool stake-initial -n {name}",
         ("new", "ready-for-elections"): f"evernode election start -n {name}",
         ("import", "node-started"): f"evernode wallet recover -n {name}",
         ("import", "wallet-recovered"): f"evernode wallet verify -n {name}",
-        ("import", "wallet-verified"): f"evernode depool verify -n {name}",
         ("import", "imported"): f"evernode election start -n {name}",
     }
+    actions = {
+        "depool": {
+            ("new", "wallet-deployed"): f"evernode depool prepare -n {name}",
+            ("new", "depool-prepared"): f"evernode depool deploy -n {name}",
+            ("new", "depool-deployed"): f"evernode depool stake-initial -n {name}",
+            ("import", "wallet-verified"): f"evernode depool verify -n {name}",
+        },
+        # A solo validator needs a stake on record before it can bid.
+        "solo": {
+            ("new", "wallet-deployed"): f"evernode stake set -n {name} --amount AMOUNT",
+        },
+    }[configuration.validator_type(config)]
     profile = config.get("wallet")
     return (
-        actions.get((profile.get("mode"), config.get("setup_stage")))
+        {**shared, **actions}.get((profile.get("mode"), config.get("setup_stage")))
         if isinstance(profile, dict)
         else None
     )

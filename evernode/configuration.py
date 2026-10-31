@@ -11,6 +11,7 @@ from . import process
 DEFAULT_ORCHESTRATION_REPOSITORY = "https://github.com/Custler/Ever-Validator.git"
 NODE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+VALIDATOR_TYPES = ("depool", "solo")
 DEFAULT_ENVIRONMENT = {
     "NODE_WC": 0,
     "CRONTAB_INTERVAL": 10,
@@ -19,7 +20,20 @@ DEFAULT_ENVIRONMENT = {
     "MinStakeT": 10,
     "ParticipantRewardFraction": 65,
     "BalanceThresholdT": 20,
+    # Solo staking: a fixed per-election stake in tokens, 0 meaning the kit's
+    # own balance-splitting mode, and what it leaves on the account for fees.
+    "MSIG_FIX_STAKE": 0,
+    "VAL_ACC_RESERVED": 50,
+    "MAX_FACTOR": 3,
 }
+
+
+def validator_type(config):
+    """A node created before solo staking existed stakes through a DePool."""
+    value = config.get("validator_type", "depool")
+    if value not in VALIDATOR_TYPES:
+        raise process.OperationError("Invalid validator type in node configuration")
+    return value
 
 
 def validate_node_name(name):
@@ -68,6 +82,7 @@ def validate_saved_node_config(value, name):
     node_compose_project(value)
     if value.get("network") not in ("main", "devnet"):
         raise process.OperationError("Invalid network in node configuration")
+    validator_type(value)
     try:
         ipaddress.IPv4Address(value.get("ip", ""))
     except (ValueError, TypeError):
@@ -97,8 +112,10 @@ def validate_saved_node_config(value, name):
         raise process.OperationError("Invalid setup state in node configuration")
     settings = value.get("settings")
     if settings is not None:
-        if not isinstance(settings, dict) or set(settings) != set(DEFAULT_ENVIRONMENT):
+        if not isinstance(settings, dict) or set(settings) - set(DEFAULT_ENVIRONMENT):
             raise process.OperationError("Invalid saved environment settings")
+        # A node saved before a setting existed keeps working on its default.
+        settings = dict(DEFAULT_ENVIRONMENT, **settings)
         if (
             settings.get("NODE_WC") not in (-1, 0)
             or not isinstance(settings.get("CRONTAB_INTERVAL"), int)
@@ -115,6 +132,15 @@ def validate_saved_node_config(value, name):
             or not 0 <= settings["ParticipantRewardFraction"] <= 100
         ):
             raise process.OperationError("Invalid saved DePool settings")
+        if (
+            any(
+                type(settings.get(key)) is not int or settings[key] < 0
+                for key in ("MSIG_FIX_STAKE", "VAL_ACC_RESERVED")
+            )
+            or type(settings.get("MAX_FACTOR")) is not int
+            or not 1 <= settings["MAX_FACTOR"] <= 100
+        ):
+            raise process.OperationError("Invalid saved solo staking settings")
     source = value.get("source_spec")
     if source is not None:
         if not isinstance(source, dict) or set(source) != {"local", "repo", "ref"}:
@@ -165,7 +191,8 @@ def build_node_environment(config):
         "RUN_MODE": "docker",
         "NODE_ROLE": "validator",
         "NODE_WC": settings["NODE_WC"],
-        "STAKE_MODE": "depool",
+        # The kit calls solo staking 'msig': the validator's own Safe stakes.
+        "STAKE_MODE": "msig" if validator_type(config) == "solo" else "depool",
         "FORCE_USE_DAPP": "false",
         "DOCKER_USE_CUSTOM_IMAGE": "true",
         "DOCKER_IMAGE_REPO": config["image"].rsplit(":", 1)[0],
@@ -190,5 +217,8 @@ def build_node_environment(config):
         "MinStakeT": settings["MinStakeT"],
         "ParticipantRewardFraction": settings["ParticipantRewardFraction"],
         "BalanceThresholdT": settings["BalanceThresholdT"],
+        "MSIG_FIX_STAKE": settings["MSIG_FIX_STAKE"],
+        "VAL_ACC_RESERVED": settings["VAL_ACC_RESERVED"],
+        "MAX_FACTOR": settings["MAX_FACTOR"],
         "IS_ENVIRONMENT_CONFIGURED": "true",
     }

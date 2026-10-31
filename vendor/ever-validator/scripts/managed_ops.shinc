@@ -112,7 +112,7 @@ function Find_Matching_Pending_Trans() {
         count=$((count + 1))
     done
     if [[ $count -gt 1 ]]; then
-        printf "###-ERROR: More than one pending transaction matches this request; resolve them with 'evernode depool info' and 'evernode depool confirm' before retrying.\n" >&2
+        printf "###-ERROR: More than one pending transaction matches this request; resolve them with 'evernode depool info' (or 'evernode stake status' for a solo validator) and 'evernode depool confirm' before retrying.\n" >&2
         return 1
     fi
     [[ $count -eq 1 ]] && printf "%s\n" "${kept% }"
@@ -200,9 +200,9 @@ function Await_Effect() {
         [[ $status -eq 2 ]] && unreadable=$((unreadable + 1))
         if [[ $(date +%s) -ge $Deadline ]]; then
             if [[ $unreadable -eq $polls ]]; then
-                echoerr "###-ERROR: ${Label} could not be checked - the chain did not answer any of ${polls} attempts over ${waited}s. The operation's own state is unknown; read it with 'evernode depool info' before retrying."
+                echoerr "###-ERROR: ${Label} could not be checked - the chain did not answer any of ${polls} attempts over ${waited}s. The operation's own state is unknown; read it with 'evernode depool info', or 'evernode stake status' for a solo validator, before retrying."
             else
-                echoerr "###-ERROR: ${Label} did not take effect within ${waited}s, and its deadline has passed. Nothing further was sent. Read the wallet's pending transactions with 'evernode depool info': an entry still listed needs its remaining signatures, and no entry means the request never reached the wallet and can be made again."
+                echoerr "###-ERROR: ${Label} did not take effect within ${waited}s, and its deadline has passed. Nothing further was sent. Read the wallet's pending transactions with 'evernode depool info', or 'evernode stake status' for a solo validator: an entry still listed needs its remaining signatures, and no entry means the request never reached the wallet and can be made again."
             fi
             return 1
         fi
@@ -552,7 +552,7 @@ function Sign_To_Execution() {
         entry=$(Get_Pending_Entry "$MSIG_ADDR" "$Trans_ID")
         status=$?
         if [[ $status -ne 0 ]];then
-            echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info' before retrying."
+            echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info', or 'evernode stake status' for a solo validator, before retrying."
             return 1
         fi
         if [[ -z $entry ]];then
@@ -590,7 +590,7 @@ function Sign_To_Execution() {
             2) printf "%s\n" "+++-INFO: ${Label}: transaction ${Trans_ID} executed on the signature from custodian ${index}."
                return 0 ;;
         esac
-        echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}. A confirmation the wallet refuses is recorded in no block, so the chain cannot say why; check 'evernode depool info' for the signatures it does hold."
+        echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}. A confirmation the wallet refuses is recorded in no block, so the chain cannot say why; check 'evernode depool info', or 'evernode stake status' for a solo validator, for the signatures it does hold."
         return 1
     done
 }
@@ -787,7 +787,7 @@ function Require_Queue_Space() {
         <<< "$pending") || return 1
     [[ $live =~ ^[0-9]+$ ]] || return 1
     if [[ $live -ge $MSIG_MAX_QUEUED_REQUESTS ]];then
-        echoerr "###-ERROR: this custodian already has ${live} transactions waiting in wallet ${MSIG_ADDR}, which is the wallet's limit of ${MSIG_MAX_QUEUED_REQUESTS}. A further submission would be rejected by the wallet without leaving any trace, so nothing was sent. Clear them first: read them with 'evernode depool info' and either finish one with 'evernode depool confirm --transaction-id <id>' or wait for them to expire."
+        echoerr "###-ERROR: this custodian already has ${live} transactions waiting in wallet ${MSIG_ADDR}, which is the wallet's limit of ${MSIG_MAX_QUEUED_REQUESTS}. A further submission would be rejected by the wallet without leaving any trace, so nothing was sent. Clear them first: read them with 'evernode depool info' (or 'evernode stake status') and either finish one with 'evernode depool confirm --transaction-id <id>' or wait for them to expire."
         return 1
     fi
     printf "%s\n" "---INFO: ${live} of ${MSIG_MAX_QUEUED_REQUESTS} queue slots for this custodian are in use."

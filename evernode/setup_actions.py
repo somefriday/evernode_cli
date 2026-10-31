@@ -3,7 +3,7 @@
 import contextlib
 import sys
 
-from . import configuration, elections, nodes, process, scripts, ui, wallets
+from . import configuration, elections, nodes, process, scripts, stake, ui, wallets
 
 
 def _require_synchronized_setup_node(store, name):
@@ -52,6 +52,21 @@ def _confirmation_question(args, name):
         return f"Stake {args.amount} tokens from {name}'s Safe into its DePool?"
     if (args.group, args.action) == ("depool", "replenish"):
         return f"Send {args.amount} tokens from {name}'s Safe to its DePool balance?"
+    if (args.group, args.action) == ("stake", "set"):
+        target = "its whole balance" if args.all_balance else f"{args.amount} tokens"
+        return (
+            f"Stake {target} from {name}'s Safe in every election? A stake is "
+            "locked until its round finishes, so consecutive rounds need about "
+            "twice that on the wallet."
+        )
+    if (args.group, args.action) == ("stake", "recover"):
+        return f"Ask the elector to return {name}'s finished-round stake to its Safe?"
+    if (args.group, args.action) == ("stake", "confirm"):
+        return (
+            f"Add {name}'s remaining signatures to transaction "
+            f"{args.transaction_id}? Review it in stake status first; signing "
+            "executes the transfer it carries."
+        )
     return f"Run {args.group} {args.action} for {name}?"
 
 
@@ -63,6 +78,8 @@ ELECTION_LOCKED_ACTIONS = (
     ("depool", "confirm"),
     ("depool", "withdraw"),
     ("depool", "replenish"),
+    ("stake", "recover"),
+    ("stake", "confirm"),
 )
 
 
@@ -73,6 +90,7 @@ def handle_setup_action(store, args):
         ("wallet", "verify"),
         ("depool", "verify"),
         ("depool", "info"),
+        ("stake", "status"),
     )
     secret_action = action in (("wallet", "create"), ("depool", "prepare"))
     if secret_action and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -127,6 +145,18 @@ def handle_setup_action(store, args):
         elif action == ("depool", "replenish"):
             result_config, result = wallets.depool_replenish(
                 store, config, amount=args.amount
+            )
+        elif action == ("stake", "set"):
+            result_config, result = stake.set_stake(
+                store, config, amount=args.amount, all_balance=args.all_balance
+            )
+        elif action == ("stake", "status"):
+            result_config, result = config, stake.describe_stake(store, config)
+        elif action == ("stake", "recover"):
+            result_config, result = config, stake.recover(store, config)
+        elif action == ("stake", "confirm"):
+            result_config, result = wallets.stake_confirm(
+                store, config, transaction_id=args.transaction_id
             )
         else:
             raise process.OperationError("Unsupported wallet or DePool action")

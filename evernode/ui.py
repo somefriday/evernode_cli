@@ -43,10 +43,38 @@ def prompt_integer(value, label, default):
         raise process.OperationError(f"{label} must be an integer") from exc
 
 
-def select_option(title, options, *, alternate=None):
+def select_choice(value, label, choices, *, flag, default=None):
+    """Choose one of a fixed set: a flag if given, otherwise a terminal menu.
+
+    Every fixed choice is presented the same way, so an operator never has to
+    recall the exact spelling of a value and a typo cannot reach the node
+    configuration. Noninteractive callers name the flag they are missing.
+    """
+    if value is not None:
+        if value not in [item for item, _ in choices]:
+            raise process.OperationError(
+                f"Invalid {label}; choose one of: "
+                + ", ".join(item for item, _ in choices)
+            )
+        return value
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        if default is not None:
+            return default
+        raise process.OperationError(
+            f"Choose a {label} with {flag} in noninteractive mode"
+        )
+    _, index = select_option(
+        f"Select {label}:",
+        [description for _, description in choices],
+        subject=label.capitalize(),
+    )
+    return choices[index][0]
+
+
+def select_option(title, options, *, alternate=None, subject="Image"):
     """Return (page, index); Tab switches pages when an alternate is supplied."""
     if not options or not sys.stdin.isatty() or not sys.stdout.isatty():
-        raise process.OperationError("Image selection requires a terminal")
+        raise process.OperationError(f"{subject} selection requires a terminal")
     pages = [(title, options)] + ([alternate] if alternate else [])
 
     def numbered_choice():
@@ -85,7 +113,7 @@ def select_option(title, options, *, alternate=None):
                 screen.erase()
                 height, width = screen.getmaxyx()
                 if height < 4 or width < 20:
-                    raise curses.error("Terminal is too small for the image menu")
+                    raise curses.error("Terminal is too small for the menu")
                 heading, choices = pages[page]
                 screen.addnstr(0, 0, heading, width - 1)
                 first = max(

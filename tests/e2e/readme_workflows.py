@@ -38,6 +38,13 @@ CASES = {
         'ip': os.environ['E2E_IMPORT_IP'],
         'port': int(os.environ.get('E2E_IMPORT_PORT', '30306')),
     },
+    # A validator that stakes from its own Safe, with no DePool.
+    'solo': {
+        'registry': 'fresh',
+        'name': os.environ.get('E2E_SOLO_NAME', 'readme-solo'),
+        'ip': os.environ.get('E2E_SOLO_IP', ''),
+        'port': int(os.environ.get('E2E_SOLO_PORT', '30307')),
+    },
 }
 
 

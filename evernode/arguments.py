@@ -42,6 +42,11 @@ def build_argument_parser():
         help="Build a new image from source; skips the interactive image menu",
     )
     c.add_argument("--ip")
+    c.add_argument(
+        "--validator-type",
+        choices=["depool", "solo"],
+        help="How this validator stakes: through a DePool, or solo from its own Safe",
+    )
     c.add_argument("--network", choices=["main", "devnet"])
     c.add_argument("--workchain", type=int)
     c.add_argument("--adnl-port", type=int)
@@ -228,6 +233,41 @@ def build_argument_parser():
     )
     q.add_argument("-n", "--name", required=True)
     q.add_argument("--amount", type=int, required=True, help="Whole tokens to send")
+    q.add_argument("--yes", action="store_true")
+    stake = groups.add_parser(
+        "stake", help="Per-election stake of a solo validator"
+    ).add_subparsers(dest="action", required=True)
+    q = stake.add_parser(
+        "set", help="Record what this validator stakes in each election"
+    )
+    q.add_argument("-n", "--name", required=True)
+    target = q.add_mutually_exclusive_group(required=True)
+    target.add_argument("--amount", type=int, help="Whole tokens staked per election")
+    target.add_argument(
+        "--all-balance",
+        action="store_true",
+        help="Stake the wallet balance, which the reference scripts split across rounds",
+    )
+    q.add_argument("--yes", action="store_true")
+    q = stake.add_parser(
+        "status", help="What the elector and the wallet say about this stake"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q = stake.add_parser(
+        "confirm",
+        help="Add this node's remaining signatures to one named Safe transaction",
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument(
+        "--transaction-id",
+        required=True,
+        help="Exact id from stake status; bulk signing is refused",
+    )
+    q.add_argument("--yes", action="store_true")
+    q = stake.add_parser(
+        "recover", help="Ask the elector to return the stake of finished rounds"
+    )
+    q.add_argument("-n", "--name", required=True)
     q.add_argument("--yes", action="store_true")
     elections = groups.add_parser("election").add_subparsers(
         dest="action", required=True
