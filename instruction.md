@@ -2,9 +2,10 @@
 
 This runbook installs the CLI once and manages all validator state below
 `/var/lib/ever-validator`. Every command below can be run from any directory.
-Run it as an Ubuntu or Debian root-capable operator. The CLI creates its own node-specific
-database, keys, Docker containers, StatsD exporter, ports and election cron
-file.
+Run it on an Ubuntu or Debian host as root; every command below assumes a root
+shell. The CLI creates
+its own node-specific database, keys, Docker containers, StatsD exporter, ports
+and election cron file.
 
 The commands use `validator01` as an example name. Replace it with a stable,
 unique validator name for each node.
@@ -14,8 +15,8 @@ unique validator name for each node.
 Run these commands on a supported Ubuntu or Debian server before installing the CLI:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
+apt-get update
+apt-get install -y \
   ca-certificates \
   curl \
   git \
@@ -47,11 +48,11 @@ Install the command globally from the cloned checkout. The CLI is isolated in
 a virtual environment, so it does not modify the operating system's managed Python:
 
 ```bash
-sudo install -d -m 0755 /opt/evernode
-sudo python3 -m venv /opt/evernode/venv
-sudo /opt/evernode/venv/bin/python -m pip install --upgrade pip
-sudo /opt/evernode/venv/bin/python -m pip install /root/evernode_cli
-sudo ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
+install -d -m 0755 /opt/evernode
+python3 -m venv /opt/evernode/venv
+/opt/evernode/venv/bin/python -m pip install --upgrade pip
+/opt/evernode/venv/bin/python -m pip install /root/evernode_cli
+ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
 
 evernode --version
 ```
@@ -61,9 +62,9 @@ evernode --version
 Install Docker **before building an image**:
 
 ```bash
-sudo evernode host setup --yes
-sudo docker version
-sudo evernode host check
+evernode host setup --yes
+docker version
+evernode host check
 ```
 
 `docker version` must show both a **Client** and a **Server** section before
@@ -79,9 +80,9 @@ To update the installed CLI after pulling a newer checkout, run:
 ```bash
 cd /root/evernode_cli
 git pull --ff-only
-sudo /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
-sudo evernode --version
-sudo evernode wallet --help
+/opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
+evernode --version
+evernode wallet --help
 ```
 
 The `wallet` and `depool` command groups are required for the setup stages
@@ -102,8 +103,8 @@ revision before Docker receives the source tree.
 You may build an image ahead of time:
 
 ```bash
-sudo evernode image build --yes
-sudo evernode image list
+evernode image build --yes
+evernode image list
 ```
 
 The same image can be attached to multiple nodes. Node databases, keys and
@@ -116,7 +117,7 @@ listed by the menu. To specify a source ref directly, use
 To build a particular ever-node revision, specify it explicitly:
 
 ```bash
-sudo evernode image build \
+evernode image build \
   --node-repo https://github.com/everx-labs/ever-node.git \
   --node-ref TAG_OR_COMMIT \
   --cli-repo https://github.com/everx-labs/ever-cli.git \
@@ -134,7 +135,7 @@ secure backup of the generated key material; it is stored root-only under
 Create the node, then select an image from the menu:
 
 ```bash
-sudo evernode node create -n validator01
+evernode node create -n validator01
 ```
 
 If node preparation fails, the CLI removes the failed node's
@@ -169,8 +170,8 @@ Wait until the node is fully synchronized. This command continues to poll
 until it sees two consecutive synchronized responses:
 
 ```bash
-sudo evernode node sync -n validator01 --wait
-sudo evernode node status -n validator01
+evernode node sync -n validator01 --wait
+evernode node status -n validator01
 ```
 
 Complete the wallet and DePool stages in order. Each command performs one
@@ -178,21 +179,21 @@ named action and prints its exact next command.
 
 ```bash
 # 1. Generate the Safe wallet. Save every displayed seed phrase and address.
-sudo evernode wallet create -n validator01
+evernode wallet create -n validator01
 
 # 2. Fund the displayed Safe wallet, then deploy it.
-sudo evernode wallet deploy -n validator01
+evernode wallet deploy -n validator01
 
 # 3. Generate the DePool identity. Save its displayed seed phrase and address.
-sudo evernode depool prepare -n validator01
+evernode depool prepare -n validator01
 
 # 4. Fund the displayed DePool, then deploy it.
-sudo evernode depool deploy -n validator01
+evernode depool deploy -n validator01
 
 # 5. Make the configured initial stake, then install elections.
-sudo evernode depool stake-initial -n validator01
-sudo evernode election start -n validator01
-sudo evernode election status -n validator01
+evernode depool stake-initial -n validator01
+evernode election start -n validator01
+evernode election status -n validator01
 ```
 
 `node create` does not generate Safe phrases. `wallet create` and `depool
@@ -211,11 +212,11 @@ prepare_elections.sh → take_part_in_elections.sh
 Check live validation and logs with:
 
 ```bash
-sudo evernode node status -n validator01
-sudo evernode node logs -n validator01 --component node --follow
-sudo evernode node logs -n validator01 --component stderr --tail 100
-sudo evernode node resources -n validator01
-sudo evernode election status -n validator01
+evernode node status -n validator01
+evernode node logs -n validator01 --component node --follow
+evernode node logs -n validator01 --component stderr --tail 100
+evernode node resources -n validator01
+evernode election status -n validator01
 ```
 
 ## 5. Import an existing validator wallet and DePool
@@ -232,7 +233,7 @@ terminal prompt. It never accepts phrases as command arguments, environment
 variables or standard input.
 
 ```bash
-sudo evernode node create -n validator01 \
+evernode node create -n validator01 \
   --import-wallet \
   --wallet-address 0:YOUR_64_HEX_WALLET_ADDRESS \
   --depool-address 0:YOUR_64_HEX_DEPOOL_ADDRESS \
@@ -253,12 +254,12 @@ operate that contract.
 Synchronize and verify the recovered wallet against chain state:
 
 ```bash
-sudo evernode node sync -n validator01 --wait
-sudo evernode wallet recover -n validator01
-sudo evernode wallet verify -n validator01
-sudo evernode depool verify -n validator01
-sudo evernode election start -n validator01
-sudo evernode election status -n validator01
+evernode node sync -n validator01 --wait
+evernode wallet recover -n validator01
+evernode wallet verify -n validator01
+evernode depool verify -n validator01
+evernode election start -n validator01
+evernode election status -n validator01
 ```
 
 `wallet recover` derives local key files from the stored phrases and checks
@@ -279,9 +280,9 @@ in either set. It preserves the database, node configuration, wallet and keys.
    election applications; it does not withdraw existing stake.
 
    ```bash
-   sudo evernode node status -n validator01
-   sudo evernode election stop -n validator01
-   sudo evernode election status -n validator01
+   evernode node status -n validator01
+   evernode election stop -n validator01
+   evernode election status -n validator01
    ```
 
 2. Wait until `node status` shows that the node is outside its current and next
@@ -289,9 +290,9 @@ in either set. It preserves the database, node configuration, wallet and keys.
    old image from the `image` field in the status/config output.
 
    ```bash
-   sudo evernode node config -n validator01
-   sudo evernode image rebuild OLD_IMAGE --yes
-   sudo evernode image list
+   evernode node config -n validator01
+   evernode image rebuild OLD_IMAGE --yes
+   evernode image list
    ```
 
    Copy the new `image` value from `image list` as `NEW_IMAGE`. A rebuild always
@@ -303,24 +304,24 @@ in either set. It preserves the database, node configuration, wallet and keys.
    consecutive synchronized checks before reporting success.
 
    ```bash
-   sudo evernode node update -n validator01 --image NEW_IMAGE --yes
-   sudo evernode node status -n validator01
+   evernode node update -n validator01 --image NEW_IMAGE --yes
+   evernode node status -n validator01
    ```
 
 4. When the node is synchronized and you are ready to resume participation,
    reinstall its election schedule:
 
    ```bash
-   sudo evernode election start -n validator01
-   sudo evernode election status -n validator01
+   evernode election start -n validator01
+   evernode election status -n validator01
    ```
 
 If the replacement does not become ready, inspect logs and explicitly return
 to the saved image:
 
 ```bash
-sudo evernode node logs -n validator01 --component stderr --tail 100
-sudo evernode node update -n validator01 --rollback --yes
+evernode node logs -n validator01 --component stderr --tail 100
+evernode node update -n validator01 --rollback --yes
 ```
 
 ## 7. Seed a new local node from another node's database
@@ -338,14 +339,14 @@ Review the checks without changing either node:
 Replace `SOURCE_NODE` with the name of a separate, synchronized local node.
 
 ```bash
-sudo evernode node lsync --from SOURCE_NODE --to validator01 --dry-run
+evernode node lsync --from SOURCE_NODE --to validator01 --dry-run
 ```
 
 Run the copy after reviewing the plan:
 
 ```bash
-sudo evernode node lsync --from SOURCE_NODE --to validator01
-sudo evernode node sync -n validator01 --wait
+evernode node lsync --from SOURCE_NODE --to validator01
+evernode node sync -n validator01 --wait
 ```
 
 `lsync` refuses a running election schedule, a source in a current or next
@@ -357,31 +358,31 @@ use it to clone a validating source node.
 ## Routine commands
 
 ```bash
-sudo evernode node list
-sudo evernode image list
-sudo evernode election list
-sudo evernode doctor -n validator01
+evernode node list
+evernode image list
+evernode election list
+evernode doctor -n validator01
 
 # DePool state: rounds and their steps, this node's stake, any pending
 # withdrawal, the pool's operating balance and any unsigned Safe transaction.
-sudo evernode depool info -n validator01
+evernode depool info -n validator01
 
 # After pulling a newer checkout, refresh this node's saved scripts. Installing
 # the package alone does not replace them.
-sudo evernode node sync-scripts -n validator01 --dry-run
-sudo evernode node sync-scripts -n validator01
+evernode node sync-scripts -n validator01 --dry-run
+evernode node sync-scripts -n validator01
 
 # Stop one node with a 30-second graceful shutdown. Its owned election schedule
 # is disabled automatically. The command refuses while the node is in the
 # current or next validator set; check with election status and wait for the set
 # to expire, or add --force when fencing a replaced validator.
-sudo evernode node stop -n validator01 --timeout 30
+evernode node stop -n validator01 --timeout 30
 
-sudo evernode node start -n validator01
+evernode node start -n validator01
 
 # Stop every managed node and every managed election schedule.
-sudo evernode election stop --all
-sudo evernode node stop --all --timeout 30
+evernode election stop --all
+evernode node stop --all --timeout 30
 ```
 
 Do not remove an image while any node uses it. `evernode image remove IMAGE`
@@ -395,28 +396,28 @@ Check container health, console statistics, synchronization state, current
 block, time difference and restarts:
 
 ```bash
-sudo evernode node status -n validator01
+evernode node status -n validator01
 ```
 
 Read the most recent node log entries. Use this for normal synchronization
 progress, peer activity, warnings and errors:
 
 ```bash
-sudo evernode node logs -n validator01 --component node --tail 200
+evernode node logs -n validator01 --component node --tail 200
 ```
 
 Read only the node process's standard-error log. It is normally empty; output
 here usually identifies a startup failure, panic, or configuration problem:
 
 ```bash
-sudo evernode node logs -n validator01 --component stderr --tail 100
+evernode node logs -n validator01 --component stderr --tail 100
 ```
 
 Follow scheduled election runs, including output and errors from
 `prepare_elections.sh` and `take_part_in_elections.sh`:
 
 ```bash
-sudo evernode node logs -n validator01 --component election-cron --tail 100 --follow
+evernode node logs -n validator01 --component election-cron --tail 100 --follow
 ```
 
 This log appears on the first scheduled run. `--follow` waits for it if absent;
@@ -436,8 +437,8 @@ StatsD exporter together in one table per node, followed by disk space used by
 the node workspace:
 
 ```bash
-sudo evernode node resources
-sudo evernode node resources -n validator01
+evernode node resources
+evernode node resources -n validator01
 ```
 
 Without `-n`, the command shows all managed nodes in name order. Stopped or
@@ -470,6 +471,6 @@ During initial sync, follow only persistent-state download progress. Increasing
 masterchain block can remain unchanged until loading completes:
 
 ```bash
-sudo evernode node logs -n validator01 --component node --follow |
+evernode node logs -n validator01 --component node --follow |
   grep --line-buffered 'download_persistent_state'
 ```
