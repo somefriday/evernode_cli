@@ -253,8 +253,15 @@ Depool_BalanceThreshold=$(( $(echo "$Current_Depool_Info" | jq -r '.balanceThres
 DEPOOL_STAKE_FEE_NANO=$(echo "$Current_Depool_Info" | jq -r '.stakeFee | tonumber') # nanotokens
 export DEPOOL_STAKE_FEE_NANO
 
-if [[ $Depool_Self_Balance -lt $Depool_BalanceThreshold ]]; then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Depool balanceThreshold is less than current depool self balance."
+# A stake goes only into a DePool and proxies that can operate. A replenish is
+# what restores the DePool's own balance, so a low balance never refuses one.
+Refuse_Low_Balance=true
+if [[ $STAKE_OP == "replenish" ]]; then
+    Refuse_Low_Balance=false
+fi
+
+if $Refuse_Low_Balance && [[ $Depool_Self_Balance -lt $Depool_BalanceThreshold ]]; then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool's own balance is below its threshold; top it up first with 'evernode depool replenish'."
     echo "    Depool balanceThreshold: $Depool_BalanceThreshold tokens and self balance: $Depool_Self_Balance tokens"
     echo -e "${BoldText}    The depool must replenish its self-balance; otherwise, it cannot operate and risks losing stake in the elector.${NormText}"
     echo -e "     You can replenish the depool self-balance by running this script: ${BoldText}./${SelfScriptName} replenish ${DEPOOL_NAME} ${MSIG_NAME} <amount>${NormText}"
@@ -265,7 +272,7 @@ Depool_Self_Balance_Tk=$(echo "scale=3; $((Depool_Self_Balance)) / 1000000000" |
 Depool_BalanceThreshold_Tk=$(echo "scale=3; $((Depool_BalanceThreshold)) / 1000000000" | $CALL_BC)
 echo "Depool balanceThreshold: ${Depool_BalanceThreshold_Tk} tokens"
 echo "Depool self balance:     ${Depool_Self_Balance_Tk} tokens"
-if [[ $Depool_Self_Balance -lt 12000000000 ]]; then
+if $Refuse_Low_Balance && [[ $Depool_Self_Balance -lt 12000000000 ]]; then
     echo -e "${RedBack}${BoldText}+++-ALARM: Depool self balance is less than 12 tokens. The depool may be stuck and will not be able to operate.${NormText}"
     echo -e "     You should replenish the depool self-balance by running this script: ${BoldText}./${SelfScriptName} replenish ${DEPOOL_NAME} ${MSIG_NAME} <amount>${NormText}"
     exit 1
@@ -284,7 +291,7 @@ echo "Depool proxy0: ${dp_proxy0} balance: ${Proxy0_Bal_Tk} tokens"
 echo "Depool proxy1: ${dp_proxy1} balance: ${Proxy1_Bal_Tk} tokens"
 declare -ir TOPUP_THRESHOLD=1920000000 # 1.92 tokens
 TOPUP_THRESHOLD_Tk=$(echo "scale=3; $((TOPUP_THRESHOLD)) / 1000000000" | $CALL_BC)
-if [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD ]] || [[ $Proxy1_Bal -lt $TOPUP_THRESHOLD ]]; then
+if $Refuse_Low_Balance && [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD || $Proxy1_Bal -lt $TOPUP_THRESHOLD ]]; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy balance is less than $TOPUP_THRESHOLD_Tk tokens."
     echo "    Proxy0 balance: ${Proxy0_Bal_Tk} tokens"
     echo "    Proxy1 balance: ${Proxy1_Bal_Tk} tokens"

@@ -185,7 +185,7 @@ echoerr() { echo "$*" >&2; }
 class DePoolOperationTests(unittest.TestCase):
     def run_operation(self, name, *, approved=True, required=2, signing_fails=False,
                       pending=0, pending_value="500000000", refused=False,
-                      transaction_id=None, already_effected=False):
+                      transaction_id=None, already_effected=False, wallet=None):
         entry = OPERATIONS[name]
         call, after, balance_after = entry[:3]
         before = entry[3] if len(entry) > 3 else BEFORE
@@ -227,6 +227,8 @@ class DePoolOperationTests(unittest.TestCase):
                 program += 'Send_MSIG_Trans_Confirmation() { return 4; }\n'
             if approved:
                 program += "export EVERNODE_APPROVED=yes\n"
+            if wallet is not None:
+                program += f"MSIG_AMOUNT={wallet}\n"
             program += call + "\n"
             result = subprocess.run(
                 ["bash", "-c", program],
@@ -382,6 +384,93 @@ class DePoolOperationTests(unittest.TestCase):
         for path in sorted((SCRIPTS / "depool_functions").glob("*.shinc")):
             with self.subTest(operation=path.name):
                 self.assertNotIn("--lifetime 3600", path.read_text())
+
+    def test_a_replenish_the_wallet_cannot_cover_sends_nothing(self):
+        """A low DePool no longer stops a replenish, so the wallet is what is checked."""
+        result, trace = self.run_operation("replenish_depool", wallet=20000000000)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not cover 20 tokens plus 1 for fees", result.stderr)
+        self.assertEqual(trace, "")
+
+
+# A well-funded Safe, while the DePool's own balance (5 tokens against a
+# 45-token threshold) and one proxy (1 token) are below what a stake needs.
+LOW_BALANCE_STUBS = r"""
+function DispEnvInfo() { :; }
+function Determine_Current_Network() { :; }
+function echoerr() { echo "$*" >&2; }
+function NameToAddr() { echo 0:depool; }
+function Require_Node_Console() { :; }
+function Get_Account_Custodians_Info() { echo "1 1"; }
+function Get_Account_Info() {
+    case $1 in
+        0:wallet) echo "Active 100000000000";;
+        -1:proxy0) echo "Active 1000000000";;
+        *) echo "Active 50000000000";;
+    esac
+}
+function Get_DP_Info() {
+    echo '{"poolClosed":false,"balanceThreshold":"45000000000","stakeFee":"500000000","proxies":["-1:proxy0","-1:proxy1"]}'
+}
+function fake_cli() { echo '{"value0":"5000000000"}'; }
+function Get_DP_Rounds() { echo '{}'; }
+function Rounds_Sorting_by_ID() {
+    echo '[{"id":"1","stake":"0","participantQty":"0"},{"id":"2","stake":"0","participantQty":"0"}]'
+}
+"""
+
+
+@unittest.skipUnless(
+    shutil.which("bash") and shutil.which("jq") and shutil.which("bc"),
+    "Requires bash, jq and bc",
+)
+class LowBalanceGateTests(unittest.TestCase):
+    """A replenish is how a DePool's own balance is restored. The checks that
+    keep a stake out of a DePool too low to operate refused it as well, so the
+    command failed exactly when it was needed."""
+
+    def dispatch(self, operation):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            shutil.copyfile(
+                SCRIPTS / "stake_to_depool.sh", directory / "stake_to_depool.sh"
+            )
+            # The operations are stubs: reaching one is the result.
+            (directory / "depool_functions").mkdir()
+            for script, function in (
+                ("replenish_depool", "replenish_depool"),
+                ("ordinary_stake", "make_ordinary_stake"),
+            ):
+                (directory / "depool_functions" / f"{script}.shinc").write_text(
+                    f'function {function}() {{ echo "reached {function}"; }}\n'
+                )
+            (directory / "env.sh").write_text(
+                "export VALIDATOR_NAME=validator CALL_BC=bc CALL_CLI=fake_cli\n"
+                f'export KEYS_DIR="{directory}/keys"\n'
+            )
+            (directory / "functions.shinc").write_text(LOW_BALANCE_STUBS)
+            keys = directory / "keys"
+            keys.mkdir()
+            (keys / "validator.addr").write_text("0:wallet\n")
+            (keys / "validator_1.keys.json").write_text('{"public":"aa","secret":"bb"}')
+            return subprocess.run(
+                ["bash", str(directory / "stake_to_depool.sh"), operation, "--", "--", "20"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=30,
+            )
+
+    def test_a_replenish_runs_while_the_depool_and_a_proxy_are_low(self):
+        result = self.dispatch("replenish")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reached replenish_depool", result.stdout)
+
+    def test_a_stake_is_still_refused_and_pointed_at_the_replenish(self):
+        result = self.dispatch("ordinary")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("reached", result.stdout)
+        self.assertIn("evernode depool replenish", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("bash"), "Requires bash")

@@ -43,11 +43,6 @@ function make_ordinary_stake() {
         echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Can't transfer too small amount of nanotokens! (${STAKE_AMOUNT_NANO})nt"
         return 1
     fi
-    # shellcheck disable=SC2154
-    if [[ $MSIG_AMOUNT -lt $((STAKE_AMOUNT_NANO  + 1000000000)) ]];then
-        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): The stake amount $STAKE_AMOUNT is more than the MSIG balance $MSIG_AMOUNT_Tk + 1. Exiting..."
-        return 1
-    fi
 
     local MSIG_addr=$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")
 
@@ -57,10 +52,17 @@ function make_ordinary_stake() {
 
     # Initial setup can be retried after a confirmation or transport failure.
     # Do not transfer the assurance again when it is already present. A later
-    # top-up must always add its amount, so this applies to setup only.
+    # top-up must always add its amount, so this applies to setup only. It
+    # comes before the balance check: the wallet that paid it no longer holds it.
     if [[ ${EVERNODE_INITIAL_STAKE:-} == "yes" ]] && [[ $Staked_Before -ge $STAKE_AMOUNT_NANO ]]; then
         printf "%s\n" "---INFO: The initial stake is already in the DePool; nothing to transfer."
         return 0
+    fi
+
+    # shellcheck disable=SC2154
+    if [[ $MSIG_AMOUNT -lt $((STAKE_AMOUNT_NANO  + 1000000000)) ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): The stake amount $STAKE_AMOUNT is more than the MSIG balance $MSIG_AMOUNT_Tk + 1. Exiting..."
+        return 1
     fi
 
     #=================================================

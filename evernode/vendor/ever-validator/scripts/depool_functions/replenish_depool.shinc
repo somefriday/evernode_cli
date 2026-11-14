@@ -39,6 +39,14 @@ function replenish_depool() {
         return 1
     fi
     local MSIG_addr=$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")
+    STAKE_AMOUNT_NANO=$((STAKE_AMOUNT * 1000000000))
+    # A low DePool never refuses a replenish, so this is the check that the
+    # wallet can pay: a transfer it cannot cover would be dropped silently.
+    # shellcheck disable=SC2154
+    if [[ $MSIG_AMOUNT -lt $((STAKE_AMOUNT_NANO + 1000000000)) ]];then
+        echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): The wallet holds ${MSIG_AMOUNT_Tk} tokens, which does not cover ${STAKE_AMOUNT} tokens plus 1 for fees."
+        return 1
+    fi
 
     #=================================================
     # check depool self balance
@@ -59,7 +67,6 @@ function replenish_depool() {
     #=================================================
     # make replenish transaction
     # OUTPUT="$($CALL_CLI -j depool --addr "$Depool_addr" stake ordinary --wallet "$(cat "${KEYS_DIR}/${MSIG_NAME}.addr")" --sign "${INPL_KEYS_DIR}/${MSIG_NAME}_1.keys.json" --value $STAKE_AMOUNT)";then
-    STAKE_AMOUNT_NANO=$((STAKE_AMOUNT * 1000000000))
     # shellcheck disable=SC2154
     local PayLoad="$($CALL_CLI -j body --abi "${INPL_DePool_ABI}" receiveFunds "{}"|jq -r '.Message')"
     # shellcheck disable=SC2154

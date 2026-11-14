@@ -475,7 +475,15 @@ elif [[ "$Depool_Acc_State" == "Uninit" ]];then
 fi
 
 # get info from DePool contract state
-Depool_Bal=$(( $(echo "$Depool_Info" |awk '{print $2}') ))      # nanotokens
+# The threshold is about the DePool's own funds. Its account balance also holds
+# the stakes waiting in its rounds, so it stays far above the threshold however
+# low the DePool's own funds run, while the contract stops its rounds once those
+# fall under 10 tokens. getDePoolBalance is the account balance less the stakes.
+if ! Get_DP_Self_Balance "$Depool_addr" >/dev/null || [[ ! $DP_balance_nT =~ ^-?[0-9]+$ ]];then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot read the DePool's own balance (getDePoolBalance)."
+    exit 1
+fi
+Depool_Bal=$(( DP_balance_nT ))      # nanotokens
 DP_balanceThreshold=$(( $(echo "$Current_Depool_Info"|jq -r '.balanceThreshold') - 3000000000))       # nanotokens
 DP_Above_Thresh=$(( 10 * 1000000000))
 
@@ -483,7 +491,7 @@ DP_Above_Thresh=$(( 10 * 1000000000))
 if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
     # Calculate replenish amount
     Replenish_Amount=$(( DP_balanceThreshold - Depool_Bal + DP_Above_Thresh ))
-    echo "+++-WARNING(${SelfScriptName} line $LINENO): DePool has balance less $((DP_balanceThreshold / 1000000000)) tokens!! I will topup it with $((DP_Above_Thresh / 1000000000)) tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    echo "+++-WARNING(${SelfScriptName} line $LINENO): DePool has balance less $((DP_balanceThreshold / 1000000000)) tokens!! I will topup it with $((Replenish_Amount / 1000000000)) tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
         "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): DePool has balance less $((DP_balanceThreshold / 1000000000)) tokens!! I will topup it with $((Replenish_Amount / 1000000000)) tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
     
@@ -553,7 +561,7 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
     # prevent.
     if ! Complete_And_Await "" "$Validator_addr" "$VALIDATOR_NAME" \
             "The DePool top-up of $((Replenish_Amount / 1000000000)) tokens" \
-            Effect_Account_Balance_At_Least "$Depool_addr" \
+            Effect_Self_Balance_At_Least "$Depool_addr" \
             "$(( Depool_Bal + Replenish_Amount - 1000000000 ))";then
         exit 1
     fi

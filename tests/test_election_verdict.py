@@ -290,8 +290,20 @@ class ElectionPreparationTests(unittest.TestCase):
         self.assertIn("Find_Matching_Pending_Trans", self.block)
         self.assertNotIn("tail -n 1", self.block)
 
-    def test_the_top_up_waits_for_the_depool_balance(self):
-        self.assertIn("Effect_Account_Balance_At_Least", self.block)
+    def test_the_top_up_waits_for_the_depools_own_balance(self):
+        self.assertIn("Effect_Self_Balance_At_Least", self.block)
+        self.assertNotIn("Effect_Account_Balance_At_Least", self.block)
+
+    def test_the_threshold_is_compared_with_the_depools_own_balance(self):
+        """The account balance also holds the stakes waiting in the DePool's
+        rounds, so while the DePool held any stake it never fell under the
+        threshold, and the top-up could not run however low the DePool's own
+        funds were. getDePoolBalance is the account balance less those stakes."""
+        self.assertIn("Depool_Bal=$(( DP_balance_nT ))", self.code)
+        self.assertNotIn('Depool_Bal=$(( $(echo "$Depool_Info"', self.code)
+        reading = self.code.index('Get_DP_Self_Balance "$Depool_addr"')
+        decision = self.code.index("if [[ $Depool_Bal -lt $DP_balanceThreshold ]]")
+        self.assertLess(reading, decision)
 
     def test_an_unsigned_top_up_is_a_failure_not_a_warning(self):
         """It used to print an error and carry on into the election, which is

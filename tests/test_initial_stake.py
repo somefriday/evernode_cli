@@ -24,7 +24,8 @@ CUSTODIAN_SET = json.dumps({
 @unittest.skipUnless(shutil.which('bash') and shutil.which('jq') and shutil.which('bc'), 'Requires bash, jq and bc')
 class InitialStakeTests(unittest.TestCase):
     def run_stake(self, *, pending=False, unrelated=False, executed=False, bounce=False,
-                  required=2, duplicate=False, flags='3', initial=True):
+                  required=2, duplicate=False, flags='3', initial=True,
+                  wallet='100000000000000'):
         # A plausible id: SafeMultisigWallet builds it as (now << 32) | lt, so
         # it carries the creation time the deadline is derived from.
         transaction_id = str((int(time.time()) << 32) | 1)
@@ -63,7 +64,7 @@ CALL_BC=bc; CALL_CLI=fake_cli
 INPL_SafeC_Wallet_ABI=safe.abi
 # Reading the custodian set needs the wallet ABI on disk, as on a real node.
 SafeC_Wallet_ABI="$TEST_ROOT/safe.abi"; : >"$SafeC_Wallet_ABI"
-MSIG_AMOUNT=100000000000000; Required_Signs=$TEST_REQUIRED; DEPOOL_STAKE_FEE_NANO=500000000
+MSIG_AMOUNT=$TEST_WALLET; Required_Signs=$TEST_REQUIRED; DEPOOL_STAKE_FEE_NANO=500000000
 MSG_LIFETIME=60
 LC_Send_MSG_Timeout=1
 # The wait polls for real, so bound it well inside the subprocess timeout.
@@ -147,7 +148,8 @@ make_ordinary_stake 0:depool validator 50000
                                              TEST_TRANS_ID=transaction_id,
                                              TEST_CREATOR=CUSTODIAN_CREATOR,
                                              TEST_CUSTODIANS=CUSTODIAN_SET,
-                                             TEST_INITIAL=str(int(initial))))
+                                             TEST_INITIAL=str(int(initial)),
+                                             TEST_WALLET=wallet))
             transfers = (root / 'transfers').read_text() if (root / 'transfers').exists() else ''
             # The id is generated per run, so normalise it for the assertions.
             return result, transfers.replace(transaction_id, "<id>")
@@ -165,6 +167,18 @@ make_ordinary_stake 0:depool validator 50000
     def test_completed_stake_retry_does_not_transfer_again(self):
         result, transfers = self.run_stake(executed=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(transfers, '')
+
+    def test_completed_stake_retry_finishes_when_the_wallet_cannot_pay_it_again(self):
+        """The stake that landed left the wallet; that must not block finishing setup."""
+        result, transfers = self.run_stake(executed=True, wallet='20000000000')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(transfers, '')
+
+    def test_a_new_stake_the_wallet_cannot_cover_is_still_refused(self):
+        result, transfers = self.run_stake(wallet='20000000000')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('more than the MSIG balance', result.stderr)
         self.assertEqual(transfers, '')
 
     def test_single_signature_stake_waits_for_delivery(self):

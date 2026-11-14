@@ -653,6 +653,52 @@ def _refuse_while_validating(config, action):
     )
 
 
+def pending_election(store, config, now=None):
+    """When the round this node bid for starts, while its election is undecided.
+
+    The kit gives the node a validator key for an election before it bids, and
+    ever-node lists that key in node_cfg/config.json under the election id,
+    which is the time the elected set starts. Until the elector publishes that
+    set (config param 36) the node is in neither set, yet it can be elected
+    into the next one; once p36 is out, set membership answers instead. On
+    mainnet an election stays open for hours.
+    """
+    path = store.node_directory(config["name"]) / "node_cfg" / "config.json"
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None  # No key file yet: the node has never bid.
+    keys = value.get("validator_keys") if isinstance(value, dict) else None
+    now = time.time() if now is None else now
+    upcoming = [
+        key["election_id"]
+        for key in (keys if isinstance(keys, list) else [])
+        if isinstance(key, dict)
+        and type(key.get("election_id")) is int
+        and key["election_id"] > now
+    ]
+    if not upcoming or _run_console(config, "getconfig 36").get("p36"):
+        return None
+    return max(upcoming)
+
+
+def _refuse_with_pending_bid(store, config, action):
+    """Stop an operator taking a node out while the election it bid in is open."""
+    try:
+        election = pending_election(store, config)
+    except process.OperationError:
+        return  # An unreachable console cannot tell whether the election is decided.
+    if election is None:
+        return
+    starts = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(election))
+    raise process.OperationError(
+        f"This node bid for the round that starts {starts}, and the election "
+        f"result is not out yet: elected while stopped, it misses that round. "
+        "Wait until node status shows it in the next set or the election closes "
+        f"without it, or pass --force to {action} it anyway."
+    )
+
+
 def apply_node_lifecycle_operation(
     store, name, action, *, timeout=30, purge_data=False, force=False
 ):
@@ -665,6 +711,9 @@ def apply_node_lifecycle_operation(
         config = store.load_node_config(name)
         if action in ("stop", "restart", "remove") and not force:
             _refuse_while_validating(config, action)
+            # A restart is back within a minute, long before that round starts.
+            if action != "restart":
+                _refuse_with_pending_bid(store, config, action)
         if action == "start":
             # A removed node can reserve its image again before startup.
             with store.acquire_operation_lock():

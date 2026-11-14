@@ -502,6 +502,75 @@ class ValidatorSetGuardTests(unittest.TestCase):
             nodes._refuse_while_validating(self.config, "stop")
 
 
+class PendingBidGuardTests(unittest.TestCase):
+    """A bid in an open election is not set membership yet, but can become it.
+
+    The window between the bid and the published result lasts hours on
+    mainnet. A node stopped in it can be elected and then miss its round.
+    """
+
+    NOW = 1_800_000_000
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o077))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+        self.config = make_node_configuration("validator01")
+        self.keys = self.store.node_directory("validator01") / "node_cfg"
+        self.keys.mkdir(parents=True)
+
+    def write_keys(self, *election_ids):
+        keys = [{"election_id": value, "validator_key_id": "k"} for value in election_ids]
+        (self.keys / "config.json").write_text(json.dumps({"validator_keys": keys}))
+
+    def pending(self, p36=None):
+        reading = {"p36": p36} if p36 else {}
+        with patch("evernode.nodes._run_console", return_value=reading) as console:
+            value = nodes.pending_election(self.store, self.config, now=self.NOW)
+        return value, console
+
+    def test_a_key_for_a_round_not_started_is_a_pending_bid(self):
+        self.write_keys(self.NOW - 900, self.NOW + 900)
+        value, console = self.pending()
+        self.assertEqual(value, self.NOW + 900)
+        console.assert_called_once_with(self.config, "getconfig 36")
+
+    def test_a_published_next_set_hands_over_to_set_membership(self):
+        self.write_keys(self.NOW + 900)
+        value, _ = self.pending(p36={"utime_since": self.NOW + 900})
+        self.assertIsNone(value)
+
+    def test_keys_of_started_rounds_are_not_a_bid(self):
+        self.write_keys(self.NOW - 900, self.NOW)
+        value, console = self.pending()
+        self.assertIsNone(value)
+        console.assert_not_called()
+
+    def test_a_node_that_never_bid_has_no_key_file(self):
+        value, console = self.pending()
+        self.assertIsNone(value)
+        console.assert_not_called()
+
+    def test_stop_is_refused_with_the_round_and_the_override(self):
+        with patch("evernode.nodes.pending_election", return_value=self.NOW + 900):
+            with self.assertRaises(process.OperationError) as caught:
+                nodes._refuse_with_pending_bid(self.store, self.config, "stop")
+        message = str(caught.exception)
+        self.assertIn("2027-01-15 08:15:00Z", message)
+        self.assertIn("--force to stop", message)
+
+    def test_an_unreachable_console_cannot_block_a_stop(self):
+        with patch(
+            "evernode.nodes.pending_election",
+            side_effect=process.OperationError("container is not running"),
+        ):
+            nodes._refuse_with_pending_bid(self.store, self.config, "stop")
+
+
 class UnknownNodeTests(unittest.TestCase):
     """A mistyped name must name the mistake, not report an internal errno."""
 

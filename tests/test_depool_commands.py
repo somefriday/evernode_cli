@@ -674,12 +674,13 @@ class ValidatorSetLifecycleGuardTests(unittest.TestCase):
     one from a small set stops the chain permanently.
     """
 
-    def run_lifecycle(self, action, statistics, *flags):
+    def run_lifecycle(self, action, statistics, *flags, pending=None):
         from evernode import nodes
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
             patch("evernode.nodes.fetch_node_statistics", return_value=statistics),
+            patch("evernode.nodes.pending_election", return_value=pending),
             patch("evernode.nodes.stop_node") as stop,
             patch("evernode.nodes.start_node"),
             patch("evernode.nodes.remove_node") as remove,
@@ -728,6 +729,32 @@ class ValidatorSetLifecycleGuardTests(unittest.TestCase):
                 stop.assert_not_called()
                 remove.assert_not_called()
 
+    def test_a_bid_in_an_open_election_refuses_stop_and_remove(self):
+        outside = {"in_current_vset_p34": False, "in_next_vset_p36": False}
+        for action in ("stop", "remove"):
+            with self.subTest(action=action):
+                code, stop, remove, text = self.run_lifecycle(
+                    action, outside, pending=1_800_000_900
+                )
+                self.assertEqual(code, 1)
+                stop.assert_not_called()
+                remove.assert_not_called()
+                self.assertIn("election result is not out yet", text)
+
+    def test_a_bid_does_not_hold_up_a_restart(self):
+        """A restart is back long before the round it may be elected into."""
+        outside = {"in_current_vset_p34": False, "in_next_vset_p36": False}
+        with patch("evernode.elections.hold_election_lock", return_value=contextlib.nullcontext()):
+            code, stop, _, _ = self.run_lifecycle("restart", outside, pending=1_800_000_900)
+        self.assertEqual(code, 0)
+        stop.assert_called_once()
+
+    def test_force_stops_a_node_with_a_pending_bid(self):
+        outside = {"in_current_vset_p34": False, "in_next_vset_p36": False}
+        code, stop, _, _ = self.run_lifecycle("stop", outside, "--force", pending=1_800_000_900)
+        self.assertEqual(code, 0)
+        stop.assert_called_once()
+
     def test_force_fences_a_replaced_validator(self):
         code, stop, _, _ = self.run_lifecycle(
             "stop", {"in_current_vset_p34": True}, "--force"
@@ -759,6 +786,8 @@ class ValidatorSetLifecycleGuardTests(unittest.TestCase):
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
             patch("evernode.nodes.fetch_node_statistics",
+                  side_effect=process.OperationError("container is not running")),
+            patch("evernode.nodes.pending_election",
                   side_effect=process.OperationError("container is not running")),
             patch("evernode.nodes.stop_node") as stop,
             patch("evernode.elections.node_election_cron_path") as cron,
