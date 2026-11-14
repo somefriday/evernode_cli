@@ -153,6 +153,7 @@ class CreationTests(unittest.TestCase):
             "validator01", phase="prepared", initialized=True, setup_stage="preparing",
             wallet=profile(wallet_address=None),
         )
+        self.store.node_directory("validator01").mkdir(parents=True)
         with (
             patch("evernode.nodes.docker.inspect_managed_container", return_value=None),
             patch("evernode.nodes.docker.execute_node_compose"),

@@ -50,6 +50,37 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("entrypoint.sh", str(c))
         self.assertNotIn("/var/run/docker.sock", str(c))
 
+    def test_node_may_keep_its_database_files_open(self):
+        """Docker's 1024 stopped mainnet nodes at "Too many open files"."""
+        c = docker.build_node_compose_config(
+            make_node_configuration(), Path("/var/lib/ever-validator/nodes/node-01")
+        )
+        self.assertEqual(
+            c["services"]["node"]["ulimits"],
+            {"nofile": {"soft": 1048576, "hard": 1048576}},
+        )
+
+    def test_start_applies_the_current_container_definition_to_a_stopped_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = storage.NodeStateStore(tmp)
+            config = make_node_configuration(initialized=True)
+            compose = s.node_directory("node-01") / "compose.json"
+            compose.parent.mkdir(parents=True)
+            for state, rewritten in ((None, True), ("exited", True), ("running", False)):
+                compose.write_text("{}")
+                found = state and {"State": {"Status": state}}
+                with (
+                    patch("evernode.docker.inspect_managed_container", return_value=found),
+                    patch("evernode.docker.execute_node_compose"),
+                    patch("evernode.nodes.fetch_node_statistics", return_value={}),
+                    patch.object(s, "save_node_config"),
+                ):
+                    nodes.start_node(s, config)
+                written = json.loads(compose.read_text())
+                self.assertEqual(
+                    "ulimits" in written.get("services", {}).get("node", {}), rewritten, state
+                )
+
     def test_env_preserves_other_assignments_and_quotes_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "env.sh"
@@ -211,14 +242,9 @@ class ConfigTests(unittest.TestCase):
             (d / "node_cfg").mkdir(parents=True)
             key = d / "node_cfg" / "key"
             key.write_text("existing")
-            config = dict(
-                name="node-01",
-                statsd="statsd-node-01",
-                phase="prepared",
-                initialized=False,
-            )
+            config = make_node_configuration("node-01")
             with (
-                patch("evernode.docker.inspect_managed_container"),
+                patch("evernode.docker.inspect_managed_container", return_value=None),
                 patch("evernode.docker.execute_node_compose"),
             ):
                 with self.assertRaisesRegex(

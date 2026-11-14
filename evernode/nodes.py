@@ -522,8 +522,18 @@ def start_node(store, config):
         raise process.OperationError(
             f"Preparation did not finish; use node create --resume -n {config['name']}"
         )
-    for name in (configuration.node_container_name(config), config["statsd"]):
+    node, _statsd = [
         docker.inspect_managed_container(name, config["name"])
+        for name in (configuration.node_container_name(config), config["statsd"])
+    ]
+    directory = store.node_directory(config["name"])
+    if not node or node["State"]["Status"] != "running":
+        # Starting applies this version's container definition, such as the
+        # open-file limit, to a node created by an older evernode. A running
+        # node keeps the one it has until it is stopped.
+        storage.write_json_atomically(
+            directory / "compose.json", docker.build_node_compose_config(config, directory)
+        )
     docker.execute_node_compose(store, config, "up", "-d", "statsd", timeout=300)
     try:
         docker.execute_node_compose(
@@ -546,7 +556,6 @@ def start_node(store, config):
         raise process.OperationError(
             f"StatsD preflight failed: {exc}\n{logs.stdout}{logs.stderr}"
         ) from exc
-    directory = store.node_directory(config["name"])
     if not config["initialized"]:
         if any((directory / "node_cfg").iterdir()):
             raise process.OperationError(

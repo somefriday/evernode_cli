@@ -6,6 +6,12 @@ import socket
 from . import configuration, process
 
 NODE_OWNERSHIP_LABEL = "org.evernode.manager"
+# ever-node keeps every database file open and never raises its own limit. Docker
+# can start a container with only 1024 (a Docker 29 host did), which a mainnet
+# database outgrows: the node then stops storing blocks and its console stops
+# listening. 1048576 is the most a process may have unless the host raised
+# fs.nr_open, where a larger value would keep the container from starting.
+NODE_OPEN_FILES = 1048576
 
 
 def ensure_container_names_available(store, proposed):
@@ -185,6 +191,7 @@ def build_node_compose_config(config, directory):
                 "restart": "unless-stopped",
                 "init": True,
                 "mem_limit": config["memory"],
+                "ulimits": {"nofile": {"soft": NODE_OPEN_FILES, "hard": NODE_OPEN_FILES}},
                 "stop_grace_period": "30s",
                 "environment": {
                     "STATSD_DOMAIN": config["statsd"],
