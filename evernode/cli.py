@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -142,6 +143,10 @@ def handle_node_local_sync(store, args):
     ui.confirm_operation(
         args.yes, "Stop both nodes and seed the target database from the source?"
     )
+    # The copy can take hours with both nodes stopped, so a closed SSH session
+    # or a kill takes the same way back as Ctrl+C instead of ending the process.
+    for signum in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(signum, signal.default_int_handler)
     ui.print_json_result(nodes.local_sync(store, source, target))
     print(
         f"Database seeded. Wait for sync before continuing: evernode node sync -n {target} --wait"
@@ -208,16 +213,16 @@ def main(argv=None):
             sys.argv[1:] if argv is None else argv
         )
     )
-    if args.group is None:
-        p.print_help()
-        if os.geteuid() == 0:
-            print(
-                "Managed nodes:",
-                ", ".join(storage.NodeStateStore(args.state_dir).list_node_names())
-                or "none",
-            )
-        return 0
     try:
+        if args.group is None:
+            p.print_help()
+            if os.geteuid() == 0:
+                print(
+                    "Managed nodes:",
+                    ", ".join(storage.NodeStateStore(args.state_dir).list_node_names())
+                    or "none",
+                )
+            return 0
         if args.group == "host":
             if args.action == "setup":
                 require_root_privileges()

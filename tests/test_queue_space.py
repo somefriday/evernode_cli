@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from evernode import scripts
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
 MANAGED_OPS = SCRIPTS / "managed_ops.shinc"
 
@@ -146,6 +148,13 @@ class QueueGuardWiringTests(unittest.TestCase):
 
     def test_the_election_bid_checks_before_submitting(self):
         text = (SCRIPTS / "take_part_in_elections.sh").read_text()
+        self.assertIn("Require_Queue_Space", text)
+        self.assertLess(
+            text.index("Require_Queue_Space"), text.index("Submit_And_Identify")
+        )
+
+    def test_the_nominator_deployer_funding_checks_before_submitting(self):
+        text = scripts.NOMINATOR_FUND_DEPLOYER
         self.assertIn("Require_Queue_Space", text)
         self.assertLess(
             text.index("Require_Queue_Space"), text.index("Submit_And_Identify")

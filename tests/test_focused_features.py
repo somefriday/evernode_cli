@@ -251,6 +251,29 @@ class FocusedFeatureTests(unittest.TestCase):
         self.assertEqual(seed.stat().st_mode & 0o777, 0o600)
         self.assertEqual(seed.read_text().strip().split()[0], "one")
 
+    def test_a_refused_phrase_leaves_every_stored_phrase_as_it_was(self):
+        """A typo in the second phrase used to leave the first one replaced."""
+        directory = self.store.node_directory("validator")
+        (directory / "keys").mkdir(parents=True)
+        config = make_node_configuration(
+            "validator",
+            wallet={
+                "mode": "import",
+                "custodians": 2,
+                "required_signatures": 2,
+                "wallet_address": "0:" + "a" * 64,
+                "depool_address": "0:" + "b" * 64,
+            },
+        )
+        wallets.store_import_seeds(self.store, config, ["one " * 12, "two " * 12])
+        with self.assertRaisesRegex(process.OperationError, "single mnemonic phrase"):
+            wallets.store_import_seeds(
+                self.store, config, ["three " * 12, "too short"], replace=True
+            )
+        seeds = directory / "keys/MSKeys_validator"
+        self.assertEqual((seeds / "validator_seed_1.txt").read_text().split()[0], "one")
+        self.assertEqual((seeds / "validator_seed_2.txt").read_text().split()[0], "two")
+
     def test_election_schedule_uses_exact_reference_sequence(self):
         directory = self.store.node_directory("validator")
         for part in ("scripts", "logs/validator", "elections"):
@@ -553,6 +576,11 @@ class FocusedFeatureTests(unittest.TestCase):
             ]
         )
         record = {"image": "local/ever-node:abc", "image_id": "sha256:" + "a" * 64}
+
+        def fail_after_reserving(store, config, *arguments):
+            config["phase"] = "preparing"
+            raise process.OperationError("preparation failed")
+
         with (
             patch(
                 "evernode.creation.docker.select_container_names",
@@ -568,7 +596,7 @@ class FocusedFeatureTests(unittest.TestCase):
             ),
             patch(
                 "evernode.creation.provisioning.provision_node_workspace",
-                side_effect=process.OperationError("preparation failed"),
+                side_effect=fail_after_reserving,
             ),
             patch("evernode.creation.nodes.discard_failed_creation") as discard,
             contextlib.redirect_stdout(io.StringIO()),
@@ -704,7 +732,10 @@ class FocusedFeatureTests(unittest.TestCase):
         with patch("evernode.wallets.scripts.execute_validator_script") as execute, patch(
             # Waiting for a deployed contract to appear is covered separately.
             "evernode.wallets.scripts.wait_for_active_account"
-        ) as awaited:
+        ) as awaited, patch(
+            "evernode.wallets.scripts.verify_imported_depool",
+            return_value={"validator_wallet": profile["wallet_address"]},
+        ):
             self.assertEqual(
                 wallets.wallet_deploy(self.store, deploy_wallet)[0]["setup_stage"],
                 "wallet-deployed",
@@ -727,6 +758,27 @@ class FocusedFeatureTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(process.OperationError, "requires setup stage"):
             wallets.depool_deploy(self.store, deploy_wallet)
+
+    def test_a_depool_whose_constructor_failed_is_not_marked_deployed(self):
+        # review 1, #27 (bd-j vdp3): the deploy activated the account, but the constructor failed (exit 507)
+        profile = {
+            "mode": "new",
+            "custodians": 1,
+            "required_signatures": 1,
+            "wallet_address": "0:" + "a" * 64,
+            "depool_address": "0:" + "b" * 64,
+        }
+        config = make_node_configuration("validator", wallet=dict(profile), setup_stage="depool-prepared")
+        with patch("evernode.wallets.scripts.execute_validator_script"), patch(
+            "evernode.wallets.scripts.wait_for_active_account"
+        ), patch(
+            "evernode.wallets.scripts.verify_imported_depool",
+            return_value={"validator_wallet": "0:" + "0" * 64},
+        ):
+            with self.assertRaisesRegex(process.OperationError, "constructor did not complete") as raised:
+                wallets.depool_deploy(self.store, config)
+        self.assertIn("cannot be deployed again", str(raised.exception))
+        self.assertEqual(config["setup_stage"], "depool-prepared")
 
     def test_import_verification_is_split_between_safe_and_depool(self):
         profile = {

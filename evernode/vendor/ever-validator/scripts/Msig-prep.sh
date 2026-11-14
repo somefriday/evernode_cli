@@ -147,7 +147,7 @@ for (( i=1; i <= $((CUSTODIANS)); i++ )); do
     
     # generate pub/sec keypair file
     if ! KEY_PAIR_JSON="$($CALL_CLI -j getkeypair -p "${SeedPhrase[$i]}")"; then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair for seed phrase ${SeedPhrase[$i]}"
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair from seed phrase ${i}"
         exit 1
     fi
     if ! echo "$KEY_PAIR_JSON"|jq > "${KEY_FILES_DIR}/${WAL_NAME}_${i}.keys.json"; then

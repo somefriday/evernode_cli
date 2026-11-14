@@ -10,22 +10,30 @@ experiment, so they check what the chain actually accepted rather than what
 this implementation believes.
 """
 
+import base64
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
-from evernode import configuration, creation, elections, nominator, process, stake, wallets
+from evernode import (
+    configuration, creation, elections, nominator, process, scripts, setup_actions,
+    stake, wallets,
+)
 from evernode.arguments import build_argument_parser, normalize_address_arguments
 from support import make_node_configuration
 
 VENDOR = Path(__file__).resolve().parents[1] / "evernode" / "vendor" / "single-nominator"
 ASSETS = Path(__file__).resolve().parents[1] / "evernode" / "assets"
-REFERENCE = Path("/Users/artem/Projects/github/nominators-to-ever/artifacts")
+# Bytes the reference experiment recorded from the chain; public data, kept with the tests.
+REFERENCE = Path(__file__).resolve().parent / "fixtures" / "nominator"
 OWNER = "-1:e253907b4dc0e9d64cb738df4895094ef8d115ae3e1742f637f0329608815913"
 HOT = "-1:c43ea310703d54abf436c53af049013960f1097b5360a453af3467b1321b00bc"
 POOL = "-1:abc84de88f337e99590aac84578cbd350eb76b6ecf02b24af8edd9675af17ef1"
@@ -46,6 +54,11 @@ def nominator_config(**changes):
     value["settings"] = dict(value["settings"], NOMINATOR_OWNER=OWNER)
     value.update(changes)
     return value
+
+
+def without_crc(boc):
+    """The same cells as the tool now writes them: BOC flag 0x40 marks a trailing CRC32C."""
+    return boc[:4] + bytes([boc[4] & ~0x40]) + boc[5:-4] if boc[4] & 0x40 else boc
 
 
 class ValidatorTypeTests(unittest.TestCase):
@@ -379,7 +392,7 @@ class ContractToolTests(unittest.TestCase):
                 out = self.work / name
                 self.cells("body", arguments[0], str(out), *arguments[1:])
                 self.assertEqual(
-                    out.read_bytes(), (REFERENCE / name).read_bytes(), name
+                    out.read_bytes(), without_crc((REFERENCE / name).read_bytes()), name
                 )
 
     @unittest.skipUnless(REFERENCE.is_dir(), "reference artifacts are not present")
@@ -388,9 +401,11 @@ class ContractToolTests(unittest.TestCase):
         bid = REFERENCE / "validation-bid.boc"
         out = self.work / "stake.body.boc"
         self.cells("body", "stake", str(out), str(bid), "100000000000000", "1793389276")
-        self.assertEqual(
-            out.read_bytes(), (REFERENCE / "validation-stake.body.boc").read_bytes()
-        )
+        expected = without_crc((REFERENCE / "validation-stake.body.boc").read_bytes())
+        self.assertEqual(out.read_bytes(), expected)
+        # A multisig reports a pending payload in this form, and the bid is
+        # recognised by it: "te6ccg", never the CRC-carrying "te6cck".
+        self.assertTrue(base64.b64encode(expected).startswith(b"te6ccg"))
 
     @unittest.skipUnless(REFERENCE.is_dir(), "reference artifacts are not present")
     def test_the_transform_keeps_the_election_request_intact(self):
@@ -779,6 +794,19 @@ class ToolImageTagTests(unittest.TestCase):
                     storage.calculate_directory_fingerprint(root), r"^[0-9a-f]{64}$"
                 )
 
+    def test_a_changed_recipe_is_a_different_image(self):
+        """An image built from an older recipe must not be reused for a newer one."""
+        tags = []
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "evernode.nominator.work_directory", return_value=Path(temporary)
+        ), patch("evernode.nominator.docker.image_exists", return_value=True):
+            recipe = Path(temporary) / "Dockerfile"
+            for text in ("FROM node:22\n", "FROM node:22\n", "FROM node:24\n"):
+                recipe.write_text(text)
+                tags.append(nominator.build_tools_image(None, None, VENDOR, recipe)[0])
+        self.assertEqual(tags[0], tags[1])
+        self.assertNotEqual(tags[1], tags[2])
+
     def test_a_directory_that_is_not_the_vendored_source_is_refused_by_name(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "empty"
@@ -912,3 +940,200 @@ class ModeInheritanceTests(unittest.TestCase):
     def test_an_imported_safe_must_reach_the_elector_in_both_modes(self):
         source = Path(creation.__file__).read_text()
         self.assertIn("if solo or nominator:", source)
+
+    def test_the_stake_questions_name_the_account_that_holds_the_stake(self):
+        """A nominator's stake leaves from, and returns to, its contract."""
+        parser = build_argument_parser()
+        for validator_type, account in (("nominator", "nominator contract"), ("solo", "Safe")):
+            config = make_node_configuration(name="v", validator_type=validator_type)
+            for argv in (
+                ["stake", "recover", "-n", "v"],
+                ["stake", "set", "-n", "v", "--amount", "10"],
+            ):
+                with self.subTest(validator_type=validator_type, command=argv[1]):
+                    question = setup_actions._confirmation_question(
+                        parser.parse_args(argv), config
+                    )
+                    self.assertIn(account, question)
+                    if validator_type == "nominator":
+                        self.assertNotIn("Safe", question)
+
+
+class SafeKeysTests(unittest.TestCase):
+    """A new nominator Safe is offered one key first; everything else keeps its prompts."""
+
+    def choose(self, *flags, nominator=True, importing=False, menu=None):
+        args = build_argument_parser().parse_args(["node", "create", "-n", "validator01", *flags])
+        asked = []
+
+        def prompt(value, label, default=None):
+            asked.append((label, default))
+            return default
+
+        with (
+            patch("evernode.creation.ui.select_choice",
+                  side_effect=lambda *a, **k: menu or k["default"]) as select,
+            patch("evernode.creation.ui.prompt_for_value", side_effect=prompt),
+        ):
+            keys = creation.choose_safe_keys(args, nominator, importing)
+        return keys, select.call_count, asked
+
+    def test_a_new_nominator_safe_has_one_key_unless_several_are_chosen(self):
+        self.assertEqual(self.choose(), ((1, 1), 1, []))
+        self.assertEqual(
+            self.choose(menu="several"),
+            ((3, 2), 1, [("Multisig custodians", "3"), ("Required signatures", "2")]),
+        )
+
+    def test_without_a_terminal_a_new_nominator_safe_gets_one_key(self):
+        args = build_argument_parser().parse_args(["node", "create", "-n", "validator01"])
+        with patch("sys.stdin", io.StringIO()):
+            self.assertEqual(creation.choose_safe_keys(args, True, False), (1, 1))
+
+    def test_flags_an_import_and_the_other_types_keep_the_plain_prompts(self):
+        self.assertEqual(
+            self.choose("--custodians", "3", "--required-signatures", "2"), ((3, 2), 0, [])
+        )
+        self.assertEqual(
+            self.choose(importing=True),
+            ((1, 1), 0, [("Multisig custodians", "1"), ("Required signatures", "1")]),
+        )
+        self.assertEqual(
+            self.choose(nominator=False),
+            ((3, 2), 0, [("Multisig custodians", "3"), ("Required signatures", "2")]),
+        )
+
+
+class DeployPaymentMessageTests(unittest.TestCase):
+    """With several signatures the deployer payment says when not to interrupt it."""
+
+    def deploy(self, signatures, funded):
+        config = nominator_config(wallet={
+            "mode": "new", "custodians": 3, "required_signatures": signatures,
+            "wallet_address": HOT, "depool_address": None,
+        })
+        manifest = {"address": POOL, "factory": FACTORY, "validator": HOT}
+        with (
+            patch("evernode.nominator._manifest", return_value=manifest),
+            patch("evernode.nominator._account", return_value={"acc_type": "Uninit"}),
+            patch("evernode.scripts.fund_nominator_deployer", return_value=funded),
+            patch("evernode.nominator._broadcast"),
+            patch("evernode.nominator._wait_for", return_value={"acc_type": "Active"}),
+            contextlib.redirect_stderr(io.StringIO()) as said,
+        ):
+            nominator.deploy(None, config)
+        return said.getvalue()
+
+    def test_a_multisignature_payment_is_announced_and_reported_done(self):
+        said = self.deploy(2, {"transaction_id": "7219"})
+        self.assertIn("takes 2 signatures from the Safe: do not interrupt (Ctrl+C)", said)
+        self.assertIn("Deployer payment done (Safe transaction 7219).", said)
+        said = self.deploy(2, {"transaction_id": "", "note": "already funded"})
+        self.assertIn("already funded; nothing was paid", said)
+
+    def test_a_single_key_payment_says_nothing_extra(self):
+        self.assertEqual(self.deploy(1, {"transaction_id": ""}), "")
+
+
+# Three custodians and two signatures: the first key proposes, the second approves.
+CUSTODIAN_KEYS = ["8a" + "1d" * 31, "b7" + "2e" * 31, "c4" + "3f" * 31]
+# The reference environment the funding program sources, reduced to a Safe and
+# a deployer. Approving the payment executes it, and that funds the deployer.
+FUNDING_STUBS = r"""
+KEYS_DIR="$TEST_ROOT"; INPL_KEYS_DIR="$TEST_ROOT"; VALIDATOR_NAME=validator
+INPL_ELECTIONS_WORK_DIR="$TEST_ROOT"; ELECTIONS_WORK_DIR="$TEST_ROOT"; SIG_ID_OPTION=""
+INPL_SafeC_Wallet_ABI=safe.abi; SafeC_Wallet_ABI="$TEST_ROOT/safe.abi"; : >"$SafeC_Wallet_ABI"
+CALL_BC=bc; CALL_CLI=fake_cli; MSG_LIFETIME=60; LC_Send_MSG_Timeout=1
+EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=2
+echoerr() { echo "$*" >&2; }
+fake_cli() {
+    case "$*" in
+        *' getParameters '*) echo '{"expirationTime":"3600"}';;
+        *' getCustodians '*) printf '%s\n' "$TEST_CUSTODIANS";;
+        *) echo '{}';;
+    esac
+}
+Get_SC_current_state() { echo "written StateInit of account"; }
+Get_Account_Custodians_Info() { echo "3 2"; }
+Get_Account_Info() {
+    if [[ $1 == "$EVERNODE_WALLET" ]]; then echo "Active 100000000000"
+    elif [[ -f $TEST_ROOT/executed ]]; then echo "Uninit $FUND_VALUE"
+    else echo "None 0"; fi
+}
+# The case's staged entries, plus this run's own proposal once it is sent.
+Get_MSIG_Trans_List() {
+    if [[ -f $TEST_ROOT/executed ]]; then echo '{"transactions":[]}'; return 0; fi
+    local own='[]'
+    if grep -qs submitted "$TEST_ROOT/trace"; then
+        own=$(jq -c --arg id "$TEST_TRANS_ID" '[. + {id: $id}]' "$TEST_ROOT/entry.json")
+    fi
+    jq -c --argjson own "$own" '{transactions: (. + $own)}' "$TEST_ROOT/pending.json"
+}
+Send_File_To_BC() { echo submitted >>"$TEST_ROOT/trace"; echo success; }
+Send_MSIG_Trans_Confirmation() {
+    echo "signed:$1:$3" >>"$TEST_ROOT/trace"
+    touch "$TEST_ROOT/executed"
+    echo success
+}
+"""
+
+
+@unittest.skipUnless(
+    shutil.which("bash") and shutil.which("jq") and shutil.which("bc"),
+    "Requires bash, jq and bc",
+)
+class DeployerFundingRetryTests(unittest.TestCase):
+    """A rerun finishes the payment an interrupted deploy proposed.
+
+    Proposing another one left the first half-signed for an hour, holding one
+    of the five queue slots of the key that proposed it.
+    """
+
+    def fund(self, *, pending):
+        now = int(time.time())
+        earlier, new = str(((now - 300) << 32) | 1), str((now << 32) | 2)
+        entry = {
+            "creator": str(int(CUSTODIAN_KEYS[0], 16)), "dest": FACTORY,
+            "value": "12000000000", "payload": "te6ccgEBAQEAAgAAAA==",
+            "bounce": False, "sendFlags": "3",
+            "confirmationsMask": "1", "signsRequired": "2", "signsReceived": "1",
+        }
+        custodians = {"custodians": [
+            {"index": str(index), "pubkey": str(int(key, 16))}
+            for index, key in enumerate(CUSTODIAN_KEYS)
+        ]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copyfile(KIT / "managed_ops.shinc", root / "managed_ops.shinc")
+            (root / "env.sh").write_text("")
+            (root / "functions.shinc").write_text(FUNDING_STUBS)
+            for index, key in enumerate(CUSTODIAN_KEYS, 1):
+                (root / f"validator_{index}.keys.json").write_text(
+                    json.dumps({"public": key, "secret": f"{index:02d}" * 32})
+                )
+            (root / "entry.json").write_text(json.dumps(entry))
+            (root / "pending.json").write_text(
+                json.dumps([dict(entry, id=earlier)] if pending else [])
+            )
+            done = subprocess.run(
+                ["bash", "-c", scripts.NOMINATOR_FUND_DEPLOYER],
+                cwd=root, capture_output=True, text=True, timeout=60,
+                env=dict(
+                    os.environ, TEST_ROOT=str(root), TEST_TRANS_ID=new,
+                    TEST_CUSTODIANS=json.dumps(custodians), EVERNODE_WALLET=HOT,
+                    FUND_DEST=FACTORY, FUND_VALUE="12000000000",
+                    FUND_BUDGET="11000000000",
+                ),
+            )
+            trace = (root / "trace").read_text() if (root / "trace").exists() else ""
+        return done, trace.replace(earlier, "<earlier>").replace(new, "<new>")
+
+    def test_a_payment_left_half_signed_is_finished_not_proposed_again(self):
+        done, trace = self.fund(pending=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(trace, "signed:<earlier>:validator_2.keys.json\n")
+
+    def test_without_one_a_new_payment_is_proposed_then_approved(self):
+        done, trace = self.fund(pending=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(trace, "submitted\nsigned:<new>:validator_2.keys.json\n")

@@ -50,6 +50,8 @@ evernode depool stake-initial -n validator01
 evernode election start -n validator01
 ```
 
+Once the first stake has entered an election, add the second: `evernode depool stake -n validator01 --amount 50000`. With two rounds funded, the DePool validates every round instead of every other one.
+
 **Save every seed phrase offline before funding anything.** The only other copy
 is the node's root-only `keys/` directory.
 
@@ -67,10 +69,10 @@ Validator types, chosen in the `node create` menu:
 evernode node list                        # every node and its state
 evernode node status -n validator01       # health, sync, next step
 evernode node logs -n validator01 --follow
-evernode doctor -n validator01            # find and explain problems
+evernode doctor -n validator01            # status, free disk, schedule file
 evernode depool info -n validator01       # rounds, stake, pending transactions
 evernode election status -n validator01   # schedule and validator set
-evernode node restart -n validator01      # refuses while in a validator set
+evernode node restart -n validator01      # after election stop; refuses while in a validator set
 ```
 
 Groups: `host`, `node`, `wallet`, `depool`, `stake`, `nominator`, `election`,

@@ -102,7 +102,7 @@ def require_recorded_stake(config):
         return
     if recorded_stake_tokens(config) <= 0:
         raise process.OperationError(
-            "This solo validator has no stake on record, so it has nothing to "
+            "This validator has no stake on record, so it has nothing to "
             "bid with; set one first: evernode stake set -n " + config["name"]
         )
 
@@ -182,6 +182,20 @@ def _funding(spendable, stake_nanotokens):
     return rounds, "funds consecutive rounds"
 
 
+def _stake_at_elector(config):
+    """Say so when part of this validator's capital is at the elector now.
+
+    The spendable balance is what is liquid or recoverable. A stake frozen for
+    the round being validated, or accepted for the next one, is neither, and
+    the elector offers no getter for it that both of its implementations
+    share - so the validator sets the node reports are what is read.
+    """
+    duty = nodes.validator_duty(nodes.fetch_node_statistics(config))
+    if duty and duty.startswith("in the "):
+        return f"this node is {duty}, and its stake at the elector is not counted"
+    return None
+
+
 def describe_stake(store, config):
     """Report the configured stake beside what the chain says about it."""
     address = _staking_account(store, config)
@@ -191,6 +205,11 @@ def describe_stake(store, config):
     fixed = settings["MSIG_FIX_STAKE"]
     spendable = _spendable_nanotokens(observed, settings)
     rounds, funding = _funding(spendable, fixed * NANO)
+    # A validator bidding every round keeps two stakes at the elector and
+    # little else, which is healthy and must not read as "funds no bid".
+    at_elector = _stake_at_elector(config)
+    if at_elector and rounds < ROUNDS_IN_FLIGHT:
+        funding = f"{funding} from the liquid balance alone; {at_elector}"
     observed.update(
         {
             "wallet_address": address,
@@ -310,6 +329,12 @@ def set_stake(store, config, amount=None, mode=None):
             f"needs about {2 * tokens} tokens spendable, and this {noun} has "
             f"{spendable // NANO}."
         )
+    at_elector = _stake_at_elector(config) if mode else None
+    if at_elector:
+        warnings.append(
+            f"A mode sizes only what is liquid now; {at_elector}. To keep the "
+            "stake it validates with, name it with --amount."
+        )
     recoverable = int(observed["recoverable_nanotokens"])
     if recoverable > 0:
         warnings.append(
@@ -359,6 +384,13 @@ def set_stake(store, config, amount=None, mode=None):
 def recover(store, config):
     """Ask the elector to return the stake of rounds that have finished."""
     if configuration.validator_type(config) == "nominator":
-        # The hot wallet asks, but the money returns to the contract.
-        return nominator.recover(store, config)
+        # The hot wallet asks its contract, which asks the elector; the money
+        # returns to the contract.
+        pool = nominator.nominator_address(config)
+        return scripts.recover_solo_stake(
+            store, config, pool,
+            signer=nominator.hot_wallet_address(config),
+            destination=pool,
+            value=_settings(config)["NOMINATOR_OP_FEE"],
+        )
     return scripts.recover_solo_stake(store, config, _solo(store, config)[1])

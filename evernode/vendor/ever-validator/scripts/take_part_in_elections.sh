@@ -624,9 +624,11 @@ if ! LC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_CURR_ELECTIONS_DIR}/$
     "{\"dest\":\"$Stake_DST_Addr\",\"value\":$NANOSTAKE,\"bounce\":true,\"allBalance\":false,\"payload\":\"$validator_query_payload\"}")"
 then
     echoerr "###-ERROR(${SelfScriptName} line $LINENO): CANNOT create message boc file for elections!!!"
+    exit 1
 fi
-if [[ -f "${CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc}" ]];then
+if [[ ! -f "${CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc" ]];then
     echoerr "###-ERROR(${SelfScriptName} line $LINENO): Cannot find ${CURR_ELECTIONS_DIR}/${elections_id}_vaidator-query-msg.boc file!"
+    exit 1
 fi
 echo -e "\n-----------------------------------------------------------"
 echo "message to Elector was created and signed by ${MSIG_KEY_FILES_ARRAY[0]}"

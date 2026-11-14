@@ -144,7 +144,10 @@ evernode node create -n validator01
 
 If node preparation fails, the CLI removes the failed node's
 containers, database, keys, configuration and logs before returning the error.
-The shared image and other managed nodes are unchanged.
+The shared image and other managed nodes are unchanged. A create that was
+killed rather than failed (a dropped session, a reboot) leaves the node in
+place: finish it with `evernode node create --resume -n validator01`, then
+`evernode node start -n validator01`.
 
 The fresh-DePool flow uses these defaults when Enter is pressed:
 
@@ -272,7 +275,9 @@ originally determined the wallet address need not be among its current
 custodians. `wallet verify` rechecks the custodians and signature threshold.
 `depool verify` checks that the DePool names this wallet and installs the
 address file used by election scripts. These commands never print phrases,
-deploy contracts or make a stake.
+deploy contracts or make a stake. If a phrase was mistyped at `node create`,
+`wallet recover` fails its check: type them again with
+`evernode wallet recover -n validator01 --replace-seeds`.
 
 ## 6. Update one validator to a rebuilt image
 
@@ -305,7 +310,8 @@ in either set. It preserves the database, node configuration, wallet and keys.
 
 3. Attach the new image. The CLI stops the node and its StatsD exporter,
    rewrites only this node's Compose definition, restarts it, and requires two
-   consecutive synchronized checks before reporting success.
+   consecutive synchronized checks, within about a minute of the start, before
+   reporting success.
 
    ```bash
    evernode node update -n validator01 --image NEW_IMAGE --yes
@@ -320,8 +326,9 @@ in either set. It preserves the database, node configuration, wallet and keys.
    evernode election status -n validator01
    ```
 
-If the replacement does not become ready, inspect logs and explicitly return
-to the saved image:
+If the update reports the node as not synchronized, first give it time:
+`evernode node sync -n validator01 --wait`. If the replacement does not become
+ready, inspect logs and explicitly return to the saved image:
 
 ```bash
 evernode node logs -n validator01 --component stderr --tail 100
@@ -353,11 +360,12 @@ evernode node lsync --from SOURCE_NODE --to validator01
 evernode node sync -n validator01 --wait
 ```
 
-`lsync` refuses a running election schedule, a source in a current or next
-validator set, different image IDs, different global-network configurations,
-insufficient staging space, or a target already synchronized. If the copied
-database does not start, it restores the target's previous database. Do not
-use it to clone a validating source node.
+`lsync` refuses a running election schedule or an election run still in
+progress, a source in a current or next validator set, different image IDs,
+different global-network configurations, insufficient staging space, or a
+target already synchronized. If the copy fails or is interrupted, or the copied
+database does not start, it restores the target's previous database and starts
+both nodes again. Do not use it to clone a validating source node.
 
 ## Routine commands
 
@@ -382,6 +390,8 @@ evernode node sync-scripts -n validator01
 # to expire, or add --force when fencing a replaced validator.
 evernode node stop -n validator01 --timeout 30
 
+# Starting does not reinstall the schedule: run election start afterwards.
+# node restart needs election stop first, for the same reason.
 evernode node start -n validator01
 
 # Stop every managed node and every managed election schedule.

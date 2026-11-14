@@ -74,9 +74,10 @@ class NodeStateStore:
 
     def __init__(self, root):
         self.root = Path(root).expanduser().absolute()
-        if any(c in str(self.root) for c in ("\0", "\n", "\r", ":", "$")):
+        # '%' ends a command in a cron line, where this path is written too.
+        if any(c in str(self.root) for c in ("\0", "\n", "\r", ":", "$", "%")):
             raise process.OperationError(
-                "State directory contains unsupported Compose path characters"
+                "State directory contains unsupported Compose or cron path characters"
             )
 
     def node_directory(self, name):

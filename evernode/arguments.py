@@ -79,7 +79,8 @@ def build_argument_parser():
     c.add_argument(
         "--validator-type",
         choices=["depool", "solo", "nominator"],
-        help="How this validator stakes: through a DePool, or solo from its own Safe",
+        help="How this validator stakes: through a DePool, solo from its own "
+        "Safe, or from a nominator contract a cold owner holds",
     )
     c.add_argument("--network", choices=["main", "devnet"])
     c.add_argument("--workchain", type=int)
@@ -221,6 +222,12 @@ def build_argument_parser():
         q = wallet.add_parser(command)
         q.add_argument("-n", "--name", required=True)
         q.add_argument("--yes", action="store_true")
+        if command == "recover":
+            q.add_argument(
+                "--replace-seeds",
+                action="store_true",
+                help="Type the seed phrases again, replacing the stored ones",
+            )
     q = wallet.add_parser("verify")
     q.add_argument("-n", "--name", required=True)
     depool = groups.add_parser("depool").add_subparsers(dest="action", required=True)
@@ -281,7 +288,7 @@ def build_argument_parser():
     q.add_argument("--amount", type=int, required=True, help="Whole tokens to send")
     q.add_argument("--yes", action="store_true")
     stake = groups.add_parser(
-        "stake", help="Per-election stake of a solo validator"
+        "stake", help="Per-election stake of a solo or nominator validator"
     ).add_subparsers(dest="action", required=True)
     q = stake.add_parser(
         "set", help="Record what this validator stakes in each election"
@@ -315,7 +322,8 @@ def build_argument_parser():
     q.add_argument(
         "--transaction-id",
         required=True,
-        help="Exact id from stake status; bulk signing is refused",
+        help="Exact id from stake status (nominator info for a nominator "
+        "validator); bulk signing is refused",
     )
     q.add_argument("--yes", action="store_true")
     q = stake.add_parser(

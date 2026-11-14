@@ -113,7 +113,7 @@ echo "Public Key saved to ${KEY_FILES_DIR}/depool_pub.txt"
 #----------------------------------------------------------    
 # generate pub/sec keypair file
 if ! KEY_PAIR_JSON="$($CALL_CLI -j getkeypair -p "$SeedPhrase")"; then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair for seed phrase $SeedPhrase"
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair from the DePool seed phrase"
     exit 1
 fi
 if ! echo "$KEY_PAIR_JSON"|jq > "${KEY_FILES_DIR}/depool.keys.json"; then

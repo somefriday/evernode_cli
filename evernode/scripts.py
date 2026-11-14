@@ -149,8 +149,8 @@ def _record_script_failure(root, script, result):
     path = directory / name
     descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "w") as stream:
-        stream.write(result.stdout or "")
-        stream.write(result.stderr or "")
+        for text in (result.stdout, result.stderr):
+            stream.write(MNEMONIC.sub("[seed phrase withheld]", text or ""))
     return path
 
 
@@ -264,7 +264,7 @@ done
             f"{timeout}s. Check that it holds enough balance, then run this "
             "command again; a completed deployment is recognized and not repeated."
         ) from exc
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    return json.loads((result.stdout.strip().splitlines() or ["{}"])[-1])
 
 
 def verify_imported_safe(store, config, wallet_address, timeout=300):
@@ -363,12 +363,14 @@ jq -cn --arg elector "$elector_addr" --arg type "$elector_type" \
         [$pending.transactions[] | select(.dest == $elector)]}'
 """
 
-SOLO_STAKE_RECOVER = r"""
-source ./managed_ops.shinc
 # The signing handshake only runs when the wallet needs more than one
-# signature, and the threshold is a property of the wallet, not of env.sh.
-if ! custodians=$(Get_Account_Custodians_Info "$EVERNODE_WALLET");then
-    echoerr "###-ERROR: could not read the wallet's custodians, so it is unknown how many signatures a recovery needs."
+# signature, and the threshold is a property of the wallet, not of env.sh: the
+# election scripts read it themselves, so a standalone operation has to as well.
+READ_SIGNATURE_THRESHOLD = r"""
+source ./managed_ops.shinc
+signer=${EVERNODE_SIGNER:-$EVERNODE_WALLET}
+if ! custodians=$(Get_Account_Custodians_Info "$signer");then
+    echoerr "###-ERROR: could not read the wallet's custodians, so it is unknown how many signatures this needs."
     exit 1
 fi
 read -r Total_Custodians Required_Signs <<< "$custodians"
@@ -376,6 +378,15 @@ if [[ ! $Required_Signs =~ ^[0-9]+$ ]] || [[ $Required_Signs -lt 1 ]];then
     echoerr "###-ERROR: the wallet reported no usable signature threshold (${custodians})."
     exit 1
 fi
+"""
+
+# EVERNODE_WALLET is the account the elector owes. A solo validator's Safe is
+# that account and asks the elector itself; a nominator validator's Safe
+# (EVERNODE_SIGNER) asks its contract (RECOVER_DEST), which forwards the request
+# and receives the stake.
+SOLO_STAKE_RECOVER = READ_SIGNATURE_THRESHOLD + r"""
+dest=${RECOVER_DEST:-$elector_addr}
+value=${RECOVER_VALUE:-1000000000}
 if [[ $recoverable -le 0 ]];then
     jq -cn '{recovered_nanotokens: "0", note: "The elector owes this wallet nothing"}'
     exit 0
@@ -390,26 +401,26 @@ if [[ -z $payload ]];then
     echoerr "###-ERROR: the stake recovery request the node built is empty."
     exit 1
 fi
-request=$(jq -cn --arg dest "$elector_addr" --arg payload "$payload" \
-    '{dest: $dest, value: 1000000000, bounce: true, allBalance: false,
+request=$(jq -cn --arg dest "$dest" --argjson value "$value" --arg payload "$payload" \
+    '{dest: $dest, value: $value, bounce: true, allBalance: false,
       payload: $payload}')
 if ! $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/recover-msg.boc" \
         --lifetime "$MSG_LIFETIME" \
         --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
-        --abi "$INPL_SafeC_Wallet_ABI" "$EVERNODE_WALLET" submitTransaction \
+        --abi "$INPL_SafeC_Wallet_ABI" "$signer" submitTransaction \
         "$request" >/dev/null;then
     echoerr "###-ERROR: could not build the wallet transaction for stake recovery."
     exit 1
 fi
-if ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$elector_addr" \
-        "${INPL_ELECTIONS_WORK_DIR}/recover-msg.boc" 1000000000 "$payload" \
+if ! trans_id=$(Submit_And_Identify "$signer" "$dest" \
+        "${INPL_ELECTIONS_WORK_DIR}/recover-msg.boc" "$value" "$payload" \
         "${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json");then
     echoerr "###-ERROR: the stake recovery request did not reach the wallet."
     exit 1
 fi
-Complete_And_Await "$trans_id" "$EVERNODE_WALLET" "$VALIDATOR_NAME" \
+Complete_And_Await "$trans_id" "$signer" "$VALIDATOR_NAME" \
     "Stake recovery" Effect_Account_Balance_At_Least "$EVERNODE_WALLET" \
-    "$(( wallet_before + recoverable - 2000000000 ))" || exit 1
+    "$(( wallet_before + recoverable - value - 1000000000 ))" || exit 1
 read -r _ wallet_after _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
 jq -cn --arg requested "$recoverable" --arg before "$wallet_before" \
     --arg after "$wallet_after" --arg id "$trans_id" \
@@ -419,32 +430,31 @@ jq -cn --arg requested "$recoverable" --arg before "$wallet_before" \
 """
 
 
-WALLET_PENDING_TO = r"""set -eo pipefail
+WALLET_PENDING = r"""set -eo pipefail
 set +u
 source ./env.sh
 source ./functions.shinc
 read -r wallet_status wallet_balance _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
 pending="$(Get_MSIG_Trans_List "$EVERNODE_WALLET")"
-jq -cn --arg dest "$PENDING_DEST" --arg status "$wallet_status" \
+jq -cn --arg status "$wallet_status" \
     --arg balance "$wallet_balance" --argjson pending "$pending" \
     '{wallet_status: $status, wallet_balance_nanotokens: $balance,
-      pending_transactions: [$pending.transactions[] | select(.dest == $dest)]}'
+      pending_transactions: $pending.transactions}'
 """
 
 
-def read_wallet_pending_to(store, config, wallet_address, destination, timeout=300):
-    """What a Safe holds and what it has left unsigned against one address.
+def read_wallet_pending(store, config, wallet_address, timeout=300):
+    """What a Safe holds and every transaction it has left unsigned.
 
-    An unsigned instruction blocks the next one, so the address it is
-    addressed to is what matters: the elector for a solo validator, the
-    nominator contract for a nominator validator.
+    A nominator validator's Safe sends to its contract and, once, to the
+    contract's deployer; whichever is left half-signed has to be seen to be
+    finished, so nothing is filtered by destination.
     """
     scripts_dir = _import_verification_context(store, config)
     environment = os.environ.copy()
     environment["EVERNODE_WALLET"] = wallet_address
-    environment["PENDING_DEST"] = destination
     result = process.execute_command(
-        ["bash", "-c", WALLET_PENDING_TO],
+        ["bash", "-c", WALLET_PENDING],
         cwd=scripts_dir,
         env=environment,
         timeout=timeout,
@@ -453,7 +463,7 @@ def read_wallet_pending_to(store, config, wallet_address, destination, timeout=3
         return json.loads(result.stdout.strip().splitlines()[-1])
     except (IndexError, ValueError) as exc:
         raise process.OperationError(
-            "Could not read the wallet's pending transactions to " + destination
+            "Could not read the pending transactions of " + wallet_address
         ) from exc
 
 
@@ -461,10 +471,18 @@ NOMINATOR_FUND_DEPLOYER = r"""set -eo pipefail
 set +u
 source ./env.sh
 source ./functions.shinc
-source ./managed_ops.shinc
+""" + READ_SIGNATURE_THRESHOLD + r"""
 if [[ -z ${FUND_DEST:-} ]] || [[ -z ${FUND_VALUE:-} ]] || [[ -z ${FUND_BUDGET:-} ]];then
     echoerr "###-ERROR: the deployer address, funding value and budget are all required."
     exit 1
+fi
+# A deployment retried after its funding arrived must not fund the deployer again.
+read -r deployer_status deployer_balance _ <<< "$(Get_Account_Info "$FUND_DEST")"
+if [[ $deployer_balance =~ ^[0-9]+$ ]] && [[ $deployer_balance -ge $FUND_BUDGET ]];then
+    jq -cn --arg status "$deployer_status" --arg balance "$deployer_balance" \
+        '{transaction_id: "", deployer_status: $status,
+          deployer_balance_nanotokens: $balance, note: "already funded"}'
+    exit 0
 fi
 read -r _ wallet_before _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
 if [[ $wallet_before -lt $(( FUND_VALUE + 1000000000 )) ]];then
@@ -483,9 +501,23 @@ if ! $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/nominator-fund
     echoerr "###-ERROR: could not build the wallet transaction that funds the deployer."
     exit 1
 fi
-if ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$FUND_DEST" \
-        "${INPL_ELECTIONS_WORK_DIR}/nominator-fund.boc" "$FUND_VALUE" "" \
-        "${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" false);then
+# The wallet records a transfer without a body as an empty cell, and that is
+# what this payment is recognised by among its pending transactions.
+empty_body="te6ccgEBAQEAAgAAAA=="
+key_file="${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json"
+# A rerun finishes the payment an interrupted run proposed instead of proposing
+# a second one. With one signature the payment is never left pending.
+trans_id=""
+if [[ $Required_Signs -gt 1 ]];then
+    trans_id=$(Find_Matching_Pending_Trans "$EVERNODE_WALLET" "$FUND_DEST" \
+        "$FUND_VALUE" "$empty_body" "$key_file" "" false) || exit 1
+    if [[ -z $trans_id ]];then
+        Require_Queue_Space "$EVERNODE_WALLET" "$key_file" || exit 1
+    fi
+fi
+if [[ -z $trans_id ]] && ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$FUND_DEST" \
+        "${INPL_ELECTIONS_WORK_DIR}/nominator-fund.boc" "$FUND_VALUE" "$empty_body" \
+        "$key_file" false);then
     echoerr "###-ERROR: the funding transaction did not reach the wallet."
     exit 1
 fi
@@ -593,17 +625,29 @@ def read_solo_stake_state(store, config, wallet_address, timeout=300):
         ) from exc
 
 
-def recover_solo_stake(store, config, wallet_address, timeout=900):
+def recover_solo_stake(
+    store, config, wallet_address, *, signer=None, destination=None, value=None,
+    timeout=900,
+):
     """Ask the elector to return finished rounds, and see the balance rise.
 
     This is the same request the scheduled election preparation makes, sent on
     its own so it does not have to wait for an election window. It submits one
     transaction and signs it through against the wallet's own record of who has
     signed, exactly as every other operation does.
+
+    `wallet_address` is the account the elector owes. A nominator validator
+    names its Safe as `signer` and its contract as `destination`, with the
+    `value` an instruction to the contract carries.
     """
     scripts_dir = _import_verification_context(store, config)
     environment = os.environ.copy()
     environment["EVERNODE_WALLET"] = wallet_address
+    for name, item in (
+        ("EVERNODE_SIGNER", signer), ("RECOVER_DEST", destination), ("RECOVER_VALUE", value),
+    ):
+        if item is not None:
+            environment[name] = str(item)
     result = process.execute_command(
         ["bash", "-c", SOLO_STAKE_PRELUDE + SOLO_STAKE_RECOVER],
         cwd=scripts_dir,
@@ -713,5 +757,7 @@ jq -er '.validatorWallet' <<< "$info"
     result = process.execute_command(
         ["bash", "-c", program], cwd=scripts_dir, env=environment, timeout=timeout
     )
-    wallet_address = result.stdout.strip().splitlines()[-1]
-    return {"address": depool_address, "validator_wallet": wallet_address}
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        raise process.OperationError(f"The DePool {depool_address} named no validator wallet")
+    return {"address": depool_address, "validator_wallet": lines[-1]}

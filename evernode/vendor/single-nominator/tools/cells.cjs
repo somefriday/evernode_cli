@@ -13,7 +13,10 @@ const {Address, beginCell, Cell, contractAddress, storeMessage, internal,
 const {compileFunc} = require('@ton-community/func-js');
 
 const read = p => Cell.fromBoc(fs.readFileSync(p))[0];
-const write = (p, c) => fs.writeFileSync(p, c.toBoc());
+// Written without the optional CRC, which is how ever-cli and a multisig's own
+// getTransactions serialize a cell: the election scripts recognise the bid they
+// submitted by comparing this file's base64 with the payload the wallet reports.
+const write = (p, c) => fs.writeFileSync(p, c.toBoc({idx: false, crc32: false}));
 const serialize = msg => beginCell().store(storeMessage(msg)).endCell();
 const hex = n => n.toString(16).padStart(64, '0');
 

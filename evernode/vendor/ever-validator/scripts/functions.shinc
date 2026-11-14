@@ -117,8 +117,8 @@ case "$NetName" in
         $CALL_CLI config endpoint reset &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't reset endpoint"
         $CALL_CLI config endpoint add "$NETWORK_TYPE" "$MainNet_DApp_List"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't add endpoint"
         $CALL_CLI config --url "$NETWORK_TYPE" &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set url"
-        [[ -n "$DAPP_Project_id" ]] && $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
-        [[ -n "$DAPP_access_key" ]] && $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
+        [[ -z "$DAPP_Project_id" ]] || $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
+        [[ -z "$DAPP_access_key" ]] || $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
         export ELECTOR_TYPE="${ELECTOR_TYPE:=fift}"                       # can be 'solidity' or 'fift'
         export GLOBAL_CONFIG_SRC="${CONFIGS_DIR}/mainnet/$NET_GLOBAL_CFG_FILE_NAME"
         ;;
@@ -127,8 +127,8 @@ case "$NetName" in
         $CALL_CLI config endpoint reset &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't reset endpoint"
         $CALL_CLI config endpoint add "$NETWORK_TYPE" "$DevNet_DApp_List"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't add endpoint"
         $CALL_CLI config --url "$NETWORK_TYPE"  &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set url"
-        [[ -n "$DAPP_Project_id" ]] && $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
-        [[ -n "$DAPP_access_key" ]] && $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
+        [[ -z "$DAPP_Project_id" ]] || $CALL_CLI config --project_id "$DAPP_Project_id"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set project_id"
+        [[ -z "$DAPP_access_key" ]] || $CALL_CLI config --access_key "$DAPP_access_key"   &>/dev/null || echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): Can't set access_key"
         export ELECTOR_TYPE="${ELECTOR_TYPE:=fift}"                          # can be 'solidity' or 'fift'
         export GLOBAL_CONFIG_SRC="${CONFIGS_DIR}/devnet/$NET_GLOBAL_CFG_FILE_NAME"
         ;;

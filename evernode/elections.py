@@ -80,15 +80,20 @@ status=${{PIPESTATUS[0]}}
 case $status in
     0) ;;
     3)
-        # An interrupted attempt leaves a half-signed request to the elector.
-        # Preparation refuses to add a second one, and the bid step finishes
-        # the one already in the wallet instead of queueing another.
-        echo "+++-INFO: preparation stopped at a pending request to the elector;"
-        echo "+++-INFO: the bid step will finish that one rather than add another."
+        # An interrupted attempt leaves a half-signed request in the wallet.
+        # Neither step adds a second one: both wait until it is confirmed or
+        # the wallet expires it, an hour after it was made.
+        echo "+++-INFO: preparation stopped at a pending request in the wallet;"
+        echo "+++-INFO: the bid step waits for it too. Finish it with evernode stake confirm,"
+        echo "+++-INFO: or it expires an hour after it was made."
         ;;
     *)
-        echo "+++-WARNING: preparation exited ${{status}}; bidding anyway, because a"
-        echo "+++-WARNING: solo bid goes to the elector and does not depend on it."
+        # Most runs find nothing to prepare, and say so with the same exit code
+        # a failure has: only a failure is worth a warning in this log.
+        if ! grep -qE 'already participated in these elections|There is no elections now' "$log";then
+            echo "+++-WARNING: preparation exited ${{status}}; bidding anyway, because a"
+            echo "+++-WARNING: solo bid goes to the elector and does not depend on it."
+        fi
         ;;
 esac
 if grep -qE 'recover_amount = [1-9][0-9]* nanotokens' "$log";then
@@ -162,7 +167,7 @@ def enable_node_election_schedule(store, config, executable="/usr/local/bin/ever
         "# Managed by evernode\n"
         "SHELL=/bin/bash\n"
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        f"*/{interval} * * * * root {runner} >> {log} 2>&1\n"
+        f"*/{interval} * * * * root {shlex.quote(str(runner))} >> {shlex.quote(str(log))} 2>&1\n"
     )
     path = node_election_cron_path(name)
     temporary = path.with_name(path.name + ".tmp")
@@ -248,9 +253,11 @@ def hold_election_lock(store, name):
     """Hold the same lock a scheduled election run takes.
 
     A scheduled sequence already in progress keeps this lock for its whole
-    run, so a maintenance action waits for it instead of changing files
-    underneath a signing attempt.
+    run, so a maintenance action is refused until it finishes instead of
+    changing files underneath a signing attempt.
     """
+    # A mistyped name is refused by name, not by a missing lock directory.
+    store.validate_node_directory(name)
     path = store.node_directory(name) / "elections" / "evernode-election.lock"
     # The reference runner creates this lock itself under the default umask, so
     # only its private parent directory and the absence of a symlink are checked.

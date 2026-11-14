@@ -20,7 +20,9 @@ never ask for an owner key.
 """
 
 import json
+import re
 import shutil
+import sys
 
 from . import configuration, docker, process, storage
 
@@ -31,14 +33,6 @@ NANO = 10**9
 # without recreating a node that existed before this mode.
 WORK_SUBDIRECTORY = "elections/nominator"
 NODE_WORK_DIRECTORY = "/ever-node/elections/nominator"
-
-# What the contract itself requires attached to an instruction, and what the
-# reference deployment observed to be enough. Both are budgets at one set of
-# network prices, not constants: deploy() estimates from the live config.
-MINIMUM_OPERATION_FEE = 12 * 10**8
-DEFAULT_OPERATION_FEE = 2 * NANO
-
-OWNER_OPERATIONS = ("withdraw", "withdraw-all", "rotate")
 
 
 def _require_nominator(config):
@@ -85,7 +79,7 @@ def hot_wallet_address(config):
     return address
 
 
-def _run_tools(store, config, program, timeout=300):
+def _run_tools(store, config, program, timeout=300, environment=None):
     """Run a shell program inside the pinned contract-tool image.
 
     The tools need Node.js; a validator host should not. They see only this
@@ -111,6 +105,11 @@ def _run_tools(store, config, program, timeout=300):
             f"{work}:/work",
             "-w",
             "/opt/nominator",
+            *(
+                part
+                for name, value in (environment or {}).items()
+                for part in ("-e", f"{name}={value}")
+            ),
             image,
             program,
         ],
@@ -166,16 +165,6 @@ def _manifest(store, config):
         return json.loads(path.read_text())
     except ValueError as exc:
         raise process.OperationError("The prepared contract manifest is unreadable") from exc
-
-
-def _pinned(store, config):
-    result = _run_tools(store, config, "cat PINNED.json")
-    try:
-        return json.loads(result.stdout)
-    except ValueError as exc:
-        raise process.OperationError(
-            "The contract-tool image did not report its pinned versions"
-        ) from exc
 
 
 def owner_address(config):
@@ -266,24 +255,24 @@ def _stage_tool_sources(source, staging):
 def build_tools_image(store, config, source, recipe, timeout=1800):
     """Build the pinned contract-tool image, or reuse the one already built.
 
-    The tag is a fingerprint of the build context, so an image built from
-    different vendored sources is a different image rather than the same tag
-    with different bytes. The build itself fails if the contract does not
-    compile to its recorded code hash, so a usable image is evidence that the
-    bytecode is the reviewed one.
+    The tag is a fingerprint of the whole build context, recipe included, so
+    an image built from different vendored sources or a changed recipe is a
+    different image rather than the same tag with different bytes. The build
+    itself fails if the contract does not compile to its recorded code hash,
+    so a usable image is evidence that the bytecode is the reviewed one.
     """
     staging = work_directory(store, config, create=True) / ".tools-build"
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(mode=0o700)
     try:
-        root = _stage_tool_sources(source, staging)
+        _stage_tool_sources(source, staging)
+        shutil.copyfile(recipe, staging / "Dockerfile")
         tag = "local/evernode-nominator-tools:" + storage.calculate_directory_fingerprint(
-            root
+            staging
         )[:16]
         if docker.image_exists(tag):
             return tag, False
-        shutil.copyfile(recipe, staging / "Dockerfile")
         process.execute_command(
             [
                 "docker",
@@ -502,9 +491,27 @@ def deploy(store, config):
 
     budget = int(settings["NOMINATOR_DEPLOY_VALUE"])
     funding = budget + int(settings["NOMINATOR_DEPLOY_MARGIN"])
+    # With several signatures the payment is proposed, then approved; cut off in
+    # between, it waits half-signed in the Safe until it expires an hour later.
+    signatures = int((config.get("wallet") or {}).get("required_signatures") or 1)
+    if signatures > 1:
+        print(
+            f"Paying the deployer takes {signatures} signatures from the Safe: "
+            "do not interrupt (Ctrl+C) until the payment is reported done.",
+            file=sys.stderr,
+            flush=True,
+        )
     funded = scripts.fund_nominator_deployer(
         store, config, wallet, factory, funding, budget
     )
+    if signatures > 1:
+        print(
+            f"Deployer payment done (Safe transaction {funded['transaction_id']})."
+            if funded.get("transaction_id")
+            else "The deployer was already funded; nothing was paid.",
+            file=sys.stderr,
+            flush=True,
+        )
     # The deployer is triggered by an unsigned external message: its code can
     # only send the message in its data, so nothing has to authorize it.
     _broadcast(config, "factory-deploy.boc")
@@ -534,7 +541,7 @@ node tools/cells.cjs account /work/deployed.account.boc
 def verify(store, config):
     """Check the deployed account against the manifest, before any principal.
 
-    Four things have to hold and none can be assumed from a successful
+    Three things have to hold and none can be assumed from a successful
     deployment: the account is active, its code is the bytecode that was
     reviewed, and its two roles are the pair that was intended. All of them
     are read out of the account state the node hands over, so the code hash
@@ -614,7 +621,7 @@ def info(store, config):
     hot = manifest["validator"]
     contract = _account(config, pool)
     wallet = _account(config, hot)
-    wallet_state = scripts.read_wallet_pending_to(store, config, hot, pool)
+    wallet_state = scripts.read_wallet_pending(store, config, hot)
     elector = scripts.read_elector_credit(store, config, pool)
     liquid = int(contract.get("balance") or 0)
     reserve = int(settings["NOMINATOR_RESERVE"])
@@ -663,26 +670,12 @@ def _owner_request(store, config, *, kind, out, argument="", description, warnin
     _require_nominator(config)
     manifest = _manifest(store, config)
     work = work_directory(store, config, create=True)
-    arguments = [
-        "docker",
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "-v",
-        f"{work}:/work",
-        "-w",
-        "/opt/nominator",
-        "-e",
-        f"KIND={kind}",
-        "-e",
-        f"OUT={out}",
-        "-e",
-        f"ARGUMENT={argument}",
-        config["nominator_tools_image"],
+    result = _run_tools(
+        store,
+        config,
         OWNER_BODY_PROGRAM,
-    ]
-    result = process.execute_command(arguments, timeout=300)
+        environment={"KIND": kind, "OUT": out, "ARGUMENT": argument},
+    )
     (work / out).chmod(0o600)
     body = result.stdout.strip().splitlines()[-1]
     settings = _settings(config)
@@ -750,10 +743,10 @@ def withdraw(store, config, *, amount=None, withdraw_all=False):
 
 def rotate(store, config, *, validator_address):
     """Prepare an owner replacement of the hot wallet address."""
-    if not str(validator_address).startswith("-1:"):
+    if not re.fullmatch(r"-1:[0-9a-fA-F]{64}", str(validator_address)):
         raise process.OperationError(
             "The hot wallet instructs the elector through this contract, so "
-            "it must be a masterchain address starting with -1:"
+            "it must be a masterchain address: -1: and 64 hex digits"
         )
     return _owner_request(
         store,
@@ -768,9 +761,9 @@ def rotate(store, config, *, validator_address):
         warning=(
             "This changes who may bid and recover. It does not move stake "
             "already held by the elector, and it does not rotate the node's "
-            "consensus or ADNL keys. Update this node's recorded hot wallet "
-            "afterwards, or it will keep signing with a wallet the contract "
-            "no longer accepts."
+            "consensus or ADNL keys. Once it executes, the contract ignores "
+            "this node's Safe: stop this node's elections first (evernode "
+            "election stop), because its bids would only spend gas."
         ),
     )
 
@@ -812,6 +805,7 @@ def staking_state(store, config):
     pool = nominator_address(config)
     contract = _account(config, pool)
     credit = scripts.read_elector_credit(store, config, pool)
+    pending = scripts.read_wallet_pending(store, config, hot_wallet_address(config))
     return {
         "staking_account": pool,
         "staking_account_kind": "nominator contract",
@@ -821,5 +815,6 @@ def staking_state(store, config):
         "active_election_id": credit.get("active_election_id", "0"),
         "elector": credit.get("elector"),
         "elector_type": credit.get("elector_type"),
-        "pending_elector_transactions": [],
+        # What the Safe has left unsigned, by the name nominator info gives it.
+        "pending_wallet_transactions": pending.get("pending_transactions", []),
     }

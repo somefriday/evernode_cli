@@ -379,7 +379,10 @@ def remove_managed_image(store, image_reference, *, dry_run=False):
         users = [
             c["name"]
             for c in nodes
-            if c["image_id"] == record["image_id"] and c["phase"] != "removed"
+            if c["phase"] != "removed"
+            and record["image_id"]
+            # node update --rollback returns to the image it replaced
+            in (c["image_id"], (c.get("image_rollback") or {}).get("image_id"))
         ]
         ids = process.execute_command(["docker", "ps", "-aq"]).stdout.split()
         if ids:

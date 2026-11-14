@@ -1,6 +1,5 @@
 """Interactive preparation and startup of one managed validator node."""
 
-import getpass
 import ipaddress
 import re
 import sys
@@ -73,6 +72,43 @@ def choose_node_image(store, args):
     return record, node_ref, True
 
 
+NOMINATOR_SAFE_KEYS = [
+    ("one", "One key - a single seed phrase signs every operation (recommended)"),
+    ("several", "Several keys - each operation is proposed, then approved by others"),
+]
+
+
+def choose_safe_keys(args, nominator, importing):
+    """Return (custodians, required signatures) for the node's Safe.
+
+    A nominator validator's Safe only instructs its contract: the key it holds
+    cannot move the principal, so a new one is offered a single key first.
+    Several are still allowed, and the kit signs them the same way it signs a
+    solo validator's. Flags, an imported Safe and the other validator types
+    keep the plain prompts.
+    """
+    keys = None
+    flagged = args.custodians is not None or args.required_signatures is not None
+    if nominator and not importing and not flagged:
+        keys = ui.select_choice(
+            None, "Safe keys", NOMINATOR_SAFE_KEYS, flag="--custodians", default="one"
+        )
+    if keys == "one":
+        return 1, 1
+    several = keys == "several" or not nominator
+    custodians = (
+        args.custodians
+        if args.custodians is not None
+        else int(ui.prompt_for_value(None, "Multisig custodians", "3" if several else "1"))
+    )
+    required = (
+        args.required_signatures
+        if args.required_signatures is not None
+        else int(ui.prompt_for_value(None, "Required signatures", "2" if several else "1"))
+    )
+    return custodians, required
+
+
 def select_project_source(args):
     """Return the kit a new node takes its scripts from, as (path, repo, ref).
 
@@ -128,6 +164,15 @@ def handle_node_creation(store, args):
                     "required_signatures",
                     "wallet_address",
                     "depool_address",
+                    "validator_type",
+                    "workchain",
+                    "cron_interval",
+                    "depool_type",
+                    "validator_assurance",
+                    "min_stake",
+                    "reward_fraction",
+                    "balance_threshold",
+                    "owner_address",
                 )
             )
             or args.import_wallet
@@ -365,26 +410,15 @@ def handle_node_creation(store, args):
     config["metrics_port"] = docker.select_available_node_port(
         store, 9102, "tcp", args.metrics_port
     )
-    # A nominator validator's Safe only instructs its contract, so one
-    # custodian is the usual choice: the key it holds cannot move the
-    # principal. More are still allowed, and the kit signs them the same way
-    # it signs a solo validator's.
-    custodians = (
-        args.custodians
-        if args.custodians is not None
-        else int(
-            ui.prompt_for_value(None, "Multisig custodians", "1" if nominator else "3")
-        )
-    )
-    required = (
-        args.required_signatures
-        if args.required_signatures is not None
-        else int(
-            ui.prompt_for_value(None, "Required signatures", "1" if nominator else "2")
-        )
-    )
+    custodians, required = choose_safe_keys(args, nominator, importing)
     wallet_address = args.wallet_address
     depool_address = args.depool_address
+    if not importing and (wallet_address or depool_address):
+        # A new wallet's address is generated; one named here could never match it.
+        raise process.OperationError(
+            "--wallet-address and --depool-address name existing contracts; "
+            "add --import-wallet to recover them"
+        )
     if importing:
         wallet_address = ui.prompt_for_value(wallet_address, "Existing wallet address")
         if solo or nominator:
@@ -461,16 +495,16 @@ def handle_node_creation(store, args):
         with store.acquire_operation_lock(name):
             provisioning.provision_node_workspace(store, config, *kit)
             if importing:
-                phrases = [
-                    getpass.getpass(f"Seed phrase {index}/{custodians}: ")
-                    for index in range(1, custodians + 1)
-                ]
-                wallets.store_import_seeds(store, config, phrases)
+                wallets.store_import_seeds(
+                    store, config, wallets.read_import_seeds(custodians)
+                )
             nodes.start_node(store, config)
-            config = store.load_node_config(name)
-            config["setup_stage"] = "node-started"
-            store.save_node_config(config)
     except BaseException:
+        # Only a workspace this run reserved is this run's to remove. Provisioning
+        # records the phase once it has checked, under the registry lock, that
+        # the name was free; a directory that was already there is left alone.
+        if "phase" not in config:
+            raise
         try:
             nodes.discard_failed_creation(store, config)
         except (OSError, process.OperationError) as cleanup_error:

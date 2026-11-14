@@ -151,7 +151,7 @@ if [[ $? -ne 0 ]];then
     exit 1
 fi
 if [[ -z $Trans_Entry ]];then
-    echoerr "###-ERROR(${SelfScriptName} line $LINENO): wallet ${MSIG_ADDR} does not hold a pending transaction ${Trans_ID}. It may have executed already, or expired - this wallet keeps a pending transaction for $(Get_MSIG_Expiration_Time "${MSIG_ADDR}")s. Read the current list with 'evernode depool info'. Nothing was sent."
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): wallet ${MSIG_ADDR} does not hold a pending transaction ${Trans_ID}. It may have executed already, or expired - this wallet keeps a pending transaction for $(Get_MSIG_Expiration_Time "${MSIG_ADDR}")s. Read the current list with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator. Nothing was sent."
     exit 1
 fi
 
@@ -194,7 +194,7 @@ if ! Sign_To_Execution "${MSIG_ADDR}" "${KeyFileName}" "${Trans_ID}" "${Sign_Dea
 fi
 
 echo "\$\$\$-SUCCESS: transaction ${Trans_ID} executed; ${Trans_Value} nanotokens were sent to ${Trans_Dest}."
-echo "---INFO: the transfer is an internal message the destination can still refuse. Check the result with 'evernode depool info'."
+echo "---INFO: the transfer is an internal message the destination can still refuse. Check the result with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator."
 echo "+++INFO: $(basename "$0") FINISHED $(date +%s) / $(date  +'%F %T %Z')"
 echo "================================================================================================"
 

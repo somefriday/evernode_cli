@@ -42,7 +42,14 @@ def _acknowledge_secret_backup():
         )
 
 
-def _confirmation_question(args, name):
+def _confirmation_question(args, config):
+    name = config["name"]
+    # A nominator's stake leaves from, and returns to, its contract.
+    account = (
+        "nominator contract"
+        if configuration.validator_type(config) == "nominator"
+        else "Safe"
+    )
     if (args.group, args.action) == ("depool", "withdraw"):
         if args.cancel:
             return f"Cancel the pending DePool withdrawal for {name} and resume reinvestment?"
@@ -64,9 +71,9 @@ def _confirmation_question(args, name):
     if (args.group, args.action) == ("stake", "set"):
         if args.amount is not None:
             return (
-                f"Stake {args.amount} tokens from {name}'s Safe in every "
+                f"Stake {args.amount} tokens from {name}'s {account} in every "
                 "election? A stake is locked until its round finishes, so "
-                "consecutive rounds need about twice that on the wallet."
+                f"consecutive rounds need about twice that in the {account}."
             )
         mode = "single" if args.all_balance else args.mode
         target = (
@@ -92,7 +99,7 @@ def _confirmation_question(args, name):
             "Review what it authorizes before submitting it."
         )
     if (args.group, args.action) == ("stake", "recover"):
-        return f"Ask the elector to return {name}'s finished-round stake to its Safe?"
+        return f"Ask the elector to return {name}'s finished-round stake to its {account}?"
     if (args.group, args.action) == ("stake", "confirm"):
         return (
             f"Add {name}'s remaining signatures to transaction "
@@ -115,6 +122,8 @@ ELECTION_LOCKED_ACTIONS = (
     # Not a transaction, but it rewrites the env.sh a running election reads
     # while it is sizing a bid.
     ("stake", "set"),
+    # Rewrites env.sh as well: the contract address and the tools image a bid uses.
+    ("nominator", "prepare"),
     ("nominator", "deploy"),
     ("nominator", "submit"),
 )
@@ -143,7 +152,7 @@ def handle_setup_action(store, args):
             stack.enter_context(elections.hold_election_lock(store, name))
         config = _require_setup_node(store, name, action)
         if mutating:
-            ui.confirm_operation(args.yes, _confirmation_question(args, name))
+            ui.confirm_operation(args.yes, _confirmation_question(args, config))
         if action == ("wallet", "create"):
             result_config, result, phrases = wallets.wallet_create(store, config)
             _print_new_secrets("Safe wallet", result["wallet"]["address"], phrases)
@@ -151,6 +160,8 @@ def handle_setup_action(store, args):
         elif action == ("wallet", "deploy"):
             result_config, result = wallets.wallet_deploy(store, config)
         elif action == ("wallet", "recover"):
+            if args.replace_seeds or not wallets.import_seeds_stored(store, config):
+                wallets.enter_import_seeds(store, config, replace=args.replace_seeds)
             result_config, result = wallets.wallet_recover(store, config)
         elif action == ("wallet", "verify"):
             result_config, result = wallets.wallet_verify(store, config)

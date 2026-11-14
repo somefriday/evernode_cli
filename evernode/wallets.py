@@ -1,8 +1,10 @@
 """Wallet-profile state and root-only seed recovery helpers."""
 
+import getpass
 import json
 import os
 import re
+import sys
 
 from . import configuration, process, scripts, storage
 
@@ -118,15 +120,30 @@ def ensure_owner_is_external(store, config, owner):
             )
 
 
-def store_import_seeds(store, config, phrases):
+def read_import_seeds(custodians):
+    """Ask for each custodian's phrase at a hidden terminal prompt, nowhere else."""
+    if not sys.stdin.isatty():
+        raise process.OperationError(
+            "Seed import requires an interactive terminal; seed phrases are never accepted as command arguments"
+        )
+    return [
+        getpass.getpass(f"Seed phrase {index}/{custodians}: ")
+        for index in range(1, custodians + 1)
+    ]
+
+
+def import_seeds_stored(store, config):
+    return (seed_directory(store, config) / f"{config['name']}_seed_1.txt").is_file()
+
+
+def store_import_seeds(store, config, phrases, *, replace=False):
     """Write phrases only to the files read by Msig-prep.sh, mode 0600."""
     profile = node_wallet_profile(config)
     if len(phrases) != profile["custodians"]:
         raise process.OperationError("Seed phrase count does not match custodian count")
-    directory = seed_directory(store, config)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    storage.validate_private_path(directory)
-    for index, phrase in enumerate(phrases, 1):
+    # Every phrase is checked before any file is written, so a refused one
+    # leaves the stored set as it was.
+    for phrase in phrases:
         if (
             not isinstance(phrase, str)
             or "\n" in phrase
@@ -136,11 +153,20 @@ def store_import_seeds(store, config, phrases):
             raise process.OperationError(
                 "Each seed phrase must be a single mnemonic phrase"
             )
-        target = directory / f"{config['name']}_seed_{index}.txt"
+    directory = seed_directory(store, config)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    storage.validate_private_path(directory)
+    targets = [
+        directory / f"{config['name']}_seed_{index}.txt"
+        for index in range(1, len(phrases) + 1)
+    ]
+    if not replace and any(target.exists() for target in targets):
+        raise process.OperationError(
+            "Seed files already exist; refusing to replace an imported wallet"
+        )
+    for target, phrase in zip(targets, phrases):
         if target.exists():
-            raise process.OperationError(
-                "Seed files already exist; refusing to replace an imported wallet"
-            )
+            target.unlink()
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
             output.write(phrase.strip() + "\n")
@@ -318,7 +344,7 @@ def wallet_workchain(config):
 def require_validator_type(config, expected, alternative):
     """Keep DePool actions off a solo validator, and the reverse."""
     actual = configuration.validator_type(config)
-    if actual != expected:
+    if actual not in (expected if isinstance(expected, tuple) else (expected,)):
         raise process.OperationError(
             f"This node is a {actual} validator; use evernode {alternative}"
         )
@@ -380,11 +406,28 @@ def wallet_create(store, config):
     )
 
 
+def enter_import_seeds(store, config, *, replace):
+    """Ask for the phrases at wallet recover: a create that was interrupted and
+    resumed never asked for them, and a phrase typed blind can be wrong."""
+    profile = _require_stage(config, "import", "node-started")
+    store_import_seeds(
+        store, config, read_import_seeds(profile["custodians"]), replace=replace
+    )
+
+
 def wallet_recover(store, config):
     profile = _require_stage(config, "import", "node-started")
-    details = prepare_wallet(store, config, imported=True)
-    observed = scripts.verify_imported_safe(store, config, profile["wallet_address"])
-    _check_imported_wallet(profile, details["public_keys"], observed)
+    try:
+        # A phrase that is no mnemonic at all fails in the generator; one that
+        # is valid but not a custodian's fails the comparison with the chain.
+        details = prepare_wallet(store, config, imported=True)
+        observed = scripts.verify_imported_safe(store, config, profile["wallet_address"])
+        _check_imported_wallet(profile, details["public_keys"], observed)
+    except process.OperationError as exc:
+        raise process.OperationError(
+            f"{exc}\nIf a phrase was mistyped, type them again: evernode wallet "
+            f"recover -n {config['name']} --replace-seeds"
+        ) from None
     _install_imported_wallet_files(store, config, profile["wallet_address"])
     config["setup_stage"] = "wallet-recovered"
     return config, {
@@ -486,11 +529,35 @@ def depool_deploy(store, config):
     scripts.wait_for_active_account(
         store, config, profile["depool_address"], "DePool"
     )
+    require_constructed_depool(store, config, profile)
     config["setup_stage"] = "depool-deployed"
     return config, {
         "stage": config["setup_stage"],
         "next": f"Run: evernode depool stake-initial -n {config['name']}",
     }
+
+
+def require_constructed_depool(store, config, profile):
+    """An active account is not yet a working DePool: a deploy whose constructor
+    fails still activates it (on a new network the constructor needs p32, which
+    exists only after the first validator-set switch). The DePool is set up only
+    once it names this node's Safe as its validator wallet; until then the stage
+    stays depool-prepared. DePool_deploy.sh deploys only an Uninit account, so
+    such a DePool cannot be deployed again: the message says so, rather than
+    reporting success and leaving the stake that follows to fail."""
+    address = profile["depool_address"]
+    try:
+        found = scripts.verify_imported_depool(store, config, address)["validator_wallet"]
+    except process.OperationError as exc:
+        found = f"no answer ({exc})"
+    if found.lower() != profile["wallet_address"].lower():
+        raise process.OperationError(
+            f"The DePool {address} is active, but its constructor did not complete: its validator "
+            f"wallet reads {found}, not this node's Safe {profile['wallet_address']}. The stage stays "
+            "depool-prepared. An active account cannot be deployed again, so this node needs a new "
+            "DePool. On a new network, deploy DePools only after the first validator-set switch: "
+            "the constructor needs p32."
+        )
 
 
 def depool_stake_initial(store, config):
@@ -518,12 +585,15 @@ def depool_stake_initial(store, config):
 
 
 OPERATIONAL_STAGES = ("ready-for-elections", "imported")
+# The initial stake is sent at depool-deployed, so what it left behind has to be
+# readable, and finishable, there too.
+DEPLOYED_STAGES = ("depool-deployed",) + OPERATIONAL_STAGES
 
 
-def _require_operational_depool(config):
+def _require_operational_depool(config, stages=OPERATIONAL_STAGES):
     """Stake operations need a deployed or imported DePool, in either mode."""
     profile = node_wallet_profile(config)
-    if config.get("setup_stage") not in OPERATIONAL_STAGES:
+    if config.get("setup_stage") not in stages:
         raise process.OperationError(
             "Complete wallet/DePool setup before running DePool stake operations"
         )
@@ -533,9 +603,9 @@ def _require_operational_depool(config):
 
 
 def depool_info(store, config):
-    require_validator_type(config, "depool", "stake")
     """Read the DePool, its rounds and this node's own participant stake."""
-    profile = _require_operational_depool(config)
+    require_validator_type(config, "depool", "stake")
+    profile = _require_operational_depool(config, DEPLOYED_STAGES)
     observed = scripts.read_depool_state(
         store, config, profile["depool_address"], profile["wallet_address"]
     )
@@ -547,7 +617,6 @@ def depool_info(store, config):
 
 
 def depool_stake(store, config, *, amount):
-    require_validator_type(config, "depool", "stake")
     """Add an ordinary stake to this node's DePool from its own Safe.
 
     A DePool v3 round pipeline holds four rounds, and a completed round's stake
@@ -555,6 +624,7 @@ def depool_stake(store, config, *, amount):
     elected. One stake tranche therefore funds alternating rounds; funding every
     round needs a second tranche.
     """
+    require_validator_type(config, "depool", "stake")
     profile = _require_operational_depool(config)
     if amount < 1:
         raise process.OperationError("Stake amount must be at least one token")
@@ -588,7 +658,7 @@ def confirm_wallet_transaction(store, config, transaction_id, check):
     the operator names the transaction they reviewed.
     """
     profile = node_wallet_profile(config)
-    if config.get("setup_stage") not in OPERATIONAL_STAGES:
+    if config.get("setup_stage") not in DEPLOYED_STAGES:
         raise process.OperationError(
             "This action needs a finished setup; run: "
             + (next_setup_command(config) or "evernode node status")
@@ -614,23 +684,24 @@ def confirm_wallet_transaction(store, config, transaction_id, check):
 
 def depool_confirm(store, config, *, transaction_id):
     require_validator_type(config, "depool", "stake")
-    _require_operational_depool(config)
+    _require_operational_depool(config, DEPLOYED_STAGES)
     return confirm_wallet_transaction(store, config, transaction_id, "depool info")
 
 
 def stake_confirm(store, config, *, transaction_id):
-    """A solo validator's wallet can hold a half-signed transaction too."""
-    require_validator_type(config, "solo", "depool")
-    return confirm_wallet_transaction(store, config, transaction_id, "stake status")
+    """A solo or nominator validator's Safe can hold a half-signed transaction too."""
+    actual = require_validator_type(config, ("solo", "nominator"), "depool")
+    check = "nominator info" if actual == "nominator" else "stake status"
+    return confirm_wallet_transaction(store, config, transaction_id, check)
 
 
 def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=False):
-    require_validator_type(config, "depool", "stake")
     """Withdraw this node's own ordinary stake, or cancel a pending withdrawal.
 
     DePool withdrawals are not immediate: the contract releases a stake when
     the round holding it completes, so the Safe balance changes later.
     """
+    require_validator_type(config, "depool", "stake")
     profile = _require_operational_depool(config)
     if sum((amount is not None, withdraw_all, cancel)) != 1:
         raise process.OperationError("Choose exactly one of --amount, --all, --cancel")
@@ -667,8 +738,8 @@ def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=Fa
 
 
 def depool_replenish(store, config, *, amount):
-    require_validator_type(config, "depool", "stake")
     """Top up the DePool's own operating balance from this node's Safe."""
+    require_validator_type(config, "depool", "stake")
     profile = _require_operational_depool(config)
     if amount < 1:
         raise process.OperationError("Replenish amount must be at least one token")

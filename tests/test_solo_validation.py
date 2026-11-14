@@ -4,6 +4,7 @@ The reference scripts call this mode 'msig'. The elector accepts a stake only
 from the masterchain, and every DePool notion - proxies, assurance, reward
 fraction - is absent, so these tests pin the choices that follow from that.
 """
+import contextlib
 import os
 from pathlib import Path
 import shutil
@@ -363,17 +364,42 @@ class SetStakeTests(unittest.TestCase):
             "recoverable_nanotokens": "0",
         }
         self.timings = dict(self.TIMINGS)
+        # What the node's console reports of its validator sets.
+        self.statistics = {"in_current_vset_p34": False, "in_next_vset_p36": False}
 
-    def set(self, **keywords):
+    def chain(self):
         def parameter(config, number):
             return dict(self.LIMITS) if number == 17 else dict(self.timings)
 
-        with (
-            patch("evernode.scripts.read_solo_stake_state",
-                  side_effect=lambda *a, **k: dict(self.observed)),
-            patch("evernode.nodes.fetch_chain_parameter", side_effect=parameter),
-        ):
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch("evernode.scripts.read_solo_stake_state",
+                                  side_effect=lambda *a, **k: dict(self.observed)))
+        stack.enter_context(patch("evernode.nodes.fetch_chain_parameter", side_effect=parameter))
+        stack.enter_context(patch("evernode.nodes.fetch_node_statistics",
+                                  side_effect=lambda config: dict(self.statistics)))
+        return stack
+
+    def set(self, **keywords):
+        with self.chain():
             return stake.set_stake(self.store, dict(self.config), **keywords)
+
+    def test_a_validating_node_is_told_its_frozen_stake_is_not_counted(self):
+        """Review round 2, R2-14: with one stake at the elector and one liquid,
+        a mode would halve the liquid one, and status would say "funds no bid"."""
+        self.statistics["in_current_vset_p34"] = True
+        _, result = self.set(mode="balanced")
+        self.assertTrue(any("not counted" in w and "--amount" in w for w in result["warnings"]))
+        _, result = self.set(amount=100000)
+        self.assertFalse(any("not counted" in w for w in result["warnings"]))
+        self.observed["wallet_balance_nanotokens"] = str(450 * stake.NANO)
+        self.config["settings"] = dict(self.config.get("settings") or {}, MSIG_FIX_STAKE=100000)
+        with self.chain():
+            status = stake.describe_stake(self.store, dict(self.config))
+        self.assertIn("in the current validator set", status["funding"])
+        self.statistics["in_current_vset_p34"] = False
+        with self.chain():
+            status = stake.describe_stake(self.store, dict(self.config))
+        self.assertEqual(status["funding"], "funds no bid yet")
 
     def test_a_recorded_stake_reaches_the_reference_environment(self):
         config, result = self.set(amount=100000)
@@ -621,13 +647,14 @@ class ElectionSequenceTests(unittest.TestCase):
         _, _, sequence = self.install("depool")
         self.assertIn("set -euo pipefail", sequence.read_text())
 
-    def run_solo_sequence(self, prepare_exit, recover_amount, bid_exit=0, settle=0):
+    def run_solo_sequence(self, prepare_exit, recover_amount, bid_exit=0, settle=0, said=""):
         """Run the generated solo sequence against stub reference scripts."""
         _, directory, sequence = self.install("solo")
         scripts_dir = directory / "scripts"
         (scripts_dir / "prepare_elections.sh").write_text(
             "#!/bin/bash\n"
             f"echo '---INFO: recover_amount = {recover_amount} nanotokens ( x Tokens )'\n"
+            f"echo '{said}'\n"
             f"exit {prepare_exit}\n"
         )
         (scripts_dir / "take_part_in_elections.sh").write_text(
@@ -653,13 +680,26 @@ class ElectionSequenceTests(unittest.TestCase):
                 self.assertEqual(finished.returncode, 0)
                 self.cron.unlink()
 
-    def test_a_pending_request_is_reported_as_the_bid_finishing_it(self):
+    def test_a_pending_request_is_reported_with_the_way_to_finish_it(self):
         finished = self.run_solo_sequence(3, 0)
-        self.assertIn("pending request to the elector", finished.stdout)
+        self.assertIn("pending request in the wallet", finished.stdout)
+        self.assertIn("evernode stake confirm", finished.stdout)
 
     def test_a_failed_preparation_says_the_bid_does_not_depend_on_it(self):
         finished = self.run_solo_sequence(1, 0)
         self.assertIn("preparation exited 1", finished.stdout)
+
+    def test_nothing_to_prepare_is_not_a_warning(self):
+        """The reference script exits 1 for these too, on most scheduled runs."""
+        for said in (
+            "---INFO: We have already participated in these elections: (1794317314)",
+            "###-ERROR(prepare_elections.sh line 270):There is no elections now! Nothing to do!",
+        ):
+            with self.subTest(said=said):
+                finished = self.run_solo_sequence(1, 0, said=said)
+                self.assertNotIn("preparation exited", finished.stdout)
+                self.assertIn("BID-RAN", finished.stdout)
+                self.cron.unlink()
 
     def test_the_verdict_of_the_cycle_is_the_verdict_of_the_bid(self):
         self.assertEqual(self.run_solo_sequence(0, 0, bid_exit=7).returncode, 7)

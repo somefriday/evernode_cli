@@ -78,6 +78,20 @@ def inspect_managed_container(name, node):
     return obj
 
 
+def remove_node_network(config):
+    """Remove the network Compose made for one node, once its containers are gone.
+
+    Compose never removes it on its own, and Docker has a finite pool of
+    subnets: left behind by every removed node and every failed creation, they
+    end with "all predefined address pools have been fully subnetted". Compose
+    makes it again when the node is started.
+    """
+    process.execute_command(
+        ["docker", "network", "rm", configuration.node_compose_project(config) + "_node"],
+        check=False,
+    )
+
+
 def is_host_port_available(port, protocol):
     kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
     try:

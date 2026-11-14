@@ -1,7 +1,6 @@
 """Validate node settings and render the per-node shell environment."""
 
 import ipaddress
-import os
 import re
 import shlex
 from pathlib import Path
@@ -227,8 +226,12 @@ def write_node_environment(path, values):
             text += "\n# Added by evernode-manager\n" + assignment + "\n"
         else:
             text = pattern.sub(lambda _: assignment, text)
-    path.write_text(text)
-    os.chmod(path, 0o600)
+    # A scheduled election run may source env.sh at any moment, so it must see
+    # the old file or the new one, never a half-written one. storage imports
+    # this module, so the import stays inside the call.
+    from . import storage
+
+    storage.write_private_text_atomically(path, text)
 
 
 def build_node_environment(config):

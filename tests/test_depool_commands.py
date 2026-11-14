@@ -523,6 +523,13 @@ class StakeOperationLockTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_action(*argv), ["validator01"])
 
+    def test_nominator_prepare_holds_it_because_it_rewrites_env_sh(self):
+        """A run sources env.sh again when it bids, so the address and the
+        tools image it names must not change in the middle of a run."""
+        with patch("evernode.setup_actions.nominator.prepare", return_value=({}, {})):
+            taken = self.run_action("nominator", "prepare", "-n", "validator01", "--yes")
+        self.assertEqual(taken, ["validator01"])
+
     def test_read_only_and_verification_actions_do_not_take_it(self):
         for argv in (
             ("depool", "info", "-n", "validator01"),

@@ -212,10 +212,15 @@ def _has_election_schedule(name):
 
 @contextlib.contextmanager
 def _local_sync_locks(store, source_name, target_name):
-    """Acquire both node locks in one deterministic order."""
+    """Hold both nodes' operation and election locks in one deterministic order.
+
+    The election lock refuses while a run that began before election stop is
+    still using a node, and keeps a new one from starting during the copy.
+    """
     with contextlib.ExitStack() as stack:
         for name in sorted((source_name, target_name)):
             stack.enter_context(store.acquire_operation_lock(name))
+            stack.enter_context(elections.hold_election_lock(store, name))
         yield
 
 
@@ -356,10 +361,12 @@ def local_sync(store, source_name, target_name, *, timeout=30):
         source_stopped = target_stopped = backup_created = False
         recovery_errors = []
         try:
-            stop_node(target, timeout, disable_elections=False)
+            # Marked before each stop: a stop cut short leaves the node in
+            # either state, and starting a running node changes nothing.
             target_stopped = True
-            stop_node(source, timeout, disable_elections=False)
+            stop_node(target, timeout, disable_elections=False)
             source_stopped = True
+            stop_node(source, timeout, disable_elections=False)
             process.execute_command(
                 [
                     "rsync",
@@ -407,7 +414,9 @@ def local_sync(store, source_name, target_name, *, timeout=30):
                 "copied_bytes": plan["source_bytes"],
                 "target_console_ready": True,
             }
-        except (OSError, process.OperationError) as exc:
+        except (OSError, process.OperationError, KeyboardInterrupt) as exc:
+            # An interrupt takes the same way back as a failure, so the target
+            # keeps its previous database and both nodes run again.
             if backup_created:
                 try:
                     stop_node(target, timeout, disable_elections=False)
@@ -428,7 +437,7 @@ def local_sync(store, source_name, target_name, *, timeout=30):
             _restart_after_failed_local_sync(
                 store, source, source_stopped, recovery_errors
             )
-            message = f"Local sync failed: {exc}"
+            message = f"Local sync failed: {str(exc) or 'interrupted'}"
             if recovery_errors:
                 message += "; " + "; ".join(recovery_errors)
             raise process.OperationError(message) from None
@@ -528,6 +537,10 @@ def start_node(store, config):
         try:
             fetch_node_statistics(config)
             config["phase"] = "console-ready"
+            # Wallet setup begins once the node has started, whether the create
+            # ran through or was resumed and started by hand.
+            if config.get("setup_stage") == "preparing":
+                config["setup_stage"] = "node-started"
             store.save_node_config(config)
             return
         except process.OperationError:
@@ -559,6 +572,7 @@ def remove_node(store, config, purge=False, timeout=30):
     for name in (configuration.node_container_name(config), config["statsd"]):
         if docker.inspect_managed_container(name, config["name"]):
             process.execute_command(["docker", "rm", name])
+    docker.remove_node_network(config)
     if purge:
         for folder in ("node_db", "logs"):
             path = store.node_directory(config["name"]) / folder
@@ -607,6 +621,7 @@ def discard_failed_creation(store, config):
                     process.execute_command(["docker", "rm", container])
             except process.OperationError as exc:
                 errors.append(str(exc))
+        docker.remove_node_network(config)
         try:
             shutil.rmtree(directory)
         except OSError as exc:
@@ -676,8 +691,9 @@ def apply_node_lifecycle_operation(
                 raise process.OperationError(
                     "Use node create --resume and node start before restarting this node"
                 )
-            stop_node(config, timeout)
-            start_node(store, config)
+            with elections.hold_election_lock(store, name):
+                stop_node(config, timeout)
+                start_node(store, config)
         elif action == "remove":
             remove_node(store, config, purge_data, timeout)
 
@@ -714,7 +730,7 @@ def image_maintenance_blockers(store, name):
 
 def update_node_image(store, name, record=None, *, rollback=False, timeout=30):
     """Switch exactly one node to a verified image while retaining its identity."""
-    with store.acquire_operation_lock(name):
+    with store.acquire_operation_lock(name), elections.hold_election_lock(store, name):
         config = store.load_node_config(name)
         blockers = image_maintenance_blockers(store, name)
         if blockers:

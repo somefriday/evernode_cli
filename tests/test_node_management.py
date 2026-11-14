@@ -1,12 +1,16 @@
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from evernode import configuration, docker, elections, nodes, process, storage
-from evernode.cli import select_node_names, main
+from evernode.cli import handle_node_local_sync, select_node_names, main
 from evernode.arguments import build_argument_parser
 
 
@@ -55,6 +59,17 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(process.OperationError):
                 configuration.write_node_environment(p, {"MISSING": "x"})
+
+    def test_env_is_replaced_whole_never_rewritten_in_place(self):
+        """An election run sourcing env.sh mid-write read a truncated file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "env.sh"
+            p.write_text("export NAME=old\n")
+            before = p.stat().st_ino
+            configuration.write_node_environment(p, {"NAME": "new"})
+            self.assertNotEqual(p.stat().st_ino, before)
+            self.assertEqual(p.read_text(), "export NAME=new\n")
+            self.assertEqual([path.name for path in Path(tmp).iterdir()], ["env.sh"])
 
     def test_sync_requires_both_numeric_lags_and_correct_phase(self):
         good = dict(
@@ -205,6 +220,7 @@ class LocalSyncTests(unittest.TestCase):
             directory / "node_db",
             directory / "node_db/catchains",
             directory / "node_cfg",
+            directory / "elections",
         ):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
             os.chmod(path, 0o700)
@@ -345,6 +361,70 @@ class LocalSyncTests(unittest.TestCase):
         )
         self.assertEqual(starts, ["source", "target", "target"])
 
+    def _interrupt(self, *, stop=None, copy=None):
+        """Run local sync with these side effects; return the nodes started again."""
+        started = []
+        with (
+            patch("evernode.nodes.fetch_node_statistics", side_effect=self._statistics),
+            patch("evernode.nodes.stop_node", side_effect=stop),
+            patch(
+                "evernode.nodes.start_node",
+                side_effect=lambda _store, config: started.append(config["name"]),
+            ),
+            patch("evernode.nodes.process.execute_command", side_effect=copy),
+        ):
+            with self.assertRaisesRegex(
+                process.OperationError, "Local sync failed: interrupted"
+            ):
+                nodes.local_sync(self.store, "source", "target")
+        return started
+
+    def test_an_interrupted_copy_starts_both_nodes_on_their_own_databases(self):
+        """Ctrl+C reaches only evernode, because rsync runs in its own session."""
+        self.assertEqual(self._interrupt(copy=KeyboardInterrupt), ["target", "source"])
+        target_dir = self.store.node_directory("target")
+        self.assertEqual((target_dir / "node_db/state").read_text(), "target-state")
+        self.assertEqual(list(target_dir.glob(".node_db-lsync-*")), [])
+
+    def test_an_interrupt_while_the_target_stops_starts_it_again(self):
+        """A stop cut short may still complete, so the target is started anyway."""
+        self.assertEqual(self._interrupt(stop=KeyboardInterrupt), ["target"])
+
+    def test_a_closed_session_or_a_kill_interrupts_the_copy_like_ctrl_c(self):
+        """Ending the process outright would leave both nodes stopped."""
+        stops = (signal.SIGHUP, signal.SIGTERM)
+        for stop in stops:
+            self.addCleanup(signal.signal, stop, signal.getsignal(stop))
+        handlers = []
+
+        def copy(*_):
+            handlers.extend(signal.getsignal(stop) for stop in stops)
+            return {}
+
+        args = build_argument_parser().parse_args(
+            ["node", "lsync", "--from", "source", "--to", "target", "--yes"]
+        )
+        with (
+            patch("evernode.cli.nodes.inspect_local_sync", return_value={}),
+            patch("evernode.cli.nodes.local_sync", side_effect=copy),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            handle_node_local_sync(self.store, args)
+        self.assertEqual(handlers, [signal.default_int_handler] * 2)
+
+    def test_a_running_election_keeps_both_nodes_from_being_stopped(self):
+        """A run that began before election stop still signs through its node."""
+        with (
+            patch("evernode.nodes.fetch_node_statistics", side_effect=self._statistics),
+            patch("evernode.nodes.stop_node") as stop,
+            elections.hold_election_lock(self.store, "target"),
+        ):
+            for check in (nodes.inspect_local_sync, nodes.local_sync):
+                with self.subTest(check=check.__name__):
+                    with self.assertRaisesRegex(process.OperationError, "election lock"):
+                        check(self.store, "source", "target")
+        stop.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -442,6 +522,14 @@ class UnknownNodeTests(unittest.TestCase):
         self.assertIn("evernode node list", message)
         self.assertNotIn(str(self.store.root), message)
 
+    def test_the_election_lock_names_an_unknown_node_too(self):
+        """Taken before the node is loaded, it must not report a missing folder."""
+        with self.assertRaisesRegex(
+            process.OperationError, "No managed node named no-such-node"
+        ):
+            with elections.hold_election_lock(self.store, "no-such-node"):
+                pass
+
 
 class ImageMaintenanceDryRunTests(unittest.TestCase):
     """A dry run must say what would stop the real run."""
@@ -479,6 +567,51 @@ class ImageMaintenanceDryRunTests(unittest.TestCase):
 
     def test_a_running_node_outside_both_sets_is_not_blocked(self):
         self.assertEqual(self.blockers(schedule=False, running=True), [])
+
+
+class ElectionRunMaintenanceTests(unittest.TestCase):
+    """A run that began before election stop still signs through the node, so
+    maintenance that stops the node refuses until that run has finished."""
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o077))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+        (self.store.node_directory("validator01") / "elections").mkdir(parents=True)
+        self.store.save_node_config(
+            make_node_configuration("validator01", initialized=True, phase="console-ready")
+        )
+        # The lock the cron runner's flock holds for the whole run.
+        running = elections.hold_election_lock(self.store, "validator01")
+        running.__enter__()
+        self.addCleanup(running.__exit__, None, None, None)
+
+    def test_update_and_restart_refuse_before_stopping_the_node(self):
+        record = {"image": "local/ever-node:new", "image_id": "sha256:" + "b" * 64}
+        commands = {
+            "update": lambda: nodes.update_node_image(self.store, "validator01", record),
+            "restart": lambda: nodes.apply_node_lifecycle_operation(
+                self.store, "validator01", "restart"
+            ),
+        }
+        with (
+            patch("evernode.nodes.stop_node") as stop,
+            patch(
+                "evernode.nodes.fetch_node_statistics",
+                side_effect=process.OperationError("console unavailable"),
+            ),
+            patch("evernode.elections.node_election_cron_path") as cron,
+        ):
+            cron.return_value.exists.return_value = False
+            for name, run in commands.items():
+                with self.subTest(command=name):
+                    with self.assertRaisesRegex(process.OperationError, "election lock"):
+                        run()
+        stop.assert_not_called()
 
 
 class LogComponentTests(unittest.TestCase):
