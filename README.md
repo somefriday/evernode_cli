@@ -12,7 +12,7 @@ flags: [docs/](docs/README.md).
 ```bash
 apt-get update
 apt-get install -y python3 python3-venv git
-git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli   # for updates and the vote engine; the election scripts install with evernode
+git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli   # for updates; the election scripts and the vote engine install with evernode
 
 install -d -m 0755 /opt/evernode
 python3 -m venv /opt/evernode/venv
@@ -20,9 +20,8 @@ python3 -m venv /opt/evernode/venv
 /opt/evernode/venv/bin/python -m pip install /root/evernode_cli
 ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
 
-evernode host setup --yes   # Docker and script dependencies
+evernode host setup --yes   # Docker, script dependencies and the vote engine
 evernode host check
-docker build -o /usr/local/bin /root/evernode_cli/vote   # the engine of evernode vote
 ```
 
 Open each node's ADNL UDP port yourself; `host setup` does not touch the firewall.
@@ -32,8 +31,8 @@ Open each node's ADNL UDP port yourself; `host setup` does not touch the firewal
 ```bash
 cd /root/evernode_cli && git pull --ff-only
 /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
+evernode host setup --yes          # rebuilds the vote engine when this version needs another
 evernode node sync-scripts --all   # the install alone does not refresh these
-docker build -o /usr/local/bin /root/evernode_cli/vote   # when evernode vote asks for it
 ```
 
 A node created before evernode shipped its own election scripts still takes them

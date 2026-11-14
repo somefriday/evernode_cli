@@ -44,10 +44,10 @@ Clone the repository directly on the server:
 git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
 ```
 
-Keep this checkout for updates and for building the vote engine. The election
-scripts install with evernode itself: `node create` gives each node the copy
-installed with evernode, and `node sync-scripts` refreshes nodes from it after
-an upgrade.
+Keep this checkout for updates. The election scripts and the vote engine's
+sources install with evernode itself: `node create` gives each node the copy
+installed with evernode, `node sync-scripts` refreshes nodes from it after an
+upgrade, and `host setup` builds the vote engine from it.
 
 Install the command globally from the cloned checkout. The CLI is isolated in
 a virtual environment, so it does not modify the operating system's managed Python:
@@ -75,7 +75,9 @@ evernode host check
 `docker version` must show both a **Client** and a **Server** section before
 continuing. `host setup` detects Ubuntu or Debian, uses that distribution's official Docker repository, and installs
 Docker Engine, Buildx and the Docker Compose plugin. It also installs `cron`,
-`chrony`, the required `yq` v4 binary, and starts Docker, cron and chrony. It
+`chrony`, the required `yq` v4 binary, and starts Docker, cron and chrony.
+Then it builds the vote engine, `evernode-vote`, with Docker, unless the
+version this evernode needs is installed already. It
 does not open firewall ports. When a node is created, allow only its allocated
 **ADNL UDP** port through the provider and host firewall. Metrics bind to
 `127.0.0.1`; console and StatsD ports remain inside Docker.
@@ -86,6 +88,7 @@ To update the installed CLI after pulling a newer checkout, run:
 cd /root/evernode_cli
 git pull --ff-only
 /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
+evernode host setup --yes   # rebuilds the vote engine when this version needs another
 evernode --version
 evernode wallet --help
 ```
@@ -394,8 +397,8 @@ sudo evernode vote history                                             # every p
 ```
 
 A DePool validator's Safe is in workchain 0 and cannot pay; it proposes with a
-wallet file (`--from FILE`) and joins like everyone else. Building the vote
-engine, prices, param values, wallet files and how the schedule works are in
+wallet file (`--from FILE`) and joins like everyone else. Prices, param
+values, wallet files and how the schedule works are in
 [voting_instruction.md](voting_instruction.md).
 
 ## Routine commands

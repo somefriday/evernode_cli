@@ -35,7 +35,8 @@ from . import arguments, elections, process, storage, wallets
 ENGINE = "evernode-vote"
 # The engine release this module speaks to; vote/Cargo.toml has the same version.
 ENGINE_VERSION = "0.2.1"
-INSTALL = "docker build -o /usr/local/bin vote (in the evernode_cli checkout)"
+# host setup builds it from the vote/ sources this package carries.
+INSTALL = "sudo evernode host setup"
 # Commands that read neither the chain nor a key, and those that sign votes.
 OFFLINE_COMMANDS = ("burn-key", "mint-wallet")
 VOTING_COMMANDS = ("cast", "run", "burn")
@@ -382,12 +383,12 @@ def find_engine():
     """The installed engine, if it is the release this evernode speaks to."""
     path = shutil.which(ENGINE)
     if path is None:
-        raise process.OperationError(f"{ENGINE} is not installed; build it: {INSTALL}")
+        raise process.OperationError(f"{ENGINE} is not installed: run {INSTALL}")
     found = process.execute_command([path, "--version"], timeout=30).stdout.split()
     if found != [ENGINE, ENGINE_VERSION]:
         raise process.OperationError(
             f"{path} is {' '.join(found) or 'unknown'}; this evernode needs "
-            f"{ENGINE} {ENGINE_VERSION}. Build it again: {INSTALL}"
+            f"{ENGINE} {ENGINE_VERSION}: run {INSTALL}"
         )
     return path
 

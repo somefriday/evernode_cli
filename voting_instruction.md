@@ -16,12 +16,10 @@ sudo evernode vote history                                             # what th
 ## Before you start
 
 ```bash
-sudo docker build -o /usr/local/bin /root/evernode_cli/vote             # the vote engine; again when evernode asks
+sudo evernode host setup --yes                                           # the vote engine, and cron, which votes
 export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/PROJECT/graphql   # the network's GraphQL endpoint
 sudo -E evernode vote status -n validator01 --keys                      # -E passes the endpoint through sudo
 ```
-
-evernode votes from cron: `evernode host setup` installs and starts it.
 
 ## How a change wins
 
@@ -137,8 +135,9 @@ The node makes a new key at every election: copy the file again when
 
 ## Vote with a node evernode does not manage
 
-Install evernode as the [README](README.md#install) shows; `evernode host setup`
-is not needed.
+Install evernode as the [README](README.md#install) shows. On a server without
+Docker, skip `host setup` and build the vote engine as root with Rust 1.90 or
+newer: `cargo install --locked --root /usr/local --path /root/evernode_cli/vote`.
 
 ```bash
 pgrep -af ever-node                                                         # config.json is in its --configs directory
@@ -152,9 +151,6 @@ For a node in Docker:
 sudo docker exec CONTAINER chmod 600 /PATH/TO/config.json
 sudo -E evernode vote join --keyring CONTAINER:/PATH/TO/config.json --proposal HASH
 ```
-
-Without Docker, build the vote engine as root with Rust 1.90 or newer:
-`cargo install --locked --root /usr/local --path /root/evernode_cli/vote`.
 
 ## Messages and what they mean
 

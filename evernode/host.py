@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import process
+from . import process, voting
 
 YQ_VERSION = "4.44.5"
 REQUIRED_COMMANDS = (
@@ -24,6 +24,10 @@ REQUIRED_COMMANDS = (
     "yq",
 )
 REQUIRED_SERVICES = ("docker", "cron", "chrony")
+# host setup builds the vote engine into this directory, on root's PATH and on cron's.
+ENGINE_DIRECTORY = "/usr/local/bin"
+# Where setup.py puts the engine's sources in the installed package.
+ENGINE_SOURCES = Path(__file__).resolve().parent / "vendor" / "vote"
 
 
 def _find_command(name):
@@ -70,6 +74,7 @@ def collect_host_dependency_report():
             )
         except process.OperationError as exc:
             checks["services"][service] = "error: " + str(exc)
+    checks["vote_engine"] = vote_engine()
     checks["note"] = (
         "Read-only check. No package installation, firewall change or pruning."
     )
@@ -88,7 +93,36 @@ def host_dependencies_available(checks):
             checks.get("services", {}).get(service) == "active"
             for service in REQUIRED_SERVICES
         )
+        and isinstance(checks.get("vote_engine"), str)
     )
+
+
+def vote_engine():
+    """The installed vote engine's path, or why evernode vote cannot use it."""
+    try:
+        return voting.find_engine()
+    except process.OperationError as exc:
+        return {"error": str(exc)}
+
+
+def install_vote_engine():
+    """Build the vote engine this evernode needs, from the sources it was installed
+    with, unless that engine is installed already. Docker's output is shown: the
+    build takes minutes."""
+    if isinstance(vote_engine(), str):
+        return
+    if not (ENGINE_SOURCES / "Cargo.toml").is_file():
+        raise process.OperationError(
+            "This evernode was installed without the vote engine's sources: "
+            "install it again with pip from its checkout"
+        )
+    print(f"Building {voting.ENGINE} {voting.ENGINE_VERSION} with Docker", file=sys.stderr, flush=True)
+    process.execute_command(
+        ["docker", "build", "--output", ENGINE_DIRECTORY, ENGINE_SOURCES],
+        timeout=3600,
+        stream=True,
+    )
+    voting.find_engine()
 
 
 def _os_release():
@@ -148,7 +182,9 @@ def get_setup_plan():
         + distro.title()
         + " repository when missing; yq "
         + YQ_VERSION
-        + " to /usr/local/bin/yq; then enable docker, cron and chrony"
+        + " to /usr/local/bin/yq; then enable docker, cron and chrony; build the vote engine "
+        + f"{voting.ENGINE} {voting.ENGINE_VERSION} into {ENGINE_DIRECTORY} with Docker "
+        + "unless it is installed"
     )
 
 
@@ -263,10 +299,11 @@ def install_host_dependencies():
     process.execute_command(
         ["systemctl", "enable", "--now", "docker", "cron", "chrony"], timeout=120
     )
+    install_vote_engine()
     checks = collect_host_dependency_report()
     if not host_dependencies_available(checks):
         raise process.OperationError(
-            "Installation finished but a required command or service is still "
-            "missing; see: evernode host check"
+            "Installation finished but a required command, service or the vote "
+            "engine is still missing; see: evernode host check"
         )
     return checks

@@ -76,6 +76,9 @@ own keys. The votes add up on chain.
 
 ## Install
 
+With evernode, `sudo evernode host setup` builds it from the copy of this
+directory the evernode package carries. On its own:
+
 ```sh
 cargo install --locked --path .            # Rust 1.90 or newer
 docker build -o /usr/local/bin .           # or: a static Linux binary, with no Rust on the host
@@ -112,7 +115,7 @@ $B mint-wallet   --name payer              # a new EverWallet file: fund its add
 - `--config-code BOC`
 - `--elector-code BOC [--elector-data BOC]`
 
-Changes to p0, p1, p8–p12, p31, p32, p34, p36 and the code upgrades need `--force`. A JSON value must read back
+Changes to p0, p1, p8–p12, p32, p34, p36 and the code upgrades need `--force`. A JSON value must read back
 exactly as written: ever-node's reader ignores unknown fields, prefers a number's `_dec` twin and wraps
 numbers that do not fit, so the value it builds is written back with its own serializer and compared, field
 by field. A number's hex twin may be left out. `propose` and `status` show a change field by field.
@@ -402,9 +405,6 @@ option passes through unchanged; `--net` and `--secret` are refused.
   (`several_custodians_carry_at_most_four_cells_and_no_stranger`).
 
 ### Defects found and fixed
-- **A p31 change could stop the network (bd-m, 2026-11-13).** p31 lists the system contracts, and a voted
-  address without an account stopped the masterchain: every node failed to collate ("Can't find account
-  data"). Changing p31 now needs `--force`, and `join` shows the risk as a WARNING (0.2.1).
 - **"Never registered" was conflated with "gone".** `burn` reported a failed registration as "rejected".
   Campaigns now track both states.
 - **`propose` re-registered a change already in effect.** Every campaign now checks the change first and

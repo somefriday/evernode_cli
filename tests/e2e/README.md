@@ -48,7 +48,9 @@ docker build -t evernode-prod:ubuntu24 \
 
 `evernode host setup` provides everything else, and needs an init system to
 enable the docker, cron and chrony services it requires. Check that path in its
-own container, because a manager sharing the host's Docker socket has no init:
+own container, because a manager sharing the host's Docker socket has no init.
+The Docker it installs there builds the vote engine, so its storage gets
+volumes: overlay mounts fail on the container's own filesystem.
 
 ```sh
 docker build -t evernode-prod:ubuntu24-systemd \
@@ -56,6 +58,8 @@ docker build -t evernode-prod:ubuntu24-systemd \
   -f tests/e2e/manager-systemd.Dockerfile /tmp/evernode-manager-build
 docker run -d --name evernode-hostsetup --privileged --cgroupns=host \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
+  -v evernode-hostsetup-docker:/var/lib/docker \
+  -v evernode-hostsetup-containerd:/var/lib/containerd \
   evernode-prod:ubuntu24-systemd
 docker exec evernode-hostsetup evernode host setup --yes
 docker exec evernode-hostsetup evernode host check
@@ -64,8 +68,9 @@ docker exec evernode-hostsetup evernode host check
 Run the manager itself with the host's Docker socket, this checkout at
 `/workspace`, the run's `net/` at `/network`, ever-node upstream at `/upstream`
 and `E2E_BASE` at its own absolute path, then `evernode host setup --yes` inside
-it: it installs the same packages and stops only at service enablement, which
-the container above has already covered. Start `cron` by hand there, so an
+it: it installs the same packages and stops at service enablement, before the
+vote engine; the container above covers both. A run that votes builds the
+engine there with `docker build -o /usr/local/bin /workspace/vote`. Start `cron` by hand there, so an
 installed schedule really runs. Remove its `/.dockerenv` so the vendored
 `env.sh` uses Docker host mode; node containers keep theirs.
 

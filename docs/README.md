@@ -64,10 +64,10 @@ A nominator's owner funds the contract after `nominator verify`. A solo or nomin
 
 ## Host
 
-| Command                       | What it does                                                                |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| [`host check`](host/check.md) | Report whether this host has what evernode needs.                           |
-| [`host setup`](host/setup.md) | Install Docker and the tools the election scripts use, on Ubuntu or Debian. |
+| Command                       | What it does                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| [`host check`](host/check.md) | Report whether this host has what evernode needs.                                            |
+| [`host setup`](host/setup.md) | Install Docker, the tools the election scripts use and the vote engine, on Ubuntu or Debian. |
 
 ## Nodes
 

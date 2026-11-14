@@ -13,7 +13,8 @@ dependencies = []
 evernode = "evernode.cli:main"
 
 [tool.setuptools]
-# The vendored kit and contract under evernode/vendor/, as MANIFEST.in lists them.
+# The vendored kit and contract under evernode/vendor/, as MANIFEST.in lists them;
+# setup.py adds the vote engine's sources there.
 include-package-data = true
 
 [tool.setuptools.packages.find]

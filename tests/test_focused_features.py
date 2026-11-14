@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from evernode import (
-    cli,
     configuration,
     creation,
     docker,
@@ -325,10 +324,126 @@ class FocusedFeatureTests(unittest.TestCase):
             "docker": "26.0",
             "compose": "v2",
             "services": {name: "active" for name in host.REQUIRED_SERVICES},
+            "vote_engine": "/usr/local/bin/evernode-vote",
         }
         self.assertTrue(host.host_dependencies_available(report))
         report["commands"]["yq"] = None
         self.assertFalse(host.host_dependencies_available(report))
+        report["commands"]["yq"] = "/usr/local/bin/yq"
+        report["vote_engine"] = {"error": "evernode-vote is not installed: run sudo evernode host setup"}
+        self.assertFalse(host.host_dependencies_available(report))
+
+    def test_host_check_reports_the_vote_engine_or_why_it_cannot_be_used(self):
+        with patch("evernode.host.voting.find_engine", return_value="/usr/local/bin/evernode-vote"):
+            self.assertEqual(host.vote_engine(), "/usr/local/bin/evernode-vote")
+        missing = process.OperationError("evernode-vote is not installed: run sudo evernode host setup")
+        with patch("evernode.host.voting.find_engine", side_effect=missing):
+            self.assertEqual(host.vote_engine(), {"error": str(missing)})
+
+    def test_the_vote_engine_this_evernode_needs_is_not_built_again(self):
+        with (
+            patch("evernode.host.voting.find_engine", return_value="/usr/local/bin/evernode-vote"),
+            patch("evernode.host.process.execute_command") as execute,
+        ):
+            host.install_vote_engine()
+        execute.assert_not_called()
+
+    def test_a_missing_or_other_vote_engine_is_built_from_the_installed_sources(self):
+        other = process.OperationError(
+            "/usr/local/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
+            "evernode-vote 0.2.1: run sudo evernode host setup"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            sources = Path(temporary)
+            (sources / "Cargo.toml").write_text("")
+            with (
+                patch("evernode.host.ENGINE_SOURCES", sources),
+                patch(
+                    "evernode.host.voting.find_engine",
+                    side_effect=[other, "/usr/local/bin/evernode-vote"],
+                ) as find,
+                patch("evernode.host.process.execute_command") as execute,
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
+                host.install_vote_engine()
+        execute.assert_called_once_with(
+            ["docker", "build", "--output", "/usr/local/bin", sources], timeout=3600, stream=True
+        )
+        self.assertEqual(find.call_count, 2)
+        self.assertIn("Building evernode-vote 0.2.1 with Docker", err.getvalue())
+
+    def test_a_build_that_leaves_another_engine_fails(self):
+        other = process.OperationError(
+            "/usr/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
+            "evernode-vote 0.2.1: run sudo evernode host setup"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "Cargo.toml").write_text("")
+            with (
+                patch("evernode.host.ENGINE_SOURCES", Path(temporary)),
+                patch("evernode.host.voting.find_engine", side_effect=other),
+                patch("evernode.host.process.execute_command"),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(process.OperationError) as caught,
+            ):
+                host.install_vote_engine()
+        self.assertIn("/usr/bin/evernode-vote is evernode-vote 0.2.0", str(caught.exception))
+
+    def test_an_install_without_the_engine_sources_says_so(self):
+        missing = process.OperationError("evernode-vote is not installed: run sudo evernode host setup")
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch("evernode.host.ENGINE_SOURCES", Path(temporary) / "vote"),
+                patch("evernode.host.voting.find_engine", side_effect=missing),
+                patch("evernode.host.process.execute_command") as execute,
+                self.assertRaises(process.OperationError) as caught,
+            ):
+                host.install_vote_engine()
+        self.assertIn("installed without the vote engine's sources", str(caught.exception))
+        execute.assert_not_called()
+
+    def test_the_package_build_carries_what_the_engine_build_reads(self):
+        """setup.py copies vote/'s build inputs into the package; host setup builds from them."""
+        import ast
+        import re
+
+        root = Path(__file__).resolve().parents[1]
+        tree = ast.parse((root / "setup.py").read_text())
+        inputs = next(
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "ENGINE_INPUTS"
+        )
+        # Every file the engine compiles in is under one of the inputs.
+        for path in (root / "vote" / "src").rglob("*.rs"):
+            for name in re.findall(r'include_(?:str|bytes)!\("([^"]+)"\)', path.read_text()):
+                included = (path.parent / name).resolve().relative_to((root / "vote").resolve())
+                self.assertIn(included.parts[0], inputs, f"{path.name} includes {name}")
+        # The sdist carries them too.
+        manifest = (root / "MANIFEST.in").read_text()
+        for name in inputs:
+            self.assertIn(f"vote/{name}", manifest)
+        # The build step copies exactly them, without the checkout's other files.
+        try:
+            from distutils.core import run_setup
+        except ImportError:
+            self.skipTest("setuptools is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            distribution = run_setup(str(root / "setup.py"), stop_after="init")
+            command = distribution.cmdclass["build_py"](distribution)
+            command.build_lib = temporary
+            with patch("setuptools.command.build_py.build_py.run"):
+                command.run()
+            copied = Path(temporary) / "evernode" / "vendor" / "vote"
+            self.assertEqual(sorted(p.name for p in copied.iterdir()), sorted(inputs))
+            for name in inputs:
+                source = root / "vote" / name
+                files = [p for p in source.rglob("*") if p.is_file() and not p.name.startswith(".")] if source.is_dir() else [source]
+                for item in files:
+                    self.assertEqual(
+                        (copied / item.relative_to(root / "vote")).read_bytes(), item.read_bytes()
+                    )
 
     def test_host_setup_plan_identifies_debian_and_ubuntu(self):
         with patch(
@@ -341,6 +456,43 @@ class FocusedFeatureTests(unittest.TestCase):
             return_value={"ID": "ubuntu", "VERSION_CODENAME": "noble"},
         ):
             self.assertIn("Docker's official Ubuntu repository", host.get_setup_plan())
+            self.assertIn(
+                "build the vote engine evernode-vote 0.2.1 into /usr/local/bin with Docker",
+                host.get_setup_plan(),
+            )
+
+    def test_host_setup_builds_the_vote_engine_once_docker_runs(self):
+        order = []
+
+        def execute(command, **_kwargs):
+            order.append(" ".join(str(part) for part in command[:3]))
+            architecture = "amd64\n" if command[:2] == ["dpkg", "--print-architecture"] else ""
+            return SimpleNamespace(stdout=architecture, stderr="", returncode=0)
+
+        report = {
+            "platform": "linux",
+            "commands": {name: "/usr/bin/" + name for name in host.REQUIRED_COMMANDS},
+            "docker": "27.0",
+            "compose": "v2",
+            "services": {name: "active" for name in host.REQUIRED_SERVICES},
+            "vote_engine": "/usr/local/bin/evernode-vote",
+        }
+        with (
+            patch(
+                "evernode.host._os_release",
+                return_value={"ID": "ubuntu", "VERSION_CODENAME": "noble"},
+            ),
+            patch("evernode.host._find_command", return_value="/usr/bin/docker"),
+            patch("evernode.host.process.execute_command", side_effect=execute),
+            patch("evernode.host.install_vote_engine", side_effect=lambda: order.append("engine")),
+            patch(
+                "evernode.host.collect_host_dependency_report",
+                side_effect=lambda: order.append("check") or report,
+            ),
+            patch("os.chmod"),
+        ):
+            self.assertEqual(host.install_host_dependencies(), report)
+        self.assertEqual(order[-3:], ["systemctl enable --now", "engine", "check"])
 
     def test_host_setup_configures_debian_docker_repository(self):
         commands = []
@@ -359,6 +511,7 @@ class FocusedFeatureTests(unittest.TestCase):
             "docker": "27.0",
             "compose": "v2",
             "services": {name: "active" for name in host.REQUIRED_SERVICES},
+            "vote_engine": "/usr/local/bin/evernode-vote",
         }
         with (
             patch(
@@ -368,6 +521,7 @@ class FocusedFeatureTests(unittest.TestCase):
             patch("evernode.host._find_command", return_value=None),
             patch("evernode.host.process.execute_command", side_effect=execute),
             patch("evernode.host.collect_host_dependency_report", return_value=report),
+            patch("evernode.host.install_vote_engine"),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.write_text") as write_source,
             patch("os.chmod"),
@@ -404,6 +558,7 @@ class FocusedFeatureTests(unittest.TestCase):
             "docker": "27.0",
             "compose": "v2",
             "services": {name: "active" for name in host.REQUIRED_SERVICES},
+            "vote_engine": "/usr/local/bin/evernode-vote",
         }
         with (
             patch(
@@ -413,6 +568,7 @@ class FocusedFeatureTests(unittest.TestCase):
             patch("evernode.host._find_command", return_value="/usr/bin/docker"),
             patch("evernode.host.process.execute_command", side_effect=execute),
             patch("evernode.host.collect_host_dependency_report", return_value=report),
+            patch("evernode.host.install_vote_engine"),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.write_text"),
             patch("os.chmod"),
