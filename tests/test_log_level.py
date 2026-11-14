@@ -106,6 +106,42 @@ class LogLevelTests(unittest.TestCase):
         with self.assertRaisesRegex(process.OperationError, "info or debug"):
             log_level.set_level(self.store, "validator01", "trace")
 
+    def test_a_comment_after_a_level_is_switched_and_kept(self):
+        """YAML allows a comment there; the component must not be skipped."""
+        path = self.node("validator01", KIT_SETTINGS.replace(
+            "  telemetry:\n    level: info", "  telemetry:\n    level: debug # troubleshooting"
+        ))
+        self.assertEqual(log_level.read_level(self.store, "validator01"), "custom")
+        log_level.set_level(self.store, "validator01", "info")
+        self.assertIn("  telemetry:\n    level: info # troubleshooting\n", path.read_text())
+        self.assertEqual(log_level.read_level(self.store, "validator01"), "info")
+
+    def test_a_component_in_another_form_refuses_the_file_and_changes_nothing(self):
+        for index, entry in enumerate((
+            '  telemetry:\n    level: "debug"',
+            "  telemetry: {level: debug}",
+            "  telemetry:\n    # muted for now\n    level: debug",
+            "",
+        )):
+            with self.subTest(entry=entry):
+                settings = KIT_SETTINGS.replace("  telemetry:\n    level: info", entry)
+                name = f"node{index}"
+                path = self.node(name, settings)
+                with self.assertRaisesRegex(process.OperationError, "level of telemetry"):
+                    log_level.set_level(self.store, name, "debug")
+                with self.assertRaisesRegex(process.OperationError, "level of telemetry"):
+                    log_level.read_level(self.store, name)
+                self.assertEqual(path.read_text(), settings)
+
+    def test_all_reports_a_file_that_is_not_text_and_switches_the_others(self):
+        broken = self.node("alpha")
+        broken.write_bytes(b"\xff\xfe not UTF-8 \x80")
+        self.node("beta")
+        code, out = self.run_command("--all", "debug")
+        self.assertEqual(code, 1)
+        self.assertIn('"node": "alpha",\n  "result": "failed"', out)
+        self.assertEqual(log_level.read_level(self.store, "beta"), "debug")
+
 
 if __name__ == "__main__":
     unittest.main()

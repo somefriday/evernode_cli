@@ -181,7 +181,8 @@ def handle_log_level(store, args):
                 with store.acquire_operation_lock(name):
                     applies = log_level.set_level(store, name, args.level)
                 result = {"node": name, "log_level": args.level, "applies": applies}
-        except (process.OperationError, OSError) as exc:
+        # One node's unreadable file is that node's failure; the others still switch.
+        except (process.OperationError, OSError, ValueError) as exc:
             failed = True
             result = {"node": name, "result": "failed", "error": str(exc)}
         ui.print_json_result(result)

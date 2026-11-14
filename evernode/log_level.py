@@ -14,8 +14,12 @@ LEVELS = ("info", "debug")
 # every other component keeps the level the kit chose for it.
 COMPONENTS = ("ever_node", "validator", "validator_session", "telemetry", "validate_query")
 # A component's entry in the kit's layout: "  name:", then "    level: value".
+# Either line may end in a comment, which a switch keeps.
+COMMENT = r"(?:[ \t]+#[^\n]*)?"
 ENTRY = re.compile(
-    r"^(  (%s):\n    level: )([a-z]+)[ \t]*$" % "|".join(COMPONENTS), re.MULTILINE
+    r"^(  (%s):%s[ \t]*\n    level:[ \t]+)([A-Za-z]+)(%s[ \t]*)$"
+    % ("|".join(COMPONENTS), COMMENT, COMMENT),
+    re.MULTILINE,
 )
 REFRESH = re.compile(r"^refresh_rate:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
 
@@ -29,16 +33,28 @@ def _settings(store, name):
         )
     storage.validate_private_path(folder)
     storage.validate_private_path(path)
-    return path, path.read_text()
+    try:
+        return path, path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise process.OperationError(
+            f"{path} is not UTF-8 text; change its levels by hand"
+        ) from None
 
 
 def _levels(path, text):
-    levels = {match.group(2): match.group(3) for match in ENTRY.finditer(text)}
-    if "ever_node" not in levels:
+    """Each component's level, read before anything changes: a component this
+    cannot read once, in the kit's layout, refuses the whole file, so a switch
+    never reports success with one of them left behind."""
+    found = {}
+    for match in ENTRY.finditer(text):
+        found.setdefault(match.group(2), []).append(match.group(3).lower())
+    unread = [component for component in COMPONENTS if len(found.get(component, ())) != 1]
+    if unread:
         raise process.OperationError(
-            f"{path} does not have the election kit's layout; change its levels by hand"
+            f"{path}: the level of {', '.join(unread)} is not in the election kit's "
+            "layout; change the levels by hand"
         )
-    return levels
+    return {component: found[component][0] for component in COMPONENTS}
 
 
 def read_level(store, name):
@@ -53,7 +69,7 @@ def set_level(store, name, level):
         raise process.OperationError("The log level must be info or debug")
     path, text = _settings(store, name)
     _levels(path, text)
-    updated = ENTRY.sub(lambda match: match.group(1) + level, text)
+    updated = ENTRY.sub(lambda match: match.group(1) + level + match.group(4), text)
     if updated != text:
         storage.write_private_text_atomically(path, updated)
     refresh = REFRESH.search(text)

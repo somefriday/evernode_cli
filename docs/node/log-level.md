@@ -28,7 +28,8 @@ Sets the five components the election kit makes verbose (`ever_node`, `validator
 - Every other component keeps the level the kit set, such as `error` for the network and `off` for the virtual machine.
 - Prints `custom` when the five components were set to different levels by hand; a switch sets them all.
 - A stopped node applies the switch when it starts. A file without `refresh_rate` applies it only at the next start; `applies` in the output says so.
-- Refuses a node that has not started yet, and a file without the kit's layout: change that file by hand.
+- Refuses a node that has not started yet.
+- Changes nothing unless each of the five components appears once, in the kit's layout. A comment after a line is fine and is kept; change any other file by hand.
 - With `--all`, a node that fails is reported and the others still switch; the exit code is then `1`.
 
 ## See also
