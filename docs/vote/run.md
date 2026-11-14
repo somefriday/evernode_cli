@@ -27,7 +27,7 @@ Like `vote cast --watch`, but takes the change itself instead of its hash and st
 | `--elector-code`     | BOC                          |                           | Change: replace the elector's code.                                       |
 | `--elector-data`     | BOC                          | empty cell                | Data for the elector's upgrade hook.                                      |
 | `--if-hash`          | `auto` `current` `none` HASH | `auto`                    | Apply only if the param still has this value.                             |
-| `--force`            |                              | off                       | Allow changes to params 0, 1, 8-12, validator sets and code.              |
+| `--force`            |                              | off                       | Allow changes to params 0, 1, 8-12, 31, validator sets and code.          |
 | `--keyring`          | FILE                         |                           | A node's `config.json` or a copy of its `validator_key_ring`; repeatable. |
 | `--control`          | FILE                         |                           | A node's `console.json`: the node signs; repeatable.                      |
 | `--relay`            | FILE                         | external messages         | Masterchain wallet file that carries the votes as internal messages.      |
