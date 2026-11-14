@@ -176,7 +176,7 @@ else:
                         "depool_address": "0:" + "b" * 64,
                     },
                 )
-                with patch(
+                with patch.dict(os.environ, {"TEST_ACCOUNT_STATES": "Uninit"}), patch(
                     "evernode.wallets.scripts.wait_for_active_account",
                     side_effect=process.OperationError("not active yet"),
                 ) as awaited:
@@ -185,6 +185,42 @@ else:
                 awaited.assert_called_once()
                 self.assertEqual(awaited.call_args.args[2], config["wallet"][field])
                 self.assertEqual(config["setup_stage"], stage)
+
+    def test_the_account_status_is_read_the_way_the_kit_reads_it(self):
+        for state in ("Active", "Uninit"):
+            with self.subTest(state=state), patch.dict(os.environ, {"TEST_ACCOUNT_STATES": state}):
+                self.assertEqual(
+                    scripts.read_account_status(self.store, self.config, self.address), state
+                )
+
+    def test_a_deploy_that_landed_earlier_is_checked_and_not_sent_again(self):
+        """A rerun after a wait that ran out, or a dropped session, finishes the stage."""
+        keys = self.root / "keys"
+        keys.mkdir()
+        (keys / "validator01_1.keys.json").write_text(json.dumps({"public": "0" * 63 + "1"}))
+        cases = [
+            ("wallet-created", "Msig_deploy.sh", wallets.wallet_deploy, "wallet-deployed"),
+            ("depool-prepared", "DePool_deploy.sh", wallets.depool_deploy, "depool-deployed"),
+        ]
+        for stage, script, action, recorded in cases:
+            with self.subTest(stage=stage):
+                ran = self.root / f"{script}.ran"
+                (self.script_dir / script).write_text(f"touch {ran}\nexit 1\n")
+                config = dict(
+                    self.config,
+                    setup_stage=stage,
+                    wallet={
+                        "mode": "new",
+                        "custodians": 1,
+                        "required_signatures": 1,
+                        "wallet_address": self.address,
+                        "depool_address": "0:" + "b" * 64,
+                    },
+                )
+                with patch.dict(os.environ, {"TEST_ACCOUNT_STATES": "Active"}):
+                    updated, _ = action(self.store, config)
+                self.assertEqual(updated["setup_stage"], recorded)
+                self.assertFalse(ran.exists(), f"{script} ran for an active account")
 
     def test_approved_setup_adapters_receive_confirmation_without_a_terminal(self):
         for filename in ("DePool_deploy.sh", "stake_to_depool.sh"):

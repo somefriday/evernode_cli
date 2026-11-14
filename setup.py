@@ -19,6 +19,12 @@ class BuildWithEngineSources(build_py):
     """build_py, plus the vote engine's build inputs at evernode/vendor/vote."""
 
     def run(self):
+        # pip builds inside the checkout and reuses build/, so the package starts
+        # from what the checkout holds now: a file a newer version deletes is not
+        # installed again. Never when the build directory is the checkout itself.
+        package = Path(self.build_lib) / "evernode"
+        if package.resolve() != (ROOT / "evernode").resolve():
+            shutil.rmtree(package, ignore_errors=True)
         super().run()
         target = Path(self.build_lib) / "evernode" / "vendor" / "vote"
         # A build directory reused from an earlier build keeps no deleted source.

@@ -280,24 +280,72 @@ def prepare_wallet(store, config, *, imported=False):
     }
 
 
-def _check_imported_wallet(profile, local_public_keys, observed):
-    if (observed["custodians"], observed["required_signatures"]) != (
-        profile["custodians"],
-        profile["required_signatures"],
-    ):
-        raise process.OperationError(
-            "Imported wallet custodians or signature threshold do not match the supplied profile"
+def _safe_mismatch(profile, local_public_keys, observed):
+    """Why the Safe read on chain is not the one this node's profile and keys
+    describe, or None when it is."""
+    expected = (profile["custodians"], profile["required_signatures"])
+    found = (observed["custodians"], observed["required_signatures"])
+    if found != expected:
+        return (
+            f"it has {found[0]} custodians and needs {found[1]} signatures, not the "
+            f"{expected[0]} and {expected[1]} this node was set up with"
         )
     try:
         local = {int(key.removeprefix("0x"), 16) for key in local_public_keys}
         remote = {int(key.removeprefix("0x"), 16) for key in observed["public_keys"]}
-    except (KeyError, TypeError, ValueError) as exc:
-        raise process.OperationError(
-            "Could not compare imported custodian keys"
-        ) from exc
+    except (KeyError, TypeError, ValueError):
+        return "its custodian keys could not be compared with this node's"
     if len(local) != profile["custodians"] or local != remote:
+        return "its custodian keys are not this node's keys"
+    return None
+
+
+def _check_imported_wallet(profile, local_public_keys, observed):
+    reason = _safe_mismatch(profile, local_public_keys, observed)
+    if reason:
+        raise process.OperationError(f"The imported Safe does not match: {reason}")
+
+
+def _deploy_once(store, config, address, deploy):
+    """Run a deploy script unless the account is active already.
+
+    A deploy whose wait ran out, or whose session dropped, may have landed:
+    running the command again finds the contract, and the caller checks it,
+    instead of failing in the script, which refuses an active account. An
+    account that cannot be read is deployed as before, and the script's own
+    check decides.
+    """
+    if scripts.read_account_status(store, config, address) == "Active":
+        return
+    try:
+        deploy()
+    except process.OperationError:
+        # An earlier run's message can land between the read above and the
+        # script's own, which then refuses an account that is deployed after all.
+        if scripts.read_account_status(store, config, address) != "Active":
+            raise
+
+
+def require_own_safe(store, config, profile):
+    """A deployed Safe must have this node's custodian keys and threshold: its
+    address fixes only the code and the first key, not who else signs."""
+    name = config["name"]
+    address = profile["wallet_address"]
+    try:
+        observed = scripts.verify_imported_safe(store, config, address)
+    except process.OperationError as exc:
         raise process.OperationError(
-            "Imported seed public keys do not match the on-chain wallet custodians"
+            f"The Safe {address} is active, but it could not be read ({exc}). The stage "
+            f"stays wallet-created: run evernode wallet deploy -n {name} again to check it; "
+            "nothing is deployed twice."
+        ) from None
+    reason = _safe_mismatch(
+        profile, _public_key_summary(store.node_directory(name) / "keys", name), observed
+    )
+    if reason:
+        raise process.OperationError(
+            f"The Safe {address} is active, but {reason}. The stage stays wallet-created; "
+            "this node cannot use that Safe."
         )
 
 
@@ -439,20 +487,26 @@ def wallet_recover(store, config):
 
 def wallet_deploy(store, config):
     profile = _require_stage(config, "new", "wallet-created")
-    scripts.execute_validator_script(
+    _deploy_once(
         store,
         config,
-        "Msig_deploy.sh",
-        "--",
-        "Safe",
-        str(profile["custodians"]),
-        str(profile["required_signatures"]),
-        timeout=600,
-        sensitive=True,
+        profile["wallet_address"],
+        lambda: scripts.execute_validator_script(
+            store,
+            config,
+            "Msig_deploy.sh",
+            "--",
+            "Safe",
+            str(profile["custodians"]),
+            str(profile["required_signatures"]),
+            timeout=600,
+            sensitive=True,
+        ),
     )
     scripts.wait_for_active_account(
         store, config, profile["wallet_address"], "Safe wallet"
     )
+    require_own_safe(store, config, profile)
     config["setup_stage"] = "wallet-deployed"
     return config, {
         "stage": config["setup_stage"],
@@ -523,8 +577,13 @@ def depool_prepare(store, config):
 def depool_deploy(store, config):
     require_validator_type(config, "depool", "stake")
     profile = _require_stage(config, "new", "depool-prepared")
-    scripts.execute_validator_script(
-        store, config, "DePool_deploy.sh", timeout=600, sensitive=True
+    _deploy_once(
+        store,
+        config,
+        profile["depool_address"],
+        lambda: scripts.execute_validator_script(
+            store, config, "DePool_deploy.sh", timeout=600, sensitive=True
+        ),
     )
     scripts.wait_for_active_account(
         store, config, profile["depool_address"], "DePool"
@@ -542,14 +601,21 @@ def require_constructed_depool(store, config, profile):
     fails still activates it (on a new network the constructor needs p32, which
     exists only after the first validator-set switch). The DePool is set up only
     once it names this node's Safe as its validator wallet; until then the stage
-    stays depool-prepared. DePool_deploy.sh deploys only an Uninit account, so
-    such a DePool cannot be deployed again: the message says so, rather than
-    reporting success and leaving the stake that follows to fail."""
+    stays depool-prepared. An active account cannot be deployed again, so a
+    DePool that answers with another wallet is reported as needing a new one,
+    rather than reporting success and leaving the stake that follows to fail.
+    One that does not answer is only reported: running the command again
+    checks it again."""
     address = profile["depool_address"]
     try:
         found = scripts.verify_imported_depool(store, config, address)["validator_wallet"]
     except process.OperationError as exc:
-        found = f"no answer ({exc})"
+        raise process.OperationError(
+            f"The DePool {address} is active, but it did not answer ({exc}). The stage stays "
+            f"depool-prepared: run evernode depool deploy -n {config['name']} again to check it; "
+            "nothing is deployed twice. A DePool that never answers may not have been "
+            "constructed, and then this node needs a new DePool."
+        ) from None
     if found.lower() != profile["wallet_address"].lower():
         raise process.OperationError(
             f"The DePool {address} is active, but its constructor did not complete: its validator "

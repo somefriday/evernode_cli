@@ -3,6 +3,9 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -401,6 +404,65 @@ class FocusedFeatureTests(unittest.TestCase):
                 host.install_vote_engine()
         self.assertIn("installed without the vote engine's sources", str(caught.exception))
         execute.assert_not_called()
+
+    def test_a_rebuild_holds_only_what_the_checkout_holds(self):
+        """pip builds inside the checkout and reuses build/: a file a newer
+        version deleted must not be built, installed and synced to nodes again."""
+        try:
+            import setuptools  # noqa: F401
+        except ImportError:
+            self.skipTest("setuptools is not installed")
+        root = Path(__file__).resolve().parents[1]
+        ignore = shutil.ignore_patterns("__pycache__", "node_modules", "target", "runs", ".DS_Store")
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+            for name in ("setup.py", "MANIFEST.in", "pyproject.toml"):
+                shutil.copy2(root / name, checkout / name)
+            for name in ("evernode", "vote"):
+                shutil.copytree(root / name, checkout / name, ignore=ignore)
+            built = checkout / "build" / "lib" / "evernode"
+            stale = [built / "retired.py", built / "vendor/ever-validator/scripts/retired.sh"]
+            for path in stale:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("left by an earlier build\n")
+            result = subprocess.run(
+                [sys.executable, "setup.py", "-q", "build_py"],
+                cwd=checkout, capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            for path in stale:
+                self.assertFalse(path.exists(), f"{path.name} survived the rebuild")
+            for kept in ("cli.py", "vendor/ever-validator/scripts/functions.shinc", "vendor/vote/Cargo.toml"):
+                self.assertTrue((built / kept).is_file(), f"{kept} is missing from the build")
+
+    def test_a_build_into_the_checkout_itself_clears_nothing(self):
+        try:
+            from distutils.core import run_setup
+        except ImportError:
+            self.skipTest("setuptools is not installed")
+        root = Path(__file__).resolve().parents[1]
+        # A checkout of its own, so the build step runs for real and touches nothing else.
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            shutil.copy2(root / "setup.py", checkout / "setup.py")
+            shutil.copytree(
+                root / "vote", checkout / "vote", ignore=shutil.ignore_patterns("target", "runs")
+            )
+            source = checkout / "evernode" / "cli.py"
+            source.parent.mkdir()
+            source.write_text("# the checkout's own module\n")
+            stale = checkout / "build" / "evernode" / "retired.py"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("left by an earlier build\n")
+            distribution = run_setup(str(checkout / "setup.py"), stop_after="init")
+            for build_lib in (checkout, checkout / "build"):
+                command = distribution.cmdclass["build_py"](distribution)
+                command.build_lib = str(build_lib)
+                with patch("setuptools.command.build_py.build_py.run"):
+                    command.run()
+            self.assertTrue(source.is_file(), "the checkout's own package was cleared")
+            self.assertFalse(stale.exists())
 
     def test_the_package_build_carries_what_the_engine_build_reads(self):
         """setup.py copies vote/'s build inputs into the package; host setup builds from them."""
@@ -886,6 +948,11 @@ class FocusedFeatureTests(unittest.TestCase):
             settings={"ValidatorAssuranceT": 50000},
         )
         with patch("evernode.wallets.scripts.execute_validator_script") as execute, patch(
+            "evernode.wallets.scripts.read_account_status", return_value="Uninit"
+        ), patch(
+            # Checking a deployed Safe's custodians is covered separately.
+            "evernode.wallets.require_own_safe"
+        ), patch(
             # Waiting for a deployed contract to appear is covered separately.
             "evernode.wallets.scripts.wait_for_active_account"
         ) as awaited, patch(
@@ -926,6 +993,8 @@ class FocusedFeatureTests(unittest.TestCase):
         }
         config = make_node_configuration("validator", wallet=dict(profile), setup_stage="depool-prepared")
         with patch("evernode.wallets.scripts.execute_validator_script"), patch(
+            "evernode.wallets.scripts.read_account_status", return_value="Uninit"
+        ), patch(
             "evernode.wallets.scripts.wait_for_active_account"
         ), patch(
             "evernode.wallets.scripts.verify_imported_depool",
@@ -935,6 +1004,140 @@ class FocusedFeatureTests(unittest.TestCase):
                 wallets.depool_deploy(self.store, config)
         self.assertIn("cannot be deployed again", str(raised.exception))
         self.assertEqual(config["setup_stage"], "depool-prepared")
+
+    # A deploy whose wait ran out, or whose session dropped, may have landed:
+    # running it again checks the contract instead of failing in the kit script.
+
+    DEPLOY_PROFILE = {
+        "mode": "new",
+        "custodians": 2,
+        "required_signatures": 2,
+        "wallet_address": "0:" + "a" * 64,
+        "depool_address": "0:" + "b" * 64,
+    }
+
+    def deploy_keys(self, *publics):
+        keys = self.store.node_directory("validator") / "keys"
+        keys.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for index, public in enumerate(publics, 1):
+            path = keys / f"validator_{index}.keys.json"
+            path.write_text(json.dumps({"public": public}))
+            path.chmod(0o600)
+
+    def deploy_wallet(self, statuses, safe, script=None):
+        config = make_node_configuration(
+            "validator", wallet=dict(self.DEPLOY_PROFILE), setup_stage="wallet-created"
+        )
+        with patch(
+            "evernode.wallets.scripts.read_account_status", side_effect=list(statuses)
+        ), patch(
+            "evernode.wallets.scripts.execute_validator_script", side_effect=script
+        ) as execute, patch("evernode.wallets.scripts.wait_for_active_account"), patch(
+            "evernode.wallets.scripts.verify_imported_safe", **safe
+        ):
+            try:
+                wallets.wallet_deploy(self.store, config)
+            except process.OperationError as exc:
+                return config, execute, str(exc)
+        return config, execute, None
+
+    def test_an_active_safe_with_this_nodes_keys_finishes_the_stage(self):
+        self.deploy_keys("0x01", "0x02")
+        observed = {"custodians": 2, "required_signatures": 2, "public_keys": ["01", "02"]}
+        config, execute, error = self.deploy_wallet(["Active"], {"return_value": observed})
+        self.assertIsNone(error)
+        execute.assert_not_called()
+        self.assertEqual(config["setup_stage"], "wallet-deployed")
+
+    def test_an_active_safe_set_up_otherwise_is_refused(self):
+        self.deploy_keys("0x01", "0x02")
+        for observed, reason in (
+            ({"custodians": 2, "required_signatures": 1, "public_keys": ["01", "02"]},
+             "needs 1 signatures, not the 2 and 2"),
+            ({"custodians": 2, "required_signatures": 2, "public_keys": ["01", "03"]},
+             "custodian keys are not this node's keys"),
+        ):
+            with self.subTest(reason=reason):
+                config, _, error = self.deploy_wallet(["Active"], {"return_value": observed})
+                self.assertIn(reason, error)
+                self.assertIn("this node cannot use that Safe", error)
+                self.assertNotIn("Imported", error)
+                self.assertEqual(config["setup_stage"], "wallet-created")
+
+    def test_a_safe_that_cannot_be_read_is_checked_again_by_the_next_run(self):
+        config, _, error = self.deploy_wallet(
+            ["Active"], {"side_effect": process.OperationError("console timed out")}
+        )
+        self.assertIn("could not be read (console timed out)", error)
+        self.assertIn("run evernode wallet deploy -n validator again", error)
+        self.assertEqual(config["setup_stage"], "wallet-created")
+
+    def test_a_message_that_lands_while_the_script_starts_is_not_a_failure(self):
+        """The earlier run's deploy executes between the first read and the script's own."""
+        self.deploy_keys("0x01", "0x02")
+        observed = {"custodians": 2, "required_signatures": 2, "public_keys": ["01", "02"]}
+        config, execute, error = self.deploy_wallet(
+            ["Uninit", "Active"], {"return_value": observed},
+            script=process.OperationError("Msig_deploy.sh failed (exit 1)"),
+        )
+        self.assertIsNone(error)
+        execute.assert_called_once()
+        self.assertEqual(config["setup_stage"], "wallet-deployed")
+
+    def test_a_failed_deploy_of_an_inactive_account_still_fails(self):
+        config, _, error = self.deploy_wallet(
+            ["Uninit", "Uninit"], {"return_value": {}},
+            script=process.OperationError("Msig_deploy.sh failed (exit 1)"),
+        )
+        self.assertEqual(error, "Msig_deploy.sh failed (exit 1)")
+        self.assertEqual(config["setup_stage"], "wallet-created")
+
+    def test_a_depool_that_does_not_answer_is_not_declared_dead(self):
+        config = make_node_configuration(
+            "validator", wallet=dict(self.DEPLOY_PROFILE), setup_stage="depool-prepared"
+        )
+        with patch("evernode.wallets.scripts.read_account_status", return_value="Active"), patch(
+            "evernode.wallets.scripts.execute_validator_script"
+        ) as execute, patch("evernode.wallets.scripts.wait_for_active_account"), patch(
+            "evernode.wallets.scripts.verify_imported_depool",
+            side_effect=process.OperationError("getter failed"),
+        ):
+            with self.assertRaises(process.OperationError) as raised:
+                wallets.depool_deploy(self.store, config)
+        message = str(raised.exception)
+        execute.assert_not_called()
+        self.assertIn("did not answer (getter failed)", message)
+        self.assertIn("run evernode depool deploy -n validator again", message)
+        self.assertIn("may not have been constructed", message)
+        self.assertNotIn("constructor did not complete", message)
+        self.assertEqual(config["setup_stage"], "depool-prepared")
+
+    def test_port_checks_read_every_binding_docker_records(self):
+        """docker run -p 8080 records an empty host port; -p 18000-18002:80 a range."""
+        container = {
+            "HostConfig": {"PortBindings": {
+                "8080/tcp": [{"HostIp": "", "HostPort": ""}],
+                "80/tcp": [{"HostIp": "", "HostPort": "18000-18002"}],
+                "9000/tcp": [{"HostIp": "", "HostPort": "9102"}],
+                "30303/udp": [{"HostIp": "", "HostPort": "58888"}],
+            }},
+            "NetworkSettings": {"Ports": {
+                "8080/tcp": [{"HostIp": "0.0.0.0", "HostPort": "51040"},
+                             {"HostIp": "::", "HostPort": "51040"}],
+                "443/tcp": None,
+            }},
+        }
+        self.assertEqual(
+            docker._bound_host_ports(container, "tcp"), {9102, 18000, 18001, 18002, 51040}
+        )
+        self.assertEqual(docker._bound_host_ports(container, "udp"), {58888})
+        self.assertEqual(docker._bound_host_ports({"HostConfig": None}, "tcp"), set())
+
+    def test_a_random_port_container_does_not_stop_node_create(self):
+        container = {"HostConfig": {"PortBindings": {"8080/tcp": [{"HostIp": "", "HostPort": ""}]}}}
+        answers = [SimpleNamespace(stdout="abc\n"), SimpleNamespace(stdout=json.dumps([container]))]
+        with patch("evernode.docker.process.execute_command", side_effect=answers):
+            self.assertTrue(docker.is_host_port_available(9102, "tcp"))
 
     def test_import_verification_is_split_between_safe_and_depool(self):
         profile = {
@@ -1169,7 +1372,10 @@ class FocusedFeatureTests(unittest.TestCase):
             patch(
                 "evernode.wallets.scripts.verify_imported_safe", return_value=observed
             ),
-            self.assertRaisesRegex(process.OperationError, "do not match"),
+            self.assertRaisesRegex(
+                process.OperationError,
+                "The imported Safe does not match: its custodian keys are not this node's keys",
+            ),
         ):
             wallets.wallet_recover(self.store, config)
         self.assertEqual(config["setup_stage"], "node-started")

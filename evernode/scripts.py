@@ -233,6 +233,33 @@ def _import_verification_context(store, config):
     return scripts_dir
 
 
+def read_account_status(store, config, address, timeout=60):
+    """The account's status as the kit reads it: Active, Uninit, Frozen or None.
+
+    None also when the account cannot be read. A deploy then goes ahead as
+    before, and the deploy script's own check of the account decides.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    program = """set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
+source ./env.sh
+source ./functions.shinc
+read -r status _ <<< "$(Get_Account_Info "$EVERNODE_ACCOUNT")"
+printf "%s\\n" "$status"
+"""
+    environment = os.environ.copy()
+    environment["EVERNODE_ACCOUNT"] = address
+    try:
+        result = process.execute_command(
+            ["bash", "-c", program], cwd=scripts_dir, env=environment, timeout=timeout
+        )
+    except process.OperationError:
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[-1] if lines else None
+
+
 def wait_for_active_account(store, config, address, label, timeout=240, interval=5):
     """Wait until a just-deployed contract is Active on chain.
 
@@ -318,7 +345,7 @@ jq -cn --argjson c "$custodians" --argjson p "$parameters" \
             raise ValueError("Invalid signature threshold")
     except (IndexError, KeyError, TypeError, ValueError) as exc:
         raise process.OperationError(
-            "Could not read imported wallet custodians and signature threshold"
+            "Could not read the Safe's custodians and signature threshold"
         ) from exc
     return {
         "custodians": len(public_keys),

@@ -105,14 +105,32 @@ def is_host_port_available(port, protocol):
         for obj in json.loads(
             process.execute_command(["docker", "inspect", *ids]).stdout
         ):
-            for key, bindings in (
-                obj.get("HostConfig", {}).get("PortBindings") or {}
-            ).items():
-                if key.endswith("/" + protocol) and any(
-                    int(b["HostPort"]) == port for b in bindings or []
-                ):
-                    return False
+            if port in _bound_host_ports(obj, protocol):
+                return False
     return True
+
+
+def _bound_host_ports(obj, protocol):
+    """Host ports one inspected container binds for this protocol.
+
+    The ports it asked for (a range reserves every port in it), and, while it
+    runs, the ones Docker assigned. A binding that names no host port lets
+    Docker choose one when the container starts, so it reserves none before.
+    """
+    ports = set()
+    for table in (
+        (obj.get("HostConfig") or {}).get("PortBindings"),
+        (obj.get("NetworkSettings") or {}).get("Ports"),
+    ):
+        for key, bindings in (table or {}).items():
+            if not key.endswith("/" + protocol):
+                continue
+            for binding in bindings or []:
+                value = str((binding or {}).get("HostPort") or "")
+                low, _, high = value.partition("-")
+                if low.isdigit() and (high or low).isdigit():
+                    ports.update(range(int(low), int(high or low) + 1))
+    return ports
 
 
 def select_available_node_port(store, proposed, protocol, explicit=None):

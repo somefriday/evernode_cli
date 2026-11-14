@@ -23,7 +23,8 @@ Deploys the DePool with the settings chosen at `node create`, waits until it is 
 
 - Needs stage `depool-prepared` and a balance of twice the balance threshold plus 5 tokens (45 by default).
 - On a brand-new network, deploy only after the first validator-set change: the constructor needs config param 32.
-- An active account whose constructor failed is reported as such and the stage stays `depool-prepared`.
+- Run again after a wait that ran out or a dropped session: a DePool already on chain is not deployed again, only checked.
+- An active account whose constructor failed is reported as such and the stage stays `depool-prepared`. One that does not answer is reported with the error; run the command again to check it.
 
 ## See also
 
