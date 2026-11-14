@@ -6,13 +6,14 @@ Every command except `host check` and the offline and key-file `vote` commands n
 
 ## Setup by validator type
 
-`node status` names the next command at every step. The whole sequence for each type (`validator01` stands for your node's name; fund an address when the previous command prints it):
+`node status` names the next command at every step. A node is created and synchronized first and gets its validator role afterwards, from `node setup`, so several nodes can be created and synchronized before any of them is set up. The whole sequence for each type (`validator01` stands for your node's name; fund an address when the previous command prints it):
 
 **DePool**
 
 ```bash
 sudo evernode node create -n validator01
 sudo evernode node sync -n validator01 --wait
+sudo evernode node setup -n validator01
 sudo evernode wallet create -n validator01
 sudo evernode wallet deploy -n validator01
 sudo evernode depool prepare -n validator01
@@ -24,8 +25,9 @@ sudo evernode election start -n validator01
 **Solo**
 
 ```bash
-sudo evernode node create -n validator01 --validator-type solo
+sudo evernode node create -n validator01
 sudo evernode node sync -n validator01 --wait
+sudo evernode node setup -n validator01 --validator-type solo
 sudo evernode wallet create -n validator01
 sudo evernode wallet deploy -n validator01
 sudo evernode stake set -n validator01 --mode balanced
@@ -35,8 +37,9 @@ sudo evernode election start -n validator01
 **Nominator**
 
 ```bash
-sudo evernode node create -n validator01 --validator-type nominator --owner-address -1:COLD_OWNER
+sudo evernode node create -n validator01
 sudo evernode node sync -n validator01 --wait
+sudo evernode node setup -n validator01 --validator-type nominator --owner-address -1:COLD_OWNER
 sudo evernode wallet create -n validator01
 sudo evernode wallet deploy -n validator01
 sudo evernode nominator prepare -n validator01
@@ -49,9 +52,10 @@ sudo evernode election start -n validator01
 **Import (existing Safe, from seed phrases)**
 
 ```bash
-sudo evernode node create -n validator01 --import-wallet --wallet-address ADDRESS [--depool-address ADDRESS]
+sudo evernode node create -n validator01
 sudo evernode node sync -n validator01 --wait
-sudo evernode wallet recover -n validator01
+sudo evernode node setup -n validator01 --import-wallet --wallet-address ADDRESS [--depool-address ADDRESS | --validator-type TYPE]
+sudo evernode wallet recover -n validator01                # types the seed phrases; checks them against the chain
 sudo evernode wallet verify -n validator01
 # then, by type:
 sudo evernode depool verify -n validator01                # DePool
@@ -73,7 +77,8 @@ A nominator's owner funds the contract after `nominator verify`. A solo or nomin
 
 | Command                                     | What it does                                                           |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
-| [`node create`](node/create.md)             | Create a validator node: its workspace, keys, containers and ports.    |
+| [`node create`](node/create.md)             | Create a node: its workspace, identity, containers and ports.          |
+| [`node setup`](node/setup.md)               | Give a created node its validator role: type, Safe and DePool.         |
 | [`node list`](node/list.md)                 | Show every managed node and its state.                                 |
 | [`node status`](node/status.md)             | Show one node's containers, sync state and next setup step.            |
 | [`node config`](node/config.md)             | Print a node's saved configuration.                                    |

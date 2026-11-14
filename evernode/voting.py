@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import arguments, elections, process, storage, wallets
+from . import arguments, configuration, elections, process, storage, wallets
 
 ENGINE = "evernode-vote"
 # The engine release this module speaks to; vote/Cargo.toml has the same version.
@@ -341,10 +341,7 @@ def require_private_wallet(path):
 
 def require_masterchain_safe(config):
     """The config contract takes payment only from the masterchain."""
-    if "wallet" not in config:
-        raise process.OperationError(
-            "This legacy node has no wallet setup profile; create a new managed node"
-        )
+    configuration.require_role(config)
     # The address decides once the Safe exists: an imported DePool validator's
     # Safe may be in the masterchain whatever workchain its node works in.
     address = config["wallet"].get("wallet_address")

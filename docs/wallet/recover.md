@@ -10,7 +10,7 @@ sudo evernode wallet recover -n validator01
 
 ## What it does
 
-Derives a key pair from each stored phrase and compares the public keys and the signature threshold with the Safe on chain. Only then are the key files installed for the election scripts.
+Asks for the Safe's seed phrases the first time, derives a key pair from each and compares the public keys and the signature threshold with the Safe on chain. Only then are the key files installed for the election scripts.
 
 ## Flags
 
@@ -22,8 +22,8 @@ Derives a key pair from each stored phrase and compares the public keys and the 
 
 ## Behaviour
 
-- For nodes created with `--import-wallet`, at stage `node-started`.
-- If no phrases are stored (a resumed create), they are asked for here, at a hidden prompt.
+- For a node set up with `node setup --import-wallet`, at stage `node-started`.
+- The first run asks for one seed phrase per custodian at a hidden prompt, and stores them root-only in the node's `keys/`.
 - A mistyped phrase fails this check; run it again with `--replace-seeds`.
 - Never prints phrases, deploys anything or moves funds.
 

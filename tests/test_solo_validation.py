@@ -26,7 +26,8 @@ def solo_config(**changes):
 
 class ValidatorTypeTests(unittest.TestCase):
     def test_a_node_saved_before_solo_existed_stakes_through_a_depool(self):
-        self.assertEqual(configuration.validator_type({}), "depool")
+        # Such a node.json has a wallet profile and no type.
+        self.assertEqual(configuration.validator_type({"name": "v1", "wallet": {}}), "depool")
 
     def test_an_unknown_type_is_refused(self):
         with self.assertRaises(process.OperationError):
@@ -81,26 +82,26 @@ class AddressArgumentTests(unittest.TestCase):
 
     def test_a_masterchain_wallet_can_be_written_after_a_space(self):
         parsed = self.normalize(
-            "node", "create", "-n", "v", "--validator-type", "solo",
+            "node", "setup", "-n", "v", "--validator-type", "solo",
             "--import-wallet", "--wallet-address", "-1:" + "d" * 64,
         )
         self.assertEqual(parsed.wallet_address, "-1:" + "d" * 64)
 
     def test_the_joined_form_still_works(self):
         parsed = self.normalize(
-            "node", "create", "-n", "v", "--wallet-address=-1:" + "d" * 64
+            "node", "setup", "-n", "v", "--wallet-address=-1:" + "d" * 64
         )
         self.assertEqual(parsed.wallet_address, "-1:" + "d" * 64)
 
     def test_a_basechain_address_is_untouched(self):
         parsed = self.normalize(
-            "node", "create", "-n", "v", "--wallet-address", "0:" + "d" * 64
+            "node", "setup", "-n", "v", "--wallet-address", "0:" + "d" * 64
         )
         self.assertEqual(parsed.wallet_address, "0:" + "d" * 64)
 
     def test_a_masterchain_depool_address_is_accepted_too(self):
         parsed = self.normalize(
-            "node", "create", "-n", "v", "--depool-address", "-1:" + "b" * 64
+            "node", "setup", "-n", "v", "--depool-address", "-1:" + "b" * 64
         )
         self.assertEqual(parsed.depool_address, "-1:" + "b" * 64)
 
@@ -558,7 +559,9 @@ class SetStakeTests(unittest.TestCase):
         self.assertIn("stake set", str(caught.exception))
         stake.require_recorded_stake(solo_config(settings={"MSIG_FIX_STAKE": 100}))
         # A DePool validator has no such setting and is not subject to it.
-        stake.require_recorded_stake(make_node_configuration("validator01"))
+        stake.require_recorded_stake(
+            make_node_configuration("validator01", validator_type="depool")
+        )
 
     def test_the_parser_refuses_two_ways_of_naming_one_stake(self):
         parser = build_argument_parser()

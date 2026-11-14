@@ -20,6 +20,7 @@ from evernode import (
     images,
     nominator,
     process,
+    role,
     scripts,
     storage,
     setup_actions,
@@ -280,7 +281,7 @@ class FocusedFeatureTests(unittest.TestCase):
         directory = self.store.node_directory("validator")
         for part in ("scripts", "logs/validator", "elections"):
             (directory / part).mkdir(parents=True, exist_ok=True)
-        config = make_node_configuration("validator")
+        config = make_node_configuration("validator", validator_type="depool")
         with (
             tempfile.TemporaryDirectory() as temporary,
             patch(
@@ -649,56 +650,51 @@ class FocusedFeatureTests(unittest.TestCase):
         )
         self.assertFalse(any("docker-ce" in command for command in installs))
 
+    def created_node(self):
+        """What node create leaves: a running node with no validator role yet."""
+        self.store.node_directory("validator").mkdir(parents=True)
+        self.store.save_node_config(
+            make_node_configuration(
+                "validator", phase="console-ready", setup_stage="node-started"
+            )
+        )
+
+    def setup_arguments(self, *flags):
+        return build_argument_parser().parse_args(
+            ["node", "setup", "-n", "validator", *flags]
+        )
+
     def test_import_does_not_prompt_for_new_depool_terms(self):
-        parser = build_argument_parser()
-        args = parser.parse_args(
-            [
-                "node",
-                "create",
-                "-n",
-                "validator",
-                "--image",
-                "local/ever-node:abc",
-                "--ip",
-                "203.0.113.5",
-                "--memory",
-                "40G",
-                "--import-wallet",
-                "--wallet-address",
-                "0:" + "a" * 64,
-                "--depool-address",
-                "0:" + "b" * 64,
-                "--custodians",
-                "3",
-                "--required-signatures",
-                "2",
-                "--dry-run",
-            ]
+        self.created_node()
+        args = self.setup_arguments(
+            "--import-wallet",
+            "--wallet-address",
+            "0:" + "a" * 64,
+            "--depool-address",
+            "0:" + "b" * 64,
+            "--custodians",
+            "3",
+            "--required-signatures",
+            "2",
+            "--dry-run",
         )
         with (
+            patch("evernode.role.sys.stdin.isatty", return_value=True),
             patch(
-                "evernode.creation.docker.select_container_names",
-                return_value=("ever-node-01", "statsd-01"),
-            ),
-            patch(
-                "evernode.creation.docker.select_available_node_port",
-                side_effect=(58888, 9102),
-            ),
-            patch("evernode.cli.sys.stdin.isatty", return_value=True),
-            patch(
-                "evernode.creation.ui.prompt_for_value",
+                "evernode.role.ui.prompt_for_value",
                 side_effect=lambda value, _label, default=None: (
                     value if value is not None else default
                 ),
             ),
             patch(
-                "evernode.creation.ui.prompt_integer",
+                "evernode.role.ui.prompt_integer",
                 side_effect=lambda value, label, default: (
                     default if value is None else value
                 ),
             ) as integer,
+            contextlib.redirect_stdout(io.StringIO()),
         ):
-            self.assertEqual(creation.handle_node_creation(self.store, args), 0)
+            self.assertEqual(role.handle_node_setup(self.store, "validator", args), 0)
         # The workchain is a fixed choice and is selected, not typed, so the
         # only value still entered as an integer here is the cron interval.
         self.assertEqual(
@@ -707,54 +703,36 @@ class FocusedFeatureTests(unittest.TestCase):
         )
 
     def test_import_prompt_labels_depool_address_as_required(self):
-        args = build_argument_parser().parse_args(
-            [
-                "node",
-                "create",
-                "-n",
-                "validator",
-                "--image",
-                "local/ever-node:abc",
-                "--ip",
-                "203.0.113.5",
-                "--memory",
-                "40G",
-                "--import-wallet",
-                "--wallet-address",
-                "0:" + "a" * 64,
-                "--custodians",
-                "3",
-                "--required-signatures",
-                "2",
-                "--dry-run",
-            ]
+        self.created_node()
+        args = self.setup_arguments(
+            "--import-wallet",
+            "--wallet-address",
+            "0:" + "a" * 64,
+            "--custodians",
+            "3",
+            "--required-signatures",
+            "2",
+            "--dry-run",
         )
         with (
+            patch("evernode.role.sys.stdin.isatty", return_value=True),
             patch(
-                "evernode.creation.docker.select_container_names",
-                return_value=("ever-node-01", "statsd-01"),
-            ),
-            patch(
-                "evernode.creation.docker.select_available_node_port",
-                side_effect=(58888, 9102),
-            ),
-            patch("evernode.creation.sys.stdin.isatty", return_value=True),
-            patch(
-                "evernode.creation.ui.prompt_for_value",
+                "evernode.role.ui.prompt_for_value",
                 side_effect=lambda value, _label, default=None: (
                     value if value is not None else default
                 ),
             ),
             patch(
-                "evernode.creation.ui.prompt_integer",
+                "evernode.role.ui.prompt_integer",
                 side_effect=lambda value, _label, default: (
                     default if value is None else value
                 ),
             ),
             patch("builtins.input", return_value="") as prompt,
+            contextlib.redirect_stdout(io.StringIO()),
         ):
             with self.assertRaisesRegex(process.OperationError, "requires expected"):
-                creation.handle_node_creation(self.store, args)
+                role.handle_node_setup(self.store, "validator", args)
         prompt.assert_called_once_with("Existing DePool address: ")
 
     def test_failed_node_create_discards_its_partial_workspace(self):
@@ -772,24 +750,6 @@ class FocusedFeatureTests(unittest.TestCase):
                 "40G",
                 "--network",
                 "main",
-                "--workchain",
-                "0",
-                "--cron-interval",
-                "10",
-                "--depool-type",
-                "EverX",
-                "--validator-assurance",
-                "50000",
-                "--min-stake",
-                "10",
-                "--reward-fraction",
-                "65",
-                "--balance-threshold",
-                "20",
-                "--custodians",
-                "3",
-                "--required-signatures",
-                "2",
                 "--yes",
             ]
         )

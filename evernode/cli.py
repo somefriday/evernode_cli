@@ -19,6 +19,7 @@ from . import (
     process,
     provisioning,
     resources,
+    role,
     setup_actions,
     stake,
     storage,
@@ -263,6 +264,8 @@ def main(argv=None):
         store = storage.NodeStateStore(args.state_dir)
         if args.group == "node" and args.action == "create":
             return creation.handle_node_creation(store, args)
+        if args.group == "node" and args.action == "setup":
+            return role.handle_node_setup(store, select_node_names(store, args)[0], args)
         if args.group == "node" and args.action == "resources":
             return resources.show_node_resources(store, args.name)
         if args.group in ("wallet", "depool", "stake", "nominator"):
@@ -328,6 +331,7 @@ def main(argv=None):
             elif args.action == "start":
                 name = configuration.validate_node_name(args.name)
                 config = store.load_node_config(name)
+                configuration.require_role(config)
                 if config.get("setup_stage") not in ("imported", "ready-for-elections"):
                     raise process.OperationError(
                         "Complete wallet/DePool setup before enabling elections"

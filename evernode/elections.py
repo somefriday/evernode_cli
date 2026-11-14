@@ -183,7 +183,13 @@ def election_schedule_status(store, config):
         and not path.is_symlink()
         and path.read_text().startswith("# Managed by evernode\n"),
         "cron_file": str(path),
-        "sequence": str(election_sequence_path(store, config)),
+        # Which sequence runs follows from the validator type, which a node
+        # without a role does not have yet.
+        "sequence": (
+            str(election_sequence_path(store, config))
+            if configuration.has_role(config)
+            else None
+        ),
         "log": str(
             store.node_directory(config["name"])
             / "logs"

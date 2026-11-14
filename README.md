@@ -42,8 +42,9 @@ from the old checkout path or a clone of the upstream kit. Move it once with
 ## New validator
 
 ```bash
-evernode node create -n validator01        # menu: type, network, image
+evernode node create -n validator01        # menu: network, image
 evernode node sync -n validator01 --wait
+evernode node setup -n validator01         # menu: type, new or existing Safe, DePool terms
 evernode wallet create -n validator01      # prints seed phrases
 evernode wallet deploy -n validator01      # fund the address first
 evernode depool prepare -n validator01     # prints seed phrases
@@ -57,15 +58,16 @@ Once the first stake has entered an election, add the second: `evernode depool s
 **Save every seed phrase offline before funding anything.** The only other copy
 is the node's root-only `keys/` directory.
 
-Validator types, chosen in the `node create` menu:
+Validator types, chosen in the `node setup` menu:
 
 - `depool` — stake in a shared pool, node bids for the pool
 - `solo` — node stakes its own money, no pool
 - `nominator` — cold owner holds the stake, server may bid and recover only
 
-The commands above are the DePool sequence; the solo and nominator sequences are
-in [docs/README.md](docs/README.md). `node status` prints the next step whenever
-you lose your place.
+The commands above are the DePool sequence; the solo, nominator and existing-Safe
+sequences are in [docs/README.md](docs/README.md). The role comes after the sync,
+so several nodes can be created and synchronized first and set up one by one.
+`node status` prints the next step whenever you lose your place.
 
 ## Everyday
 

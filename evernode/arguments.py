@@ -97,14 +97,7 @@ def build_argument_parser():
         help="Build a new image from source; skips the interactive image menu",
     )
     c.add_argument("--ip")
-    c.add_argument(
-        "--validator-type",
-        choices=["depool", "solo", "nominator"],
-        help="How this validator stakes: through a DePool, solo from its own "
-        "Safe, or from a nominator contract a cold owner holds",
-    )
     c.add_argument("--network", choices=["main", "devnet"])
-    c.add_argument("--workchain", type=int)
     c.add_argument("--adnl-port", type=int)
     c.add_argument("--metrics-port", type=int)
     c.add_argument(
@@ -123,26 +116,6 @@ def build_argument_parser():
     c.add_argument("--cli-repo")
     c.add_argument("--cli-ref")
     c.add_argument("--image-repo")
-    c.add_argument("--cron-interval", type=int)
-    c.add_argument("--depool-type", choices=["EverX", "StEver"])
-    c.add_argument("--validator-assurance", type=int)
-    c.add_argument("--min-stake", type=int)
-    c.add_argument("--reward-fraction", type=int)
-    c.add_argument("--balance-threshold", type=int)
-    c.add_argument(
-        "--import-wallet",
-        action="store_true",
-        help="Recover an existing Safe multisig from seed phrases",
-    )
-    c.add_argument("--custodians", type=int)
-    c.add_argument("--required-signatures", type=int)
-    c.add_argument(
-        "--owner-address",
-        help="Cold owner of a nominator validator's stake; masterchain, and "
-        "never a wallet this server holds",
-    )
-    c.add_argument("--wallet-address")
-    c.add_argument("--depool-address")
     c.add_argument(
         "--resume",
         action="store_true",
@@ -150,6 +123,39 @@ def build_argument_parser():
     )
     c.add_argument("--yes", action="store_true")
     c.add_argument("--dry-run", action="store_true")
+    s = node.add_parser(
+        "setup", help="Give a created node its validator role: type, Safe and DePool"
+    )
+    s.add_argument("-n", "--name")
+    s.add_argument(
+        "--validator-type",
+        choices=["depool", "solo", "nominator"],
+        help="How this validator stakes: through a DePool, solo from its own "
+        "Safe, or from a nominator contract a cold owner holds",
+    )
+    s.add_argument(
+        "--import-wallet",
+        action="store_true",
+        help="Use an existing Safe; its seed phrases are typed at wallet recover",
+    )
+    s.add_argument("--wallet-address")
+    s.add_argument("--depool-address")
+    s.add_argument("--custodians", type=int)
+    s.add_argument("--required-signatures", type=int)
+    s.add_argument(
+        "--owner-address",
+        help="Cold owner of a nominator validator's stake; masterchain, and "
+        "never a wallet this server holds",
+    )
+    s.add_argument("--depool-type", choices=["EverX", "StEver"])
+    s.add_argument("--validator-assurance", type=int)
+    s.add_argument("--min-stake", type=int)
+    s.add_argument("--reward-fraction", type=int)
+    s.add_argument("--balance-threshold", type=int)
+    s.add_argument("--cron-interval", type=int)
+    s.add_argument("--workchain", type=int)
+    s.add_argument("--yes", action="store_true")
+    s.add_argument("--dry-run", action="store_true")
     for command in (
         "list",
         "status",

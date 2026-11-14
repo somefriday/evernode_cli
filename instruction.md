@@ -153,18 +153,9 @@ killed rather than failed (a dropped session, a reboot) leaves the node in
 place: finish it with `evernode node create --resume -n validator01`, then
 `evernode node start -n validator01`.
 
-The fresh-DePool flow uses these defaults when Enter is pressed:
-
-| Setting | Default |
-| --- | --- |
-| Network / workchain | `main` / `0` |
-| Election check interval | `10` minutes |
-| DePool type | `EverX` |
-| Validator assurance | `50000` EVER |
-| Minimum stake | `10` EVER |
-| Participant reward fraction | `65`% |
-| DePool balance threshold | `20` EVER |
-| Multisig custodians / required signatures | `3` / `2` |
+`node create` asks only about the node: the network (`main` by default), the
+image, the public IPv4 and the memory limit. Nothing about wallets, DePools or
+seed phrases is asked until `node setup`, after the sync.
 
 The tool discovers a public IPv4 as a proposed value, but confirm that it is
 the address actually forwarded to this server. New nodes use container names
@@ -184,6 +175,27 @@ until it sees two consecutive synchronized responses:
 evernode node sync -n validator01 --wait
 evernode node status -n validator01
 ```
+
+Then give the node its validator role. Several nodes can be created and
+synchronized first, and set up one by one:
+
+```bash
+evernode node setup -n validator01
+```
+
+The fresh-DePool role uses these defaults when Enter is pressed:
+
+| Setting | Default |
+| --- | --- |
+| Validator type / Safe | `depool` / new |
+| Workchain | `0` |
+| Election check interval | `10` minutes |
+| DePool type | `EverX` |
+| Validator assurance | `50000` EVER |
+| Minimum stake | `10` EVER |
+| Participant reward fraction | `65`% |
+| DePool balance threshold | `20` EVER |
+| Multisig custodians / required signatures | `3` / `2` |
 
 Complete the wallet and DePool stages in order. Each command performs one
 named action and prints its exact next command.
@@ -207,10 +219,10 @@ evernode election start -n validator01
 evernode election status -n validator01
 ```
 
-`node create` does not generate Safe phrases. `wallet create` and `depool
-prepare` require an interactive terminal. They print new seed phrases directly
-to that terminal and require you to acknowledge that they were saved. Phrases
-are not included in logs or JSON output.
+`node create` and `node setup` do not generate Safe phrases. `wallet create`
+and `depool prepare` require an interactive terminal. They print new seed
+phrases directly to that terminal and require you to acknowledge that they were
+saved. Phrases are not included in logs or JSON output.
 
 The election schedule is an isolated root-owned file at
 `/etc/cron.d/evernode-validator01`. On every interval it runs the reference
@@ -244,7 +256,9 @@ terminal prompt. It never accepts phrases as command arguments, environment
 variables or standard input.
 
 ```bash
-evernode node create -n validator01 \
+evernode node create -n validator01
+evernode node sync -n validator01 --wait
+evernode node setup -n validator01 \
   --import-wallet \
   --wallet-address 0:YOUR_64_HEX_WALLET_ADDRESS \
   --depool-address 0:YOUR_64_HEX_DEPOOL_ADDRESS \
@@ -252,9 +266,9 @@ evernode node create -n validator01 \
   --required-signatures 2
 ```
 
-Confirm the network settings and public IPv4, then enter one phrase for each
-custodian when prompted. The phrases are written as root-only `0600` files in
-the node's key directory.
+`node setup` asks for no phrase. `wallet recover`, below, asks for one phrase
+per custodian and writes them as root-only `0600` files in the node's key
+directory.
 
 An imported DePool keeps its existing on-chain assurance, minimum stake,
 reward fraction and balance threshold. The CLI does not prompt for those
@@ -262,10 +276,9 @@ new-DePool deployment parameters during import. Select the existing DePool
 type correctly (`EverX` or `StEver`), because its ABI is needed to verify and
 operate that contract.
 
-Synchronize and verify the recovered wallet against chain state:
+Recover the wallet and verify it against chain state:
 
 ```bash
-evernode node sync -n validator01 --wait
 evernode wallet recover -n validator01
 evernode wallet verify -n validator01
 evernode depool verify -n validator01
@@ -273,15 +286,14 @@ evernode election start -n validator01
 evernode election status -n validator01
 ```
 
-`wallet recover` derives local key files from the stored phrases and checks
+`wallet recover` asks for the phrases, derives local key files from them and checks
 that their public keys are the wallet's on-chain custodians. The key that
 originally determined the wallet address need not be among its current
 custodians. `wallet verify` rechecks the custodians and signature threshold.
 `depool verify` checks that the DePool names this wallet and installs the
 address file used by election scripts. These commands never print phrases,
-deploy contracts or make a stake. If a phrase was mistyped at `node create`,
-`wallet recover` fails its check: type them again with
-`evernode wallet recover -n validator01 --replace-seeds`.
+deploy contracts or make a stake. A mistyped phrase fails the check at once:
+type them again with `evernode wallet recover -n validator01 --replace-seeds`.
 
 ## Solo and nominator validators
 

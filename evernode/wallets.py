@@ -60,9 +60,9 @@ def validate_wallet_profile(profile, *, validator_type="depool"):
 
 def node_wallet_profile(config):
     """Validate a saved profile against what this node's type requires."""
-    return validate_wallet_profile(
-        config["wallet"], validator_type=configuration.validator_type(config)
-    )
+    # The type first: it refuses a node node setup has not given a role yet.
+    kind = configuration.validator_type(config)
+    return validate_wallet_profile(config.get("wallet"), validator_type=kind)
 
 
 def seed_directory(store, config):
@@ -849,6 +849,8 @@ def depool_verify(store, config):
 
 def next_setup_command(config):
     name = config["name"]
+    if not configuration.has_role(config):
+        return f"evernode node setup -n {name}"
     shared = {
         ("new", "node-started"): f"evernode wallet create -n {name}",
         ("new", "wallet-created"): f"evernode wallet deploy -n {name}",

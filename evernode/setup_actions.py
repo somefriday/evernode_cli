@@ -16,15 +16,14 @@ OFFLINE_ACTIONS = (("nominator", "prepare"),)
 
 def _require_setup_node(store, name, action):
     config = store.load_node_config(name)
+    # The role first: a node from node create has none until node setup, and
+    # that step is what to name, before anything the console could refuse.
+    configuration.require_role(config)
     # One guard decides whether this node's console can serve an operation, so
     # every command refuses for the same reason in the same words. It is the
     # only transport there is; see signing-reliability-design.md, D13.
     if action not in OFFLINE_ACTIONS:
         scripts.require_node_console(config)
-    if "wallet" not in config:
-        raise process.OperationError(
-            "This legacy node has no wallet setup profile; create a new managed node"
-        )
     return config
 
 

@@ -18,6 +18,7 @@ from evernode import (
     arguments,
     creation,
     images,
+    role,
     nodes,
     nominator,
     process,
@@ -140,13 +141,11 @@ class CreationTests(unittest.TestCase):
         self.assertNotIn("Removed failed setup", errors.getvalue())
 
     def test_r2_13_an_existing_address_needs_import_wallet(self):
-        with (
-            patch("evernode.docker.select_container_names", return_value=("a", "b")),
-            self.assertRaisesRegex(process.OperationError, "--import-wallet"),
-        ):
-            creation.handle_node_creation(
-                self.store, self.arguments("--wallet-address", "0:" + "a" * 64)
-            )
+        args = arguments.build_argument_parser().parse_args(
+            ["node", "setup", "-n", "validator01", "--wallet-address", "0:" + "a" * 64]
+        )
+        with self.assertRaisesRegex(process.OperationError, "--import-wallet"):
+            role.ask_role(self.store, make_node_configuration("validator01"), args)
 
     def test_r2_06_wallet_setup_opens_when_a_resumed_node_first_starts(self):
         config = make_node_configuration(

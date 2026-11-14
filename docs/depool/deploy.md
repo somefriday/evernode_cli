@@ -10,7 +10,7 @@ sudo evernode depool deploy -n validator01
 
 ## What it does
 
-Deploys the DePool with the settings chosen at `node create`, waits until it is active and checks that it names this node's Safe as its validator wallet.
+Deploys the DePool with the settings chosen at `node setup`, waits until it is active and checks that it names this node's Safe as its validator wallet.
 
 ## Flags
 

@@ -323,10 +323,6 @@ class ImageSelectionTests(unittest.TestCase):
                 "203.0.113.5",
                 "--memory",
                 "40G",
-                "--custodians",
-                "3",
-                "--required-signatures",
-                "2",
             ]
         )
         with (
@@ -361,10 +357,6 @@ class ImageSelectionTests(unittest.TestCase):
                 "203.0.113.5",
                 "--memory",
                 "40G",
-                "--custodians",
-                "3",
-                "--required-signatures",
-                "2",
             ]
         )
         commit = "a" * 40

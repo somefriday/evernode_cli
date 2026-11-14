@@ -24,7 +24,7 @@ import unittest
 from unittest.mock import patch
 
 from evernode import (
-    configuration, creation, elections, nominator, process, scripts, setup_actions,
+    configuration, elections, nominator, process, role, scripts, setup_actions,
     stake, wallets,
 )
 from evernode.arguments import build_argument_parser, normalize_address_arguments
@@ -77,6 +77,8 @@ class ValidatorTypeTests(unittest.TestCase):
     def test_a_node_saved_before_this_mode_existed_still_loads(self):
         """Older node.json files carry none of the nominator settings."""
         saved = make_node_configuration("v1")
+        saved["wallet"] = {"mode": "new", "custodians": 3, "required_signatures": 2,
+                           "wallet_address": None, "depool_address": None}
         saved["settings"] = {"NODE_WC": 0, "CRONTAB_INTERVAL": 10}
         value = configuration.validate_saved_node_config(saved, "v1")
         self.assertEqual(configuration.validator_type(value), "depool")
@@ -286,7 +288,7 @@ class CommandSeparationTests(unittest.TestCase):
         parser = build_argument_parser()
         parsed = parser.parse_args(
             normalize_address_arguments(
-                ["node", "create", "-n", "v", "--validator-type", "solo",
+                ["node", "setup", "-n", "v", "--validator-type", "solo",
                  "--owner-address", OWNER, "--dry-run"]
             )
         )
@@ -934,11 +936,11 @@ class ModeInheritanceTests(unittest.TestCase):
                 self.assertNotIn(forbidden, written)
 
     def test_no_mode_without_a_depool_is_asked_which_depool_to_use(self):
-        source = Path(creation.__file__).read_text()
+        source = Path(role.__file__).read_text()
         self.assertIn("if solo or nominator\n", source)
 
     def test_an_imported_safe_must_reach_the_elector_in_both_modes(self):
-        source = Path(creation.__file__).read_text()
+        source = Path(role.__file__).read_text()
         self.assertIn("if solo or nominator:", source)
 
     def test_the_stake_questions_name_the_account_that_holds_the_stake(self):
@@ -963,7 +965,7 @@ class SafeKeysTests(unittest.TestCase):
     """A new nominator Safe is offered one key first; everything else keeps its prompts."""
 
     def choose(self, *flags, nominator=True, importing=False, menu=None):
-        args = build_argument_parser().parse_args(["node", "create", "-n", "validator01", *flags])
+        args = build_argument_parser().parse_args(["node", "setup", "-n", "validator01", *flags])
         asked = []
 
         def prompt(value, label, default=None):
@@ -971,11 +973,11 @@ class SafeKeysTests(unittest.TestCase):
             return default
 
         with (
-            patch("evernode.creation.ui.select_choice",
+            patch("evernode.role.ui.select_choice",
                   side_effect=lambda *a, **k: menu or k["default"]) as select,
-            patch("evernode.creation.ui.prompt_for_value", side_effect=prompt),
+            patch("evernode.role.ui.prompt_for_value", side_effect=prompt),
         ):
-            keys = creation.choose_safe_keys(args, nominator, importing)
+            keys = role.choose_safe_keys(args, nominator, importing)
         return keys, select.call_count, asked
 
     def test_a_new_nominator_safe_has_one_key_unless_several_are_chosen(self):
@@ -986,9 +988,9 @@ class SafeKeysTests(unittest.TestCase):
         )
 
     def test_without_a_terminal_a_new_nominator_safe_gets_one_key(self):
-        args = build_argument_parser().parse_args(["node", "create", "-n", "validator01"])
+        args = build_argument_parser().parse_args(["node", "setup", "-n", "validator01"])
         with patch("sys.stdin", io.StringIO()):
-            self.assertEqual(creation.choose_safe_keys(args, True, False), (1, 1))
+            self.assertEqual(role.choose_safe_keys(args, True, False), (1, 1))
 
     def test_flags_an_import_and_the_other_types_keep_the_plain_prompts(self):
         self.assertEqual(

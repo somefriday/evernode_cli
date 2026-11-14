@@ -66,8 +66,29 @@ def is_bundled_source(source_spec):
     return source_spec == BUNDLED_SOURCE_SPEC
 
 
+def has_role(config):
+    """Whether node setup has given this node its validator role.
+
+    node setup saves the type and the wallet profile together. A node created
+    before node setup existed got both from node create, or only the profile
+    if it predates the type choice. A node with neither has no role yet.
+    """
+    return "validator_type" in config or isinstance(config.get("wallet"), dict)
+
+
+def require_role(config):
+    if not has_role(config):
+        name = config.get("name", "NAME")
+        raise process.OperationError(
+            f"{name} has no validator role yet: run evernode node setup -n {name}"
+        )
+
+
 def validator_type(config):
-    """A node created before solo staking existed stakes through a DePool."""
+    """How the node stakes. A node created before solo staking existed stakes
+    through a DePool; a node without a role has no type, and is refused here
+    rather than taken for a DePool validator."""
+    require_role(config)
     value = config.get("validator_type", "depool")
     if value not in VALIDATOR_TYPES:
         raise process.OperationError("Invalid validator type in node configuration")
@@ -120,7 +141,8 @@ def validate_saved_node_config(value, name):
     node_compose_project(value)
     if value.get("network") not in ("main", "devnet"):
         raise process.OperationError("Invalid network in node configuration")
-    validator_type(value)
+    if value.get("validator_type", "depool") not in VALIDATOR_TYPES:
+        raise process.OperationError("Invalid validator type in node configuration")
     try:
         ipaddress.IPv4Address(value.get("ip", ""))
     except (ValueError, TypeError):
@@ -244,8 +266,10 @@ def build_node_environment(config):
         "NODE_WC": settings["NODE_WC"],
         # The kit calls solo staking 'msig': the validator's own Safe
         # stakes. Nominator staking keeps the same elector conversation and
-        # changes only who sends it, so the kit calls it 'nominator'.
-        "STAKE_MODE": STAKE_MODES[validator_type(config)],
+        # changes only who sends it, so the kit calls it 'nominator'. A node
+        # without a role keeps the kit's own default; nothing runs the election
+        # scripts before node setup gives it one.
+        "STAKE_MODE": STAKE_MODES[validator_type(config) if has_role(config) else "depool"],
         "FORCE_USE_DAPP": "false",
         "DOCKER_USE_CUSTOM_IMAGE": "true",
         "DOCKER_IMAGE_REPO": config["image"].rsplit(":", 1)[0],

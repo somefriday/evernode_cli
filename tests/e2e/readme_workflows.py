@@ -161,20 +161,22 @@ def wait_funded(case, field):
     raise RuntimeError('Expected funding was not visible')
 
 
-def create(case, *, profile=None, phrases=()):
+def create(case, *, profile=None):
     item = CASES[case]
+    command(case, 'node', 'create', '-n', item['name'], '--image', IMAGE,
+            '--project-source', str(BASE / 'source'), '--network', 'devnet',
+            '--ip', item['ip'], '--memory', '2G', '--adnl-port', str(item['port']),
+            '--yes')
+    seed_local_checkpoint(case)
+    synchronize(case)
+    # The validator role comes after the sync, as the README orders it.
     extra = (['--import-wallet', '--wallet-address', profile['wallet_address'],
               '--depool-address', profile['depool_address']] if profile else
              ['--validator-assurance', '50000', '--min-stake', '10',
               '--reward-fraction', '65', '--balance-threshold', '20'])
-    command(case, 'node', 'create', '-n', item['name'], '--image', IMAGE,
-            '--project-source', str(BASE / 'source'), '--network', 'devnet',
-            '--ip', item['ip'], '--memory', '2G', '--adnl-port', str(item['port']),
-            '--workchain', '0', '--cron-interval', '10', '--depool-type', 'EverX',
-            '--custodians', '3', '--required-signatures', '2', '--yes', *extra,
-            terminal=bool(profile), phrases=phrases)
-    seed_local_checkpoint(case)
-    synchronize(case)
+    command(case, 'node', 'setup', '-n', item['name'], '--workchain', '0',
+            '--cron-interval', '10', '--depool-type', 'EverX',
+            '--custodians', '3', '--required-signatures', '2', '--yes', *extra)
 
 
 def snapshot(case, label):
@@ -261,8 +263,10 @@ def main():
                    for i in range(1, 4)]
         record({'kind': 'source-node-fenced', 'case': 'import', 'source': source,
                 'reason': 'A replacement must not validate beside the node it replaces.'})
-        create('import', profile=old['wallet'], phrases=phrases)
-        command('import', 'wallet', 'recover', '-n', CASES['import']['name'], '--yes')
+        create('import', profile=old['wallet'])
+        # wallet recover asks for the phrases and checks them against the chain.
+        command('import', 'wallet', 'recover', '-n', CASES['import']['name'], '--yes',
+                terminal=True, phrases=phrases)
         command('import', 'wallet', 'verify', '-n', CASES['import']['name'])
         command('import', 'depool', 'verify', '-n', CASES['import']['name'])
         value = snapshot('import', 'verified')

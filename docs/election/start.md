@@ -26,7 +26,7 @@ Writes `/etc/cron.d/evernode-NAME`, which runs the node's election sequence ever
 - DePool sequence: prepare (tick the DePool), wait 120 s, bid. A failed preparation stops the run.
 - Solo and nominator sequence: recover finished rounds, then bid; a failed recovery does not cancel the bid.
 - Runs that overlap are skipped. Output goes to `node logs --component election-cron`.
-- The interval is the one chosen at `node create`. Refuses if a schedule is already installed.
+- The interval is the one chosen at `node setup`. Refuses if a schedule is already installed.
 
 ## See also
 
