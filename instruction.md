@@ -279,6 +279,15 @@ deploy contracts or make a stake. If a phrase was mistyped at `node create`,
 `wallet recover` fails its check: type them again with
 `evernode wallet recover -n validator01 --replace-seeds`.
 
+## Solo and nominator validators
+
+Sections 4 and 5 show a DePool validator. A solo validator stakes from its own
+Safe and a nominator validator from a contract its cold owner holds; both skip
+the `depool` commands and use `stake` and `nominator` instead. The command
+sequence for each type is in [docs/README.md](docs/README.md), with one page
+per command under [docs/stake/](docs/stake/set.md) and
+[docs/nominator/](docs/nominator/prepare.md).
+
 ## 6. Update one validator to a rebuilt image
 
 Do planned image maintenance outside of the node's current and next validator

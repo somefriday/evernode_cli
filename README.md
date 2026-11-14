@@ -4,7 +4,8 @@ Runs Everscale validator nodes in Docker on Ubuntu and Debian. Several nodes
 per server, each with its own database, keys, containers, ports and election
 schedule. Node data lives under `/var/lib/ever-validator`.
 
-Run as root. Full guide: [instruction.md](instruction.md).
+Run as root. Full guide: [instruction.md](instruction.md). Every command, with its
+flags: [docs/](docs/README.md).
 
 ## Install
 
@@ -61,7 +62,9 @@ Validator types, chosen in the `node create` menu:
 - `solo` — node stakes its own money, no pool
 - `nominator` — cold owner holds the stake, server may bid and recover only
 
-`node status` prints the next step whenever you lose your place.
+The commands above are the DePool sequence; the solo and nominator sequences are
+in [docs/README.md](docs/README.md). `node status` prints the next step whenever
+you lose your place.
 
 ## Everyday
 

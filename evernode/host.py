@@ -143,9 +143,12 @@ def _supported_release():
 def get_setup_plan():
     distro, _ = _supported_release()
     return (
-        "install Docker Engine, Compose, Git and certificates from Docker's official "
+        "install git, jq, bc, gawk, rsync, cron and chrony; Docker Engine, "
+        "Buildx and Compose from Docker's official "
         + distro.title()
-        + " repository"
+        + " repository when missing; yq "
+        + YQ_VERSION
+        + " to /usr/local/bin/yq; then enable docker, cron and chrony"
     )
 
 
@@ -263,6 +266,7 @@ def install_host_dependencies():
     checks = collect_host_dependency_report()
     if not host_dependencies_available(checks):
         raise process.OperationError(
-            "Docker installation finished but Docker Engine or Compose is unavailable"
+            "Installation finished but a required command or service is still "
+            "missing; see: evernode host check"
         )
     return checks
