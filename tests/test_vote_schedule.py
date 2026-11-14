@@ -448,6 +448,37 @@ class ScheduleTests(unittest.TestCase):
         self.assertFalse((self.state / "voting" / "proposals.json").exists())
         self.assertFalse(self.cron.exists())
 
+    def test_join_all_passes_over_removed_nodes(self):
+        # E1: node remove keeps the directory and its key ring, but the node validates nothing
+        self.add_node("validator02", "solo")
+        self.configs["validator02"]["phase"] = "removed"
+        self.nodes.list_node_names.return_value = ["validator01", "validator02"]
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 3600)})
+        code, out, err = self.run_vote("join", "--all", "--endpoint", "http://gql", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("validator02: removed; skipped", err)
+        self.assertEqual([n["name"] for n in self.calls()[0]["net"]["nodes"]], ["validator01"])
+        [entry] = self.stored()
+        self.assertEqual(entry["nodes"], ["validator01"])
+
+    def test_join_all_with_only_removed_nodes_is_refused(self):
+        self.configs["validator01"]["phase"] = "removed"
+        code, _, err = self.run_vote("join", "--all", "--endpoint", "http://gql", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("validator01: removed; skipped", err)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.state / "voting" / "proposals.json").exists())
+
+    def test_a_removed_node_named_with_n_still_votes(self):
+        # Named on purpose: a node removed with --force may still hold a key of the current set.
+        self.configs["validator01"]["phase"] = "removed"
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 3600)})
+        code, out, err = self.join()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([n["name"] for n in self.calls()[0]["net"]["nodes"]], ["validator01"])
+
     # --keyring: a node evernode does not manage, its config.json on this host or in a container.
 
     def ring(self, key="a2V5"):
@@ -459,14 +490,17 @@ class ScheduleTests(unittest.TestCase):
         path.chmod(mode)
         return path
 
-    def docker(self, *answers):
-        """docker exec answers (exit code, stdout, stderr) in turn; other commands run for real."""
+    def docker(self, *answers, mode=(0, "600\n", "")):
+        """docker exec cat answers (exit code, stdout, stderr) in turn, and stat
+        answers `mode`; other commands run for real."""
         real, queue, seen = vote_schedule.process.execute_command, list(answers), []
 
         def execute(argv, **options):
             if argv[0] != "docker":
                 return real(argv, **options)
             seen.append(argv)
+            if argv[3] == "stat":
+                return vote_schedule.subprocess.CompletedProcess(argv, *mode)
             code, out, err = queue.pop(0) if len(queue) > 1 else queue[0]
             return vote_schedule.subprocess.CompletedProcess(argv, code, out, err)
 
@@ -524,7 +558,9 @@ class ScheduleTests(unittest.TestCase):
         self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now - 1)})
         code, out, _ = self.join_keyring("ever-node:/ever-node/node_cfg/config.json")
         self.assertEqual(code, 0, out)
-        self.assertEqual(seen[0], ["docker", "exec", "ever-node", "cat", "/ever-node/node_cfg/config.json"])
+        # E2: join reads the mode first; nothing here ever changes it.
+        self.assertEqual(seen[0], ["docker", "exec", "ever-node", "stat", "-L", "-c", "%a", "/ever-node/node_cfg/config.json"])
+        self.assertEqual(seen[1], ["docker", "exec", "ever-node", "cat", "/ever-node/node_cfg/config.json"])
         preview, first = self.calls()
         source = "ever-node:/ever-node/node_cfg/config.json"
         self.assertEqual(preview["rings"][source], self.ring())
@@ -532,8 +568,38 @@ class ScheduleTests(unittest.TestCase):
         self.reply({"report": report(next_pass_at=now + 3600)})
         self.run_vote("tick")
         self.assertEqual(self.calls()[-1]["rings"][source], self.ring("bmV4dA=="))
-        self.assertEqual(len(seen), 3)
+        # A pass only reads: the mode is checked at join.
+        self.assertEqual([argv[3] for argv in seen], ["stat", "cat", "cat", "cat"])
+        self.assertFalse([argv for argv in seen if "chmod" in argv])
         self.assertEqual(self.leftovers(), [])
+
+    def test_a_container_key_ring_other_users_can_read_is_refused_at_join(self):
+        # E2: the same refusal as a file on this host, and the key ring is never read
+        seen = self.docker((0, self.ring(), ""), mode=(0, "644\n", ""))
+        code, _, err = self.join_keyring("ever-node:/node/config.json")
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "ever-node:/node/config.json holds a secret key and other users can read it: "
+            "docker exec ever-node chmod 600 /node/config.json",
+            err,
+        )
+        self.assertEqual([argv[3] for argv in seen], ["stat"])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.state / "voting" / "proposals.json").exists())
+
+    def test_a_container_key_ring_whose_mode_cannot_be_read_is_refused(self):
+        for mode, shown in (
+            ((1, "", "stat: cannot statx '/node/config.json': No such file or directory\n"),
+             "ever-node:/node/config.json: stat: cannot statx '/node/config.json': No such file or directory"),
+            ((0, "?\n", ""), "ever-node:/node/config.json: cannot tell who can read it"),
+        ):
+            with self.subTest(shown=shown):
+                seen = self.docker((0, self.ring(), ""), mode=mode)
+                code, _, err = self.join_keyring("ever-node:/node/config.json")
+                self.assertEqual(code, 1)
+                self.assertIn(shown, err)
+                self.assertEqual([argv[3] for argv in seen], ["stat"])
+                self.assertEqual(self.calls(), [])
 
     def test_a_container_error_names_the_source_and_never_its_output(self):
         self.docker((1, "secret-output", "Error response from daemon: No such container: nope\n"))

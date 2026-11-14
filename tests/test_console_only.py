@@ -6,6 +6,8 @@ decided between the two by guessing — ``pgrep ever-node`` in their own process
 table, which is the host's while the node runs in a container. These tests keep
 that choice from coming back, in the vendored scripts and in the CLI.
 """
+import contextlib
+import io
 import json
 import shutil
 import subprocess
@@ -164,6 +166,72 @@ class RequireNodeConsoleTests(unittest.TestCase):
         result = self.run_guard("Node Down")
         self.assertNotIn("DAPP", result.stderr.upper())
 
+    def test_a_late_clock_inside_the_tolerance_runs_with_a_warning(self):
+        """E4: a negative lag is a block stamped ahead of this server's clock."""
+        result = self.run_guard("-5 -3 synchronization_finished active")
+        self.assertIn("rc=0", result.stdout)
+        self.assertIn("clock is 5s behind the network's newest block", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_a_late_clock_past_the_tolerance_is_refused_for_the_clock(self):
+        result = self.run_guard("-25 -24 synchronization_finished active")
+        self.assertIn("rc=1", result.stdout)
+        self.assertIn("clock is 25s behind", result.stderr)
+        self.assertIn("time sync (NTP)", result.stderr)
+        self.assertNotIn("not synced", result.stderr)
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class TimeDiffSignTests(unittest.TestCase):
+    """E4: the console prints ever-node's u32 lag; Get_TimeDiff gives it back its sign."""
+
+    @staticmethod
+    def function(lines, name):
+        start = next(i for i, line in enumerate(lines) if line.startswith(f"function {name}"))
+        end = next(i for i, line in enumerate(lines[start:], start) if line.startswith("}"))
+        return "\n".join(lines[start : end + 1])
+
+    def read(self, timediff, shards_timediff):
+        lines = (SCRIPTS / "functions.shinc").read_text().splitlines()
+        statistics = json.dumps({
+            "node_status": "synchronization_finished",
+            "timediff": timediff,
+            "shards_timediff": shards_timediff,
+            "validation_status": "active",
+        })
+        program = "\n".join([
+            "set +u",
+            "FuncSelfScriptName=test",
+            'function echoerr() { printf "%s\\n" "$*" >&2; }',
+            f"function console() {{ printf '%s\\n' {statistics!r}; }}",
+            "CALL_CONS=console",
+            self.function(lines, "Get_TimeDiff"),
+            self.function(lines, "Require_Node_Console"),
+            'Get_TimeDiff; Require_Node_Console 20; echo "rc=$?"',
+        ])
+        return subprocess.run(
+            ["bash", "-c", program], capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=30,
+        )
+
+    def test_a_wrapped_lag_reads_negative_and_warns(self):
+        result = self.read(4294967285, 4294967290)
+        self.assertEqual(result.stdout.splitlines()[0], "-11 -6 synchronization_finished active")
+        self.assertIn("rc=0", result.stdout)
+        self.assertIn("clock is 11s behind", result.stdout)
+
+    def test_a_wrapped_lag_past_the_tolerance_is_refused_for_the_clock(self):
+        result = self.read(4294967256, 4294967257)
+        self.assertEqual(result.stdout.splitlines()[0], "-40 -39 synchronization_finished active")
+        self.assertIn("rc=1", result.stdout)
+        self.assertIn("clock is 40s behind", result.stderr)
+
+    def test_ordinary_lags_are_read_as_before(self):
+        for lags, line in (((3, 2), "3 2"), ((900, "unknown"), "900 unknown")):
+            with self.subTest(lags=lags):
+                result = self.read(*lags)
+                self.assertEqual(result.stdout.splitlines()[0], f"{line} synchronization_finished active")
+
 
 class CliPrecheckTests(unittest.TestCase):
     """The CLI refuses before the script runs, so the reason is not buried.
@@ -195,6 +263,24 @@ class CliPrecheckTests(unittest.TestCase):
             with self.assertRaises(process.OperationError) as caught:
                 scripts.require_node_console(self.config)
         self.assertIn("node sync -n validator01", str(caught.exception))
+
+    def test_a_late_clock_inside_the_tolerance_passes_with_a_warning(self):
+        statistics = {"sync_status": "synchronization_finished", "timediff": -4, "shards_timediff": -3}
+        err = io.StringIO()
+        with patch("evernode.nodes.fetch_node_statistics", return_value=statistics):
+            with contextlib.redirect_stderr(err):
+                scripts.require_node_console(self.config)
+        self.assertIn("Warning: this server's clock is 4s behind", err.getvalue())
+
+    def test_a_late_clock_is_refused_for_the_clock_not_the_sync(self):
+        statistics = {"sync_status": "synchronization_finished", "timediff": -40, "shards_timediff": -40}
+        with patch("evernode.nodes.fetch_node_statistics", return_value=statistics):
+            with self.assertRaises(process.OperationError) as caught:
+                scripts.require_node_console(self.config, attempts=1, interval=0)
+        message = str(caught.exception)
+        self.assertIn("clock is 40s behind the network's newest block", message)
+        self.assertIn("time sync (NTP)", message)
+        self.assertNotIn("node sync", message)
 
     def test_an_unreachable_node_is_reported_rather_than_routed_around(self):
         failure = process.OperationError("Node container is not running")

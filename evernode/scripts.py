@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sys
 import time
 
 from . import docker, process, storage
@@ -48,20 +49,32 @@ def require_node_console(config, attempts=3, interval=5):
     for attempt in range(max(1, attempts)):
         statistics = nodes.fetch_node_statistics(config)
         if nodes.is_node_synchronized(statistics):
+            behind = nodes.clock_behind(statistics)
+            if behind:
+                print(f"Warning: {nodes.late_clock(behind)}", file=sys.stderr)
             return
         if attempt + 1 < attempts:
             time.sleep(interval)
+    lags = (
+        "masterchain lag "
+        + str(statistics.get("timediff"))
+        + "s, shard lag "
+        + str(statistics.get("shards_timediff"))
+        + "s"
+    )
+    behind = nodes.clock_behind(statistics)
+    if behind > nodes.SYNC_TOLERANCE:
+        # The node holds the newest block: waiting for it to catch up cannot help.
+        raise process.OperationError(f"{nodes.late_clock(behind)}, then retry ({lags})")
     raise process.OperationError(
         "Node is not synchronized and its console is the only transport "
         "available; run: evernode node sync -n "
         + config["name"]
         + " --wait (last reading: status "
         + str(statistics.get("node_status", statistics.get("sync_status")))
-        + ", masterchain lag "
-        + str(statistics.get("timediff"))
-        + "s, shard lag "
-        + str(statistics.get("shards_timediff"))
-        + "s)"
+        + ", "
+        + lags
+        + ")"
     )
 
 

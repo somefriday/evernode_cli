@@ -290,8 +290,11 @@ function Get_TimeDiff() {
     fi
     if echo "${RC_OUTPUT}" | grep -q 'timediff';then
         local MC_TIME_DIFF SH_TIME_DIFF VALIDATION
-        MC_TIME_DIFF=$(jq -r '.timediff' <<< "$RC_OUTPUT")
-        SH_TIME_DIFF=$(jq -r '.shards_timediff' <<< "$RC_OUTPUT")
+        # ever-node subtracts in u32 (now - gen_utime): a block stamped ahead of this
+        # server's clock reads just under 2^32, so -11 s prints as 4294967285.
+        local signed='def signed: if type == "number" and . >= 2147483648 and . < 4294967296 then . - 4294967296 else . end;'
+        MC_TIME_DIFF=$(jq -r "$signed .timediff | signed" <<< "$RC_OUTPUT")
+        SH_TIME_DIFF=$(jq -r "$signed .shards_timediff | signed" <<< "$RC_OUTPUT")
         VALIDATION=$(jq -r '.validation_status' <<< "$RC_OUTPUT")
         echo "$MC_TIME_DIFF $SH_TIME_DIFF $STATUS $VALIDATION"
     else
@@ -1352,25 +1355,36 @@ function Send_msg_toTelBot() {
 # and the node's reachability is something the caller must fix, not something
 # to route around. An unusable node therefore refuses the operation here,
 # immediately and with the node's own status in the message.
+#
+# A negative time difference is a block stamped ahead of this server's clock:
+# the node holds the newest block and the clock is late. Within the tolerance
+# the operation runs with a warning; beyond it, it is refused for the clock.
 # Input (optional):
 #  - tolerance in seconds, defaulting to NODE_SYNC_TOLERANCE
 # Output: 0 when the console is usable, 1 when the operation must not proceed
 function Require_Node_Console() {
-    local status mc_diff sh_diff tolerance
+    local status mc_diff sh_diff tolerance behind
     tolerance="${1:-${NODE_SYNC_TOLERANCE:-20}}"
     status="$(Get_TimeDiff)"
     read -r mc_diff sh_diff <<< "$(awk '{print $1, $2}' <<< "$status")"
-    if [[ $mc_diff =~ ^[0-9]+$ && $sh_diff =~ ^[0-9]+$ ]] \
-            && [[ $mc_diff -le $tolerance && $sh_diff -le $tolerance ]];then
-        printf "%s\n" "---INFO: node timediff: masterchain ${mc_diff}s, shardchain ${sh_diff}s (tolerance ${tolerance}s)"
-        return 0
-    fi
-    if [[ $mc_diff =~ ^[0-9]+$ && $sh_diff =~ ^[0-9]+$ ]];then
-        echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): node is not synced (masterchain ${mc_diff}s, shardchain ${sh_diff}s behind; tolerance ${tolerance}s). The node's console is the only transport, so this operation cannot run. Wait for the node to catch up, then retry."
-    else
+    if ! [[ $mc_diff =~ ^-?[0-9]+$ && $sh_diff =~ ^-?[0-9]+$ ]];then
         echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): node console is not answering (${status:-no response}). The node's console is the only transport, so this operation cannot run. Start the node and let it sync, then retry."
+        return 1
     fi
-    return 1
+    behind=$(( mc_diff < sh_diff ? -mc_diff : -sh_diff ))
+    if [[ $behind -gt $tolerance ]];then
+        echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): this server's clock is ${behind}s behind the network's newest block (masterchain ${mc_diff}s, shardchain ${sh_diff}s; tolerance ${tolerance}s). The node is not behind; check this server's time sync (NTP), then retry."
+        return 1
+    fi
+    if [[ $mc_diff -gt $tolerance || $sh_diff -gt $tolerance ]];then
+        echoerr "###-ERROR(${FuncSelfScriptName} line $LINENO): node is not synced (masterchain ${mc_diff}s, shardchain ${sh_diff}s behind; tolerance ${tolerance}s). The node's console is the only transport, so this operation cannot run. Wait for the node to catch up, then retry."
+        return 1
+    fi
+    printf "%s\n" "---INFO: node timediff: masterchain ${mc_diff}s, shardchain ${sh_diff}s (tolerance ${tolerance}s)"
+    if [[ $behind -gt 0 ]];then
+        printf "%s\n" "###-WARNING(${FuncSelfScriptName} line $LINENO): this server's clock is ${behind}s behind the network's newest block: check its time sync (NTP)"
+    fi
+    return 0
 }
 #=================================================
 function Send_Message() {

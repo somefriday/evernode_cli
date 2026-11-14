@@ -54,8 +54,26 @@ def _run_console(config, command, timeout=15):
     return value
 
 
+# The console's lags are ever-node's u32 `now - gen_utime`: a block stamped ahead
+# of this server's clock reads just under 2**32, so -11 s prints as 4294967285.
+LAGS = ("timediff", "shards_timediff")
+# Within this many seconds either way, the node is at the head of the chain.
+SYNC_TOLERANCE = 10
+
+
+def signed_lag(value):
+    """A console lag as the signed number it stands for."""
+    if type(value) is int and 1 << 31 <= value < 1 << 32:
+        return value - (1 << 32)
+    return value
+
+
 def fetch_node_statistics(config):
-    return _run_console(config, "getstatsnew")
+    value = _run_console(config, "getstatsnew")
+    for key in LAGS:
+        if key in value:
+            value[key] = signed_lag(value[key])
+    return value
 
 
 def fetch_chain_parameter(config, number):
@@ -77,12 +95,32 @@ def fetch_chain_parameter(config, number):
 
 
 def is_node_synchronized(value):
+    """At the head of the chain: both lags within the tolerance, either way.
+
+    A negative lag is not a node behind the chain but a block stamped in this
+    server's future: a few seconds of it are a late clock (clock_behind), and
+    beyond the tolerance the clock is too far off to time anything by.
+    """
+    lags = [signed_lag(value.get(k)) for k in LAGS]
     return value.get("node_status", value.get("sync_status")) in (
         "synchronization_by_blocks",
         "synchronization_finished",
     ) and all(
-        type(value.get(k)) in (int, float) and 0 <= value[k] <= 10
-        for k in ("timediff", "shards_timediff")
+        type(lag) in (int, float) and -SYNC_TOLERANCE <= lag <= SYNC_TOLERANCE
+        for lag in lags
+    )
+
+
+def clock_behind(value):
+    """Seconds this server's clock is behind the newest block the node holds; 0 when it is not."""
+    lags = [signed_lag(value.get(k)) for k in LAGS]
+    return max([0] + [-lag for lag in lags if type(lag) in (int, float) and lag < 0])
+
+
+def late_clock(behind):
+    return (
+        f"this server's clock is {behind}s behind the network's newest block: "
+        "check its time sync (NTP)"
     )
 
 
@@ -471,6 +509,9 @@ def get_node_status(config):
         try:
             result["stats"] = fetch_node_statistics(config)
             result["synchronized"] = is_node_synchronized(result["stats"])
+            behind = clock_behind(result["stats"])
+            if behind:
+                result["clock"] = late_clock(behind)
         except process.OperationError as exc:
             result["console_error"] = str(exc)
     return result
@@ -824,8 +865,11 @@ def update_node_image(store, name, record=None, *, rollback=False, timeout=30):
                     synchronized_once = False
                 time.sleep(5)
             else:
+                behind = clock_behind(stats)
                 raise process.OperationError(
-                    "Replacement image is console-ready but not synchronized; use rollback after inspection"
+                    "Replacement image is console-ready but "
+                    + (late_clock(behind) if behind > SYNC_TOLERANCE else "not synchronized")
+                    + "; use rollback after inspection"
                 )
         except BaseException:
             # Preserve the replacement and rollback records for explicit repair.

@@ -80,9 +80,37 @@ class ConfigTests(unittest.TestCase):
             {"shards_timediff": "unknown"},
             {"timediff": 11},
             {"node_status": "load_master_state"},
-            {"timediff": -5},
+            {"timediff": -11},
         ):
             self.assertFalse(nodes.is_node_synchronized(dict(good, **updates)))
+
+    def test_a_late_clock_is_not_a_node_behind(self):
+        """E4: ever-node's lags are u32 `now - gen_utime`, so a block stamped
+        ahead of this server's clock wraps to just under 2**32."""
+        good = dict(node_status="synchronization_finished", timediff=3, shards_timediff=2)
+        self.assertEqual(nodes.clock_behind(good), 0)
+        self.assertEqual(nodes.clock_behind(dict(good, shards_timediff="unknown")), 0)
+        for lag, synchronized, behind in (
+            (-5, True, 5),
+            (4294967291, True, 5),
+            (-10, True, 10),
+            (-11, False, 11),
+            (4294967285, False, 11),
+            (2147483647, False, 0),
+        ):
+            with self.subTest(lag=lag):
+                for key in ("timediff", "shards_timediff"):
+                    value = dict(good, **{key: lag})
+                    self.assertEqual(nodes.is_node_synchronized(value), synchronized)
+                    self.assertEqual(nodes.clock_behind(value), behind)
+
+    def test_statistics_carry_signed_lags(self):
+        reading = {"node_status": "synchronization_finished", "timediff": 4294967285,
+                   "shards_timediff": 4294967294}
+        with patch("evernode.nodes._run_console", return_value=reading):
+            value = nodes.fetch_node_statistics(make_node_configuration("validator01"))
+        self.assertEqual((value["timediff"], value["shards_timediff"]), (-11, -2))
+        self.assertIn("clock is 11s behind", nodes.late_clock(nodes.clock_behind(value)))
 
     def test_discard_failed_creation_removes_all_node_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:

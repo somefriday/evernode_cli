@@ -22,6 +22,7 @@ Prints the node's console statistics. With `--wait`, repeats until two readings 
 
 ## Behaviour
 
-- Synchronized means the node reports `synchronization_by_blocks` or `synchronization_finished`, with masterchain and shard time differences of at most 10 s.
+- Synchronized means the node reports `synchronization_by_blocks` or `synchronization_finished`, with masterchain and shard time differences within 10 s either way.
+- A negative time difference means this server's clock is behind the network's newest block, not that the node is. Up to 10 s, the node counts as synchronized, with a warning to check the server's time sync (NTP). Beyond 10 s, the command reports the clock and exits `2` without waiting, even with `--wait`.
 - Without `--wait`: exit code `0` when synchronized, `2` when not.
 - With `--wait`, a console that refuses connections is waited for; any other error ends the command.

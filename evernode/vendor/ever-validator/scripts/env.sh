@@ -37,7 +37,7 @@ export NODE_WC=0                        # Node WorkChain
 # and tests/test_console_only.py fails if an assignment reappears.
 FORCE_USE_DAPP=false
 export FORCE_USE_DAPP
-export NODE_SYNC_TOLERANCE=20           # Seconds the node may lag before an operation is refused
+export NODE_SYNC_TOLERANCE=20           # Seconds the node may lag, or this server's clock trail the chain, before an operation is refused
 # One lifetime for every message this installation signs. It is short on
 # purpose: the window that has to pass before "it never landed" is final is
 # exactly this, so an hour of it means an hour of uncertainty after any

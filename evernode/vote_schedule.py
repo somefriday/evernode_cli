@@ -158,8 +158,7 @@ def join(store, options, proposal):
     names = [node["name"] for node in nodes]
     sources = [voting.key_ring_source(value) for value in options.keyring]
     for source in sources:
-        if not voting.CONTAINER_KEY_RING.fullmatch(source):
-            voting.require_private_file(Path(source))
+        voting.require_private_key_ring(source)
     engine = voting.find_engine()
     # Joined already: the preview is held to what earlier passes read, as every tick is.
     joined = open_entry(store.load(), proposal)

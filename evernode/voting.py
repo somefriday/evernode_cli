@@ -147,14 +147,19 @@ def managed_key_rings(store, names, *, skip_missing):
 
     ever-node rewrites node_cfg/config.json in place at every election and
     keeps the mode evernode gave it, so the file on the host always holds the
-    current validator keys. --all passes over a node that has none yet, but
-    not over every node: a join with no key ring to vote with is refused.
+    current validator keys. --all passes over a removed node and a node that
+    has no key ring yet, but not over every node: a join with no key ring to
+    vote with is refused.
     """
     if not names:
         raise process.OperationError("No managed nodes. Use evernode node create")
     nodes = []
     for name in names:
-        store.load_node_config(name)
+        config = store.load_node_config(name)
+        # node remove keeps the node's directory, key ring included, but the node no longer validates.
+        if skip_missing and config.get("phase") == "removed":
+            print(f"{name}: removed; skipped", file=sys.stderr)
+            continue
         keyring = store.node_directory(name) / "node_cfg" / "config.json"
         if not keyring.exists():
             if skip_missing:
@@ -271,6 +276,40 @@ def wallet_file(rest, option="--from"):
         if item == option and i + 1 < len(rest):
             return rest[i + 1]
     return "?"
+
+
+def require_private_key_ring(source):
+    """Refuse a join --keyring source that other users can read, on this host or in its container.
+
+    The mode is only read, never changed: the operator decides. A pass reads
+    the key ring without checking again, so a mode changed during a campaign
+    does not stop its votes.
+    """
+    container = CONTAINER_KEY_RING.fullmatch(source)
+    if not container:
+        require_private_file(Path(source))
+        return
+    try:
+        result = process.execute_command(
+            ["docker", "exec", container[1], "stat", "-L", "-c", "%a", container[2]],
+            check=False,
+            timeout=30,
+        )
+    except process.OperationError as exc:
+        raise process.OperationError(f"{source}: {exc}") from None
+    if result.returncode:
+        raise process.OperationError(f"{source}: {result.stderr.strip() or 'docker exec failed'}")
+    try:
+        mode = int(result.stdout.strip(), 8)
+    except ValueError:
+        raise process.OperationError(
+            f"{source}: cannot tell who can read it (stat printed {result.stdout.strip()[:20]!r})"
+        ) from None
+    if mode & 0o077:
+        raise process.OperationError(
+            f"{source} holds a secret key and other users can read it: "
+            f"docker exec {container[1]} chmod 600 {container[2]}"
+        )
 
 
 def require_private_file(path):

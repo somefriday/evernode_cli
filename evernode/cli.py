@@ -312,10 +312,15 @@ def main(argv=None):
                         "Complete wallet/DePool setup before enabling elections"
                     )
                 stake.require_recorded_stake(config)
-                if not nodes.is_node_synchronized(nodes.fetch_node_statistics(config)):
+                statistics = nodes.fetch_node_statistics(config)
+                behind = nodes.clock_behind(statistics)
+                if not nodes.is_node_synchronized(statistics):
                     raise process.OperationError(
-                        "Node is not synchronized; election schedule was not enabled"
+                        (nodes.late_clock(behind) if behind > nodes.SYNC_TOLERANCE else "Node is not synchronized")
+                        + "; election schedule was not enabled"
                     )
+                if behind:
+                    print(f"Warning: {nodes.late_clock(behind)}", file=sys.stderr)
                 if args.dry_run:
                     ui.print_json_result({"enable_managed_schedule": name})
                 else:
@@ -402,6 +407,13 @@ def main(argv=None):
                         time.sleep(args.interval)
                         continue
                     ui.print_json_result(value)
+                    behind = nodes.clock_behind(value)
+                    if behind > nodes.SYNC_TOLERANCE:
+                        # The node holds the newest block; only the clock can fix this, not waiting.
+                        print(f"Error: {nodes.late_clock(behind)}", file=sys.stderr)
+                        return 2
+                    if behind:
+                        print(f"Warning: {nodes.late_clock(behind)}", file=sys.stderr)
                     if not args.wait:
                         return 0 if nodes.is_node_synchronized(value) else 2
                     current = nodes.is_node_synchronized(value)

@@ -402,7 +402,11 @@ sudo -E evernode vote join --keyring /home/val/Ever-Validator/node_cfg/config.js
 
 For a node in Docker, name the file inside its container, as `docker cp` does:
 `--keyring CONTAINER:/ever-node/node_cfg/config.json`. Every pass reads it with
-`docker exec`.
+`docker exec`. Join refuses it too while other users can read it:
+
+```bash
+sudo docker exec CONTAINER chmod 600 /ever-node/node_cfg/config.json   # once; ever-node keeps the mode
+```
 
 To vote from another machine instead, copy the key ring there, check it, and
 vote:
