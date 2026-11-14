@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
 MANAGED_OPS = SCRIPTS / "managed_ops.shinc"
 
 # The custodian from the recorded incident: its pubkey and the decimal string

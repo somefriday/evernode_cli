@@ -12,8 +12,14 @@ dependencies = []
 [project.scripts]
 evernode = "evernode.cli:main"
 
+[tool.setuptools]
+# The vendored kit and contract under evernode/vendor/, as MANIFEST.in lists them.
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["evernode*"]
+# Directories without __init__.py (the vendored kit) are data, not packages.
+namespaces = false
 
 [tool.setuptools.package-data]
 evernode = ["assets/*"]

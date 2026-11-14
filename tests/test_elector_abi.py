@@ -19,8 +19,8 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-KIT = REPO / "vendor/ever-validator/scripts"
-CONTRACTS = REPO / "vendor/ever-validator/contracts/EverX/elector"
+KIT = REPO / "evernode/vendor/ever-validator/scripts"
+CONTRACTS = REPO / "evernode/vendor/ever-validator/contracts/EverX/elector"
 
 # A decoded `get` response, shaped as the real one is.
 def response(elect_at=1793451980, members=1):

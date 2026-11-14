@@ -29,7 +29,7 @@ class ImportScriptTests(unittest.TestCase):
         self.script_dir = self.root / "scripts"
         self.script_dir.mkdir(parents=True)
         (self.root / "elections").mkdir()
-        vendor = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+        vendor = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
         for filename in (
             "env.sh",
             "functions.shinc",
@@ -214,7 +214,7 @@ else:
         self.assertEqual(result.stdout.strip(), key.hex() + ' 123')
 
     def test_elector_lookup_failure_is_not_reported_as_participation(self):
-        vendor = Path(__file__).resolve().parents[1] / 'vendor/ever-validator/scripts'
+        vendor = Path(__file__).resolve().parents[1] / 'evernode/vendor/ever-validator/scripts'
         target = self.script_dir / 'take_part_in_elections.sh'
         shutil.copyfile(vendor / target.name, target)
         lock = self.root / 'bin/flock'

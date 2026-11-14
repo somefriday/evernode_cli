@@ -50,7 +50,7 @@ class InitialStakeTests(unittest.TestCase):
             (root / 'pending.json').write_text(json.dumps({'transactions': transactions}))
             if executed:
                 (root / 'executed').touch()
-            scripts = Path(__file__).resolve().parents[1] / 'vendor/ever-validator/scripts'
+            scripts = Path(__file__).resolve().parents[1] / 'evernode/vendor/ever-validator/scripts'
             source = scripts / 'depool_functions/ordinary_stake.shinc'
             program = r'''
 source "$MANAGED_OPS"

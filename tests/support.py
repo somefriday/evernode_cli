@@ -1,5 +1,11 @@
 """Reusable, non-secret node metadata for isolated tests."""
 
+from pathlib import Path
+
+# This checkout's patched kit. A test that creates a node uses it in place of
+# the default, which exists only on a server set up as the README shows.
+PROJECT_SOURCE = Path(__file__).resolve().parents[1] / "evernode" / "vendor" / "ever-validator"
+
 
 def make_node_configuration(name="node-01", **changes):
     value = dict(

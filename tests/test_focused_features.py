@@ -16,6 +16,7 @@ from evernode import (
     elections,
     host,
     images,
+    nominator,
     process,
     scripts,
     storage,
@@ -23,7 +24,96 @@ from evernode import (
     wallets,
 )
 from evernode.arguments import build_argument_parser
-from support import make_node_configuration
+from support import PROJECT_SOURCE, make_node_configuration
+
+
+class ProjectSourceTests(unittest.TestCase):
+    """Several commands run scripts only evernode's own kit has, so a node
+    created without a source flag gets the kit installed with evernode, and
+    never a clone of the upstream one."""
+
+    def select(self, *flags):
+        args = build_argument_parser().parse_args(["node", "create", *flags])
+        return creation.select_project_source(args)
+
+    def test_the_package_holds_the_kit_and_the_contract(self):
+        self.assertTrue((configuration.BUNDLED_KIT / "scripts/managed_ops.shinc").is_file())
+        self.assertTrue((configuration.BUNDLED_CONTRACT_SOURCE / "PINNED.json").is_file())
+        manifest = (Path(__file__).resolve().parents[1] / "MANIFEST.in").read_text()
+        self.assertIn("graft evernode/vendor/ever-validator", manifest)
+        self.assertIn("graft evernode/vendor/single-nominator", manifest)
+
+    def test_without_a_source_flag_the_node_gets_the_installed_kit(self):
+        self.assertEqual(self.select(), (None, None, None))
+
+    def test_a_source_flag_is_used_as_given(self):
+        self.assertEqual(
+            self.select("--project-source", str(PROJECT_SOURCE)),
+            (PROJECT_SOURCE, None, None),
+        )
+        self.assertEqual(
+            self.select("--project-repo", "https://example.test/kit.git"),
+            (None, "https://example.test/kit.git", None),
+        )
+        self.assertEqual(
+            self.select("--project-ref", "v1"),
+            (None, configuration.DEFAULT_ORCHESTRATION_REPOSITORY, "v1"),
+        )
+
+    def test_a_named_kit_that_is_not_there_is_refused(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with self.assertRaisesRegex(
+                process.OperationError, "No election kit at .*leave out --project-source"
+            ):
+                self.select("--project-source", empty)
+
+    def test_a_missing_installed_kit_is_refused_before_any_question(self):
+        args = build_argument_parser().parse_args(["node", "create"])
+        with (
+            tempfile.TemporaryDirectory() as empty,
+            patch.object(configuration, "BUNDLED_KIT", Path(empty) / "ever-validator"),
+            patch("evernode.creation.ui.prompt_for_value",
+                  side_effect=AssertionError("asked before refusing")),
+        ):
+            with self.assertRaisesRegex(
+                process.OperationError, "kit is missing from .*reinstall evernode"
+            ):
+                creation.handle_node_creation(
+                    SimpleNamespace(list_node_names=lambda: []), args
+                )
+
+    def test_a_nominator_on_the_installed_kit_takes_the_installed_contract(self):
+        found = nominator.resolve_contract_source({
+            "source_spec": dict(configuration.BUNDLED_SOURCE_SPEC),
+            "project_source": "bundled",
+        })
+        self.assertEqual(found, configuration.BUNDLED_CONTRACT_SOURCE)
+
+    def test_a_nominator_on_a_named_kit_takes_the_contract_beside_it(self):
+        with tempfile.TemporaryDirectory() as checkout:
+            beside = Path(checkout) / "single-nominator"
+            beside.mkdir()
+            (beside / "PINNED.json").write_text("{}")
+            found = nominator.resolve_contract_source({"source_spec": {
+                "local": str(Path(checkout) / "ever-validator"), "repo": None, "ref": None,
+            }})
+        self.assertEqual(found, beside)
+
+    def test_a_recorded_contract_source_that_is_gone_gives_way_to_the_installed_one(self):
+        """The checkout layout before the kit moved into the package recorded
+        <repo>/vendor/single-nominator; the same pinned contract is installed now."""
+        found = nominator.resolve_contract_source({
+            "nominator_source": "/root/evernode_cli/vendor/single-nominator",
+            "source_spec": {
+                "local": "/root/evernode_cli/vendor/ever-validator", "repo": None, "ref": None,
+            },
+        })
+        self.assertEqual(found, configuration.BUNDLED_CONTRACT_SOURCE)
+
+    def test_a_named_contract_source_must_be_one(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with self.assertRaisesRegex(process.OperationError, "has no PINNED.json"):
+                nominator.resolve_contract_source({}, requested=empty)
 
 
 class FocusedFeatureTests(unittest.TestCase):
@@ -493,7 +583,7 @@ class FocusedFeatureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "env.sh"
             target.write_bytes(
-                (root / "vendor/ever-validator/scripts/env.sh").read_bytes()
+                (root / "evernode/vendor/ever-validator/scripts/env.sh").read_bytes()
             )
             config = make_node_configuration(
                 "validator",

@@ -485,7 +485,7 @@ class LogComponentTests(unittest.TestCase):
     """Every log component must name a file something actually writes."""
 
     def test_the_election_components_name_files_the_scripts_write(self):
-        scripts = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+        scripts = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
         written = "".join(
             path.read_text()
             for path in scripts.glob("*.sh")

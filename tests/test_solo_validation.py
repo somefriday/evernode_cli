@@ -350,7 +350,7 @@ class SetStakeTests(unittest.TestCase):
         scripts_dir.mkdir(parents=True)
         # The real env.sh, because writing a setting it does not declare is
         # refused: that is how an unsupported orchestration source is caught.
-        vendor = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+        vendor = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
         shutil.copyfile(vendor / "env.sh", scripts_dir / "env.sh")
 
         class Store:

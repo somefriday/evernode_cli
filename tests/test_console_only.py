@@ -17,7 +17,7 @@ from unittest.mock import patch
 from evernode import process, scripts
 from support import make_node_configuration
 
-VENDOR = Path(__file__).resolve().parents[1] / "vendor/ever-validator"
+VENDOR = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator"
 SCRIPTS = VENDOR / "scripts"
 
 

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import evernode
 from evernode import (
     arguments,
     configuration,
@@ -76,6 +77,36 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(c["source_spec"]["local"], str(self.source.resolve()))
         provisioning.prepare_node_workspace(self.store, c)
         self.assertEqual(self.store.load_node_config("node-01")["phase"], "prepared")
+
+    def test_a_node_that_names_no_kit_records_the_installed_one_not_its_path(self):
+        """A recorded path would go stale with a rebuilt virtual environment."""
+        with patch.object(configuration, "BUNDLED_KIT", self.source):
+            with self.store.acquire_operation_lock("node-01"):
+                provisioning.provision_node_workspace(
+                    self.store, make_node_configuration("node-01")
+                )
+        saved = self.store.load_node_config("node-01")
+        self.assertEqual(saved["source_spec"], configuration.BUNDLED_SOURCE_SPEC)
+        self.assertEqual(saved["project_source"], "bundled")
+        self.assertEqual(
+            saved["project_commit"], f"bundled with evernode {evernode.__version__}"
+        )
+        scripts_dir = self.store.node_directory("node-01") / "scripts"
+        self.assertEqual((scripts_dir / "sentinel").read_text(), "original")
+
+    def test_saved_source_specifications(self):
+        config = make_node_configuration("node-01")
+        for spec in (
+            dict(configuration.BUNDLED_SOURCE_SPEC),
+            {"local": "/srv/kit", "repo": None, "ref": None},
+            {"local": None, "repo": "https://example.test/kit.git", "ref": "v1"},
+        ):
+            configuration.validate_saved_node_config(dict(config, source_spec=spec), "node-01")
+        with self.assertRaisesRegex(process.OperationError, "Missing saved source repository"):
+            configuration.validate_saved_node_config(
+                dict(config, source_spec={"local": None, "repo": None, "ref": "v1"}),
+                "node-01",
+            )
 
     def test_interrupted_copy_resumes_from_snapshot_not_changed_upstream(self):
         original = shutil.copytree

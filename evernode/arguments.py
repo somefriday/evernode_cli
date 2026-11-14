@@ -90,7 +90,9 @@ def build_argument_parser():
         help="Explicit RAM ceiling, e.g. 40G; no automatic capacity guarantee",
     )
     c.add_argument(
-        "--project-source", type=Path, help="Trusted local Ever-Validator checkout"
+        "--project-source",
+        type=Path,
+        help="Trusted local Ever-Validator kit instead of the one installed with evernode",
     )
     c.add_argument("--project-repo")
     c.add_argument("--project-ref")
@@ -207,6 +209,11 @@ def build_argument_parser():
     )
     q.add_argument("-n", "--name", help="Node name; omit with --all")
     q.add_argument("--all", action="store_true")
+    q.add_argument(
+        "--bundled",
+        action="store_true",
+        help="Move the node to the kit installed with evernode",
+    )
     q.add_argument("--yes", action="store_true")
     q.add_argument("--dry-run", action="store_true")
     wallet = groups.add_parser("wallet").add_subparsers(dest="action", required=True)
@@ -326,8 +333,8 @@ def build_argument_parser():
         if command == "prepare":
             q.add_argument(
                 "--contract-source",
-                help="Vendored single-nominator directory; defaults to the "
-                "sibling of this node's recorded project source",
+                help="single-nominator contract directory; defaults to the one "
+                "installed with evernode",
             )
         q.add_argument("--yes", action="store_true")
     q = nominator.add_parser("info", help="Where this validator's money is")

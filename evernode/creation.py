@@ -73,6 +73,35 @@ def choose_node_image(store, args):
     return record, node_ref, True
 
 
+def select_project_source(args):
+    """Return the kit a new node takes its scripts from, as (path, repo, ref).
+
+    Without a source flag it is the kit installed with evernode: (None, None,
+    None). --project-source names a local kit, --project-repo/--project-ref a
+    clone. A kit that is not there is refused here, before any question.
+    """
+    if args.project_source and (args.project_repo or args.project_ref):
+        raise process.OperationError(
+            "Use --project-source or --project-repo/--project-ref"
+        )
+    if args.project_source:
+        source = args.project_source.expanduser()
+        if not (source / "scripts").is_dir():
+            raise process.OperationError(
+                f"No election kit at {source}: name a kit directory, or leave out "
+                "--project-source for the kit installed with evernode"
+            )
+        return source, None, None
+    if args.project_repo or args.project_ref:
+        return (
+            None,
+            args.project_repo or configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
+            args.project_ref,
+        )
+    configuration.bundled_kit()
+    return None, None, None
+
+
 def handle_node_creation(store, args):
     if args.resume:
         if not args.name:
@@ -126,6 +155,8 @@ def handle_node_creation(store, args):
             provisioning.prepare_node_workspace(store, store.load_node_config(name))
         print(f"Prepared {name}. Next: evernode node start -n {name}")
         return 0
+    # Before any question: a missing kit is known now, not after an image build.
+    kit = select_project_source(args)
     existing = set(store.list_node_names())
     name = configuration.validate_node_name(
         ui.prompt_for_value(args.name, "Validator name")
@@ -157,10 +188,6 @@ def handle_node_creation(store, args):
         ip = str(ipaddress.IPv4Address(ip))
     except ValueError as exc:
         raise process.OperationError("Invalid IPv4 address") from exc
-    if args.project_source and (args.project_repo or args.project_ref):
-        raise process.OperationError(
-            "Use --project-source or --project-repo/--project-ref"
-        )
     for reference in (
         args.image,
         args.project_repo,
@@ -432,13 +459,7 @@ def handle_node_creation(store, args):
     config["image_id"] = record["image_id"]
     try:
         with store.acquire_operation_lock(name):
-            provisioning.provision_node_workspace(
-                store,
-                config,
-                args.project_source,
-                args.project_repo or configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
-                args.project_ref,
-            )
+            provisioning.provision_node_workspace(store, config, *kit)
             if importing:
                 phrases = [
                     getpass.getpass(f"Seed phrase {index}/{custodians}: ")

@@ -302,34 +302,38 @@ def build_tools_image(store, config, source, recipe, timeout=1800):
 
 
 def resolve_contract_source(config, requested=None):
-    """Locate the vendored contract, the way the kit's source is located.
+    """Locate the single-nominator source this node compiles.
 
-    The contract and its tooling are vendored in this repository, not
-    installed with the Python package, so a node records where its copy came
-    from exactly as it records the orchestration scripts' source. A sibling
-    of that recorded path is the documented checkout layout; anything else
-    has to be named.
+    A directory named with --contract-source comes first, then one an earlier
+    prepare recorded while it still exists, then one beside a kit named with
+    --project-source. By default it is the copy installed with evernode, which
+    is never recorded: a later prepare takes the copy installed then, the
+    contract whose code hash that evernode pins.
     """
     from pathlib import Path
 
-    for candidate in (requested, config.get("nominator_source")):
-        if candidate:
-            path = Path(candidate).expanduser().absolute()
-            if not (path / "PINNED.json").is_file():
-                raise process.OperationError(
-                    f"{path} does not look like the vendored single-nominator "
-                    "source: it has no PINNED.json"
-                )
-            return path
-    recorded = config.get("project_source")
-    if recorded:
-        sibling = Path(recorded).absolute().parent / "single-nominator"
-        if (sibling / "PINNED.json").is_file():
-            return sibling
+    if requested:
+        path = Path(requested).expanduser().absolute()
+        if not (path / "PINNED.json").is_file():
+            raise process.OperationError(
+                f"{path} does not look like the vendored single-nominator "
+                "source: it has no PINNED.json"
+            )
+        return path
+    candidates = [config.get("nominator_source")]
+    local_kit = (config.get("source_spec") or {}).get("local")
+    if local_kit:
+        # Beside a kit named with --project-source, as in a checkout.
+        candidates.append(str(Path(local_kit).parent / "single-nominator"))
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "PINNED.json").is_file():
+            return Path(candidate).absolute()
+    if (configuration.BUNDLED_CONTRACT_SOURCE / "PINNED.json").is_file():
+        return configuration.BUNDLED_CONTRACT_SOURCE
     raise process.OperationError(
-        "Cannot find the vendored single-nominator source; name it with "
-        "--contract-source (in a standard checkout it is "
-        "<repo>/vendor/single-nominator)"
+        "evernode's single-nominator source is missing from "
+        f"{configuration.BUNDLED_CONTRACT_SOURCE}: reinstall evernode, or name "
+        "one with --contract-source"
     )
 
 
@@ -356,7 +360,12 @@ def prepare(store, config, *, source, recipe):
     source = resolve_contract_source(config, source)
     tag, built = build_tools_image(store, config, source, recipe)
     config["nominator_tools_image"] = tag
-    config["nominator_source"] = str(source)
+    # The copy installed with evernode is found again by default; its path
+    # would go stale with the next upgrade or a rebuilt virtual environment.
+    if source.resolve() == configuration.BUNDLED_CONTRACT_SOURCE:
+        config.pop("nominator_source", None)
+    else:
+        config["nominator_source"] = str(source)
     work = work_directory(store, config, create=True)
     deploy_value = str(settings["NOMINATOR_DEPLOY_VALUE"])
     result = process.execute_command(

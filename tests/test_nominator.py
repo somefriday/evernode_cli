@@ -23,7 +23,7 @@ from evernode import configuration, creation, elections, nominator, process, sta
 from evernode.arguments import build_argument_parser, normalize_address_arguments
 from support import make_node_configuration
 
-VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "single-nominator"
+VENDOR = Path(__file__).resolve().parents[1] / "evernode" / "vendor" / "single-nominator"
 ASSETS = Path(__file__).resolve().parents[1] / "evernode" / "assets"
 REFERENCE = Path("/Users/artem/Projects/github/nominators-to-ever/artifacts")
 OWNER = "-1:e253907b4dc0e9d64cb738df4895094ef8d115ae3e1742f637f0329608815913"
@@ -418,7 +418,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-KIT = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+KIT = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
 
 
 class SafeTransportTests(unittest.TestCase):

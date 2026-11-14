@@ -44,6 +44,10 @@ Clone the repository directly on the server:
 git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
 ```
 
+Keep this checkout for updates. The election scripts install with evernode
+itself: `node create` gives each node the copy installed with evernode, and
+`node sync-scripts` refreshes nodes from it after an upgrade.
+
 Install the command globally from the cloned checkout. The CLI is isolated in
 a virtual environment, so it does not modify the operating system's managed Python:
 
@@ -367,8 +371,8 @@ evernode doctor -n validator01
 # withdrawal, the pool's operating balance and any unsigned Safe transaction.
 evernode depool info -n validator01
 
-# After pulling a newer checkout, refresh this node's saved scripts. Installing
-# the package alone does not replace them.
+# After upgrading evernode, refresh this node's saved scripts from the kit the
+# new version installed. The upgrade alone does not replace them.
 evernode node sync-scripts -n validator01 --dry-run
 evernode node sync-scripts -n validator01
 

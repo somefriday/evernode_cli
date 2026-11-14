@@ -1,0 +1,7 @@
+# evernode's own election kit and nominator contract ship inside the package:
+# nodes take their scripts from the installed evernode, never from a checkout.
+# graft keeps dotfiles, which nodes already hold (configs/docker/.env).
+graft evernode/vendor/ever-validator
+graft evernode/vendor/single-nominator
+prune evernode/vendor/single-nominator/node_modules
+global-exclude __pycache__ *.py[cod] .DS_Store

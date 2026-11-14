@@ -372,6 +372,104 @@ class ScriptRefreshTests(unittest.TestCase):
             storage.calculate_directory_fingerprint(self.directory / "scripts"),
         )
 
+    def test_the_render_that_was_approved_is_the_one_installed(self):
+        """A source that moves while the operator reads the plan, as a git
+        branch can, must not slip a change past the question."""
+        (self.source / "scripts/functions.shinc").write_text("fixed\n")
+        shown = []
+
+        def approve(plan):
+            shown.append(plan["components"]["scripts"]["updated"])
+            (self.source / "scripts/functions.shinc").write_text("unreviewed\n")
+
+        provisioning.refresh_node_scripts(self.store, self.config, confirm=approve)
+        self.assertEqual(shown, [["functions.shinc"]])
+        self.assertEqual((self.directory / "scripts/functions.shinc").read_text(), "fixed\n")
+
+    def test_a_declined_refresh_installs_nothing(self):
+        (self.source / "scripts/functions.shinc").write_text("fixed\n")
+
+        def decline(plan):
+            raise process.OperationError("Cancelled; no action taken")
+
+        with self.assertRaisesRegex(process.OperationError, "Cancelled"):
+            provisioning.refresh_node_scripts(self.store, self.config, confirm=decline)
+        self.assertEqual((self.directory / "scripts/functions.shinc").read_text(), "original\n")
+        self.assertFalse((self.directory / ".script-backups").exists())
+
+    def installed_kit(self, change=None):
+        """A copy of this node's kit standing in for the one installed with evernode."""
+        installed = self.root / "installed"
+        shutil.copytree(self.source, installed)
+        if change:
+            (installed / "scripts/functions.shinc").write_text(change)
+        kit = patch.object(configuration, "BUNDLED_KIT", installed)
+        kit.start()
+        self.addCleanup(kit.stop)
+        self.config["project_source"] = str(self.source)
+        return installed
+
+    def test_bundled_shows_the_move_and_changes_nothing_in_a_dry_run(self):
+        self.installed_kit("fixed\n")
+        plan = provisioning.refresh_node_scripts(
+            self.store, self.config, dry_run=True, bundled=True
+        )
+        self.assertEqual(plan["source"], {"from": str(self.source), "to": "bundled"})
+        self.assertEqual(plan["components"]["scripts"]["updated"], ["functions.shinc"])
+        self.assertTrue(plan["changed"])
+        self.assertEqual(self.config["source_spec"]["local"], str(self.source))
+
+    def test_bundled_installs_the_installed_kit_and_records_the_move(self):
+        self.installed_kit("fixed\n")
+        shown = []
+        provisioning.refresh_node_scripts(
+            self.store, self.config, confirm=shown.append, bundled=True
+        )
+        self.assertEqual(len(shown), 1)
+        self.assertEqual((self.directory / "scripts/functions.shinc").read_text(), "fixed\n")
+        self.assertEqual(self.config["source_spec"], configuration.BUNDLED_SOURCE_SPEC)
+        self.assertEqual(self.config["project_source"], "bundled")
+        self.assertTrue(self.config["project_commit"].startswith("bundled with evernode "))
+
+    def test_bundled_records_the_move_when_no_file_differs(self):
+        self.installed_kit()
+        shown = []
+        plan = provisioning.refresh_node_scripts(
+            self.store, self.config, confirm=shown.append, bundled=True
+        )
+        self.assertTrue(plan["changed"])
+        self.assertEqual(len(shown), 1)
+        self.assertNotIn("backup", plan)
+        self.assertEqual(self.config["source_spec"], configuration.BUNDLED_SOURCE_SPEC)
+
+    def test_a_declined_move_keeps_the_recorded_source(self):
+        self.installed_kit("fixed\n")
+
+        def decline(plan):
+            raise process.OperationError("Cancelled; no action taken")
+
+        with self.assertRaisesRegex(process.OperationError, "Cancelled"):
+            provisioning.refresh_node_scripts(
+                self.store, self.config, confirm=decline, bundled=True
+            )
+        self.assertEqual(self.config["source_spec"]["local"], str(self.source))
+
+    def test_bundled_on_a_node_already_there_is_a_plain_refresh(self):
+        self.installed_kit()
+        self.config["source_spec"] = dict(configuration.BUNDLED_SOURCE_SPEC)
+        plan = provisioning.refresh_node_scripts(
+            self.store, self.config, dry_run=True, bundled=True
+        )
+        self.assertNotIn("source", plan)
+        self.assertFalse(plan["changed"])
+
+    def test_a_local_kit_that_is_gone_names_the_way_out(self):
+        shutil.rmtree(self.source)
+        with self.assertRaisesRegex(
+            process.OperationError, "No election kit at .*node sync-scripts --bundled"
+        ):
+            provisioning.refresh_node_scripts(self.store, self.config, dry_run=True)
+
 
 class NodeStatusReportTests(unittest.TestCase):
     """A node whose schedule is installed has finished setup."""
@@ -484,27 +582,42 @@ class NodeLogCommandTests(unittest.TestCase):
 class ScriptRefreshCommandTests(unittest.TestCase):
     def run_refresh(self, *flags, changed=True):
         plan = {"node": "validator01", "changed": changed, "components": {}}
+
+        def render(store, config, *, dry_run=False, confirm=None, bundled=False):
+            # As the real one: the question comes only before installing changes.
+            if changed and not dry_run and confirm is not None:
+                confirm(plan)
+            return plan
+
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
             patch("evernode.cli.elections.hold_election_lock"),
             patch("evernode.cli.provisioning.refresh_node_scripts",
-                  return_value=plan) as refresh,
+                  side_effect=render) as refresh,
             patch("evernode.cli.ui.confirm_operation") as confirm,
-            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()),
         ):
             store.return_value.list_node_names.return_value = ["validator01"]
             store.return_value.load_node_config.return_value = operational_node()
             code = cli.main(["node", "sync-scripts", "-n", "validator01", *flags])
+        self.output = output.getvalue()
         return code, refresh, confirm
 
     def test_an_approved_run_renders_the_source_once(self):
         code, refresh, confirm = self.run_refresh("--yes")
         self.assertEqual(code, 0)
         self.assertEqual(refresh.call_count, 1)
-        self.assertNotIn("dry_run", refresh.call_args.kwargs)
+        self.assertFalse(refresh.call_args.kwargs["dry_run"])
+        self.assertIsNone(refresh.call_args.kwargs["confirm"])
+        self.assertFalse(refresh.call_args.kwargs["bundled"])
         confirm.assert_not_called()
+
+    def test_bundled_asks_the_refresh_to_move_the_node(self):
+        code, refresh, confirm = self.run_refresh("--bundled", "--yes")
+        self.assertEqual(code, 0)
+        self.assertTrue(refresh.call_args.kwargs["bundled"])
 
     def test_a_dry_run_never_applies_anything(self):
         code, refresh, confirm = self.run_refresh("--dry-run")
@@ -513,12 +626,15 @@ class ScriptRefreshCommandTests(unittest.TestCase):
         self.assertTrue(refresh.call_args.kwargs["dry_run"])
         confirm.assert_not_called()
 
-    def test_an_interactive_run_shows_the_plan_then_asks(self):
+    def test_an_interactive_run_renders_once_and_asks_before_installing(self):
         code, refresh, confirm = self.run_refresh()
         self.assertEqual(code, 0)
-        self.assertEqual(refresh.call_count, 2)
-        self.assertTrue(refresh.call_args_list[0].kwargs["dry_run"])
+        self.assertEqual(refresh.call_count, 1)
+        self.assertFalse(refresh.call_args.kwargs["dry_run"])
         confirm.assert_called_once()
+        # The plan is printed before the question, then what was installed.
+        self.assertIn('"changed": true', self.output)
+        self.assertIn('"refreshed"', self.output)
 
     def test_nothing_is_applied_when_no_file_differs(self):
         code, refresh, confirm = self.run_refresh(changed=False)

@@ -9,5 +9,7 @@ setup(
     python_requires=">=3.9",
     packages=find_packages(include=["evernode", "evernode.*"]),
     package_data={"evernode": ["assets/*"]},
+    # The vendored kit and contract, as MANIFEST.in lists them.
+    include_package_data=True,
     entry_points={"console_scripts": ["evernode=evernode.cli:main"]},
 )

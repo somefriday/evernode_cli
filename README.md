@@ -11,7 +11,7 @@ Run as root. Full guide: [instruction.md](instruction.md).
 ```bash
 apt-get update
 apt-get install -y python3 python3-venv git
-git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
+git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli   # for updates; the election scripts install with evernode
 
 install -d -m 0755 /opt/evernode
 python3 -m venv /opt/evernode/venv
@@ -32,6 +32,10 @@ cd /root/evernode_cli && git pull --ff-only
 /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
 evernode node sync-scripts --all   # the install alone does not refresh these
 ```
+
+A node created before evernode shipped its own election scripts still takes them
+from the old checkout path or a clone of the upstream kit. Move it once with
+`evernode node sync-scripts -n NAME --bundled`; the plan shows the move first.
 
 ## New validator
 

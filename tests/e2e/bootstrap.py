@@ -37,12 +37,12 @@ def apply_local_network_adaptations():
 
 
 if not source.exists():
-    shutil.copytree('/workspace/vendor/ever-validator', source)
+    shutil.copytree('/workspace/evernode/vendor/ever-validator', source)
     apply_local_network_adaptations()
 elif os.environ.get('E2E_REFRESH_SOURCE') == '1':
     for component in ('scripts', 'configs', 'contracts'):
         shutil.rmtree(source / component)
-        shutil.copytree(Path('/workspace/vendor/ever-validator') / component, source / component)
+        shutil.copytree(Path('/workspace/evernode/vendor/ever-validator') / component, source / component)
     apply_local_network_adaptations()
     print(json.dumps({'source_refreshed': str(source)}))
 

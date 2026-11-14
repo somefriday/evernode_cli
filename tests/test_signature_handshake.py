@@ -19,7 +19,7 @@ import time
 import unittest
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
 MANAGED_OPS = SCRIPTS / "managed_ops.shinc"
 
 # Three custodians. The first is the one the old code assumed had submitted.

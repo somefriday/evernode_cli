@@ -8,6 +8,18 @@ from pathlib import Path
 
 from . import process
 
+# evernode's own election kit and nominator contract ship inside the package.
+# Several commands run scripts only this kit has, so a node gets it unless a
+# source flag names another kit. Such a node records its source as bundled,
+# not as a path: every render takes the kit of the evernode installed now, so
+# the scripts match the code that runs them through upgrades, rollbacks and a
+# rebuilt virtual environment.
+VENDOR_DIRECTORY = Path(__file__).resolve().parent / "vendor"
+BUNDLED_KIT = VENDOR_DIRECTORY / "ever-validator"
+BUNDLED_CONTRACT_SOURCE = VENDOR_DIRECTORY / "single-nominator"
+# A node's source_spec when it takes the bundled kit: no path, no repository.
+BUNDLED_SOURCE_SPEC = {"local": None, "repo": None, "ref": None}
+# Cloned only when --project-repo or --project-ref asks for it.
 DEFAULT_ORCHESTRATION_REPOSITORY = "https://github.com/Custler/Ever-Validator.git"
 NODE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
@@ -39,6 +51,20 @@ DEFAULT_ENVIRONMENT = {
     "NOMINATOR_DEPLOY_MARGIN": 1000000000,
     "NOMINATOR_TOOLS_IMAGE": "",
 }
+
+
+def bundled_kit():
+    """The election kit installed with this evernode, refused if it is missing."""
+    if not (BUNDLED_KIT / "scripts").is_dir():
+        raise process.OperationError(
+            f"evernode's election kit is missing from {BUNDLED_KIT}: reinstall "
+            "evernode, or name a kit with --project-source"
+        )
+    return BUNDLED_KIT
+
+
+def is_bundled_source(source_spec):
+    return source_spec == BUNDLED_SOURCE_SPEC
 
 
 def validator_type(config):
@@ -168,7 +194,8 @@ def validate_saved_node_config(value, name):
                 raise process.OperationError("Invalid saved source reference")
         if source["local"] is not None and not Path(source["local"]).is_absolute():
             raise process.OperationError("Saved local source path must be absolute")
-        if not source["local"] and not source["repo"]:
+        # No path and no repository is the bundled kit; a ref needs a repository.
+        if not source["local"] and not source["repo"] and source["ref"]:
             raise process.OperationError("Missing saved source repository")
     return value
 

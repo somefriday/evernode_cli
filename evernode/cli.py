@@ -149,6 +149,19 @@ def handle_node_local_sync(store, args):
     return 0
 
 
+def confirm_script_refresh(plan):
+    """Show what a refresh would change, and ask before it is installed."""
+    ui.print_json_result(plan)
+    question = (
+        f"Move {plan['node']} to the kit installed with evernode and install its files?"
+        if "source" in plan
+        else f"Replace {plan['node']}'s saved scripts with the rendered source?"
+    )
+    ui.confirm_operation(
+        False, question + " Keys, database and elections state are untouched."
+    )
+
+
 def handle_script_refresh(store, args):
     """Re-render saved orchestration scripts for the selected nodes."""
     names = select_node_names(store, args)
@@ -158,27 +171,20 @@ def handle_script_refresh(store, args):
             with store.acquire_operation_lock(name):
                 config = store.load_node_config(name)
                 with elections.hold_election_lock(store, name):
-                    # An approved run renders once; otherwise the plan is shown
-                    # first and the source is rendered again to apply it.
-                    if args.yes and not args.dry_run:
-                        plan = provisioning.refresh_node_scripts(store, config)
-                        store.save_node_config(config)
-                        ui.print_json_result({"node": name, "refreshed": plan})
-                        continue
                     plan = provisioning.refresh_node_scripts(
-                        store, config, dry_run=True
+                        store,
+                        config,
+                        dry_run=args.dry_run,
+                        confirm=None if args.yes else confirm_script_refresh,
+                        bundled=args.bundled,
                     )
-                    ui.print_json_result(plan)
-                    if args.dry_run or not plan["changed"]:
+                    # A dry run, or an interactive run that found nothing to
+                    # change, only shows the plan.
+                    if args.dry_run or (not args.yes and not plan["changed"]):
+                        ui.print_json_result(plan)
                         continue
-                    ui.confirm_operation(
-                        False,
-                        f"Replace {name}'s saved scripts with the rendered source? "
-                        "Keys, database and elections state are untouched.",
-                    )
-                    applied = provisioning.refresh_node_scripts(store, config)
                     store.save_node_config(config)
-                    ui.print_json_result({"node": name, "refreshed": applied})
+                    ui.print_json_result({"node": name, "refreshed": plan})
         except (process.OperationError, OSError, ValueError) as exc:
             failed = True
             ui.print_json_result({"node": name, "result": "failed", "error": str(exc)})

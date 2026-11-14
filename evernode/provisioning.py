@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import time
 
-from . import configuration, docker, process, storage
+from . import __version__, configuration, docker, process, storage
 
 
 SOURCE_COMPONENTS = ("scripts", "configs", "contracts")
@@ -26,8 +26,18 @@ def render_source_snapshot(store, config, work):
         raise process.OperationError(
             "No saved source inputs; this node's scripts cannot be rendered automatically"
         )
-    if source_spec["local"]:
+    project_commit = None
+    if configuration.is_bundled_source(source_spec):
+        source = configuration.bundled_kit()
+        project_commit = f"bundled with evernode {__version__}"
+    elif source_spec["local"]:
         source = Path(source_spec["local"])
+        if not (source / "scripts").is_dir():
+            raise process.OperationError(
+                f"No election kit at {source}, where this node takes its scripts "
+                "from: restore it, or move the node to the kit installed with "
+                "evernode (node sync-scripts --bundled)"
+            )
     else:
         source = work / "checkout"
         process.execute_command(
@@ -38,9 +48,13 @@ def render_source_snapshot(store, config, work):
                 ["git", "-C", source, "checkout", "--detach", source_spec["ref"]],
                 timeout=120,
             )
-    revision = process.execute_command(
-        ["git", "-C", source, "rev-parse", "HEAD"], check=False
-    )
+    if project_commit is None:
+        revision = process.execute_command(
+            ["git", "-C", source, "rev-parse", "HEAD"], check=False
+        )
+        project_commit = (
+            revision.stdout.strip() if revision.returncode == 0 else "local-unversioned"
+        )
     staged = work / "snapshot"
     staged.mkdir(mode=0o700)
     for component in SOURCE_COMPONENTS:
@@ -50,11 +64,7 @@ def render_source_snapshot(store, config, work):
         staged / "scripts/env.sh", configuration.build_node_environment(config)
     )
     manifest = {
-        "project_commit": (
-            revision.stdout.strip()
-            if revision.returncode == 0
-            else "local-unversioned"
-        ),
+        "project_commit": project_commit,
         "inputs": configuration.build_node_environment(config),
         "hashes": {
             c: storage.calculate_directory_fingerprint(staged / c)
@@ -157,14 +167,37 @@ def prepare_node_workspace(store, config):
     store.save_node_config(config)
 
 
+def record_source(config, source_spec):
+    """Save where the node takes its scripts from, and that source in words."""
+    config["source_spec"] = source_spec
+    config["project_source"] = (
+        "bundled"
+        if configuration.is_bundled_source(source_spec)
+        else source_spec["local"] or source_spec["repo"]
+    )
+
+
 def provision_node_workspace(
-    store,
-    config,
-    project_source=None,
-    project_repo=configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
-    project_ref=None,
+    store, config, project_source=None, project_repo=None, project_ref=None
 ):
-    """Reserve first under the registry lock, then prepare under the caller's node lock."""
+    """Reserve first under the registry lock, then prepare under the caller's node lock.
+
+    With no source named the node takes the kit installed with evernode.
+    """
+    if project_source:
+        source_spec = {
+            "local": str(Path(project_source).resolve()),
+            "repo": None,
+            "ref": None,
+        }
+    elif project_repo or project_ref:
+        source_spec = {
+            "local": None,
+            "repo": project_repo or configuration.DEFAULT_ORCHESTRATION_REPOSITORY,
+            "ref": project_ref,
+        }
+    else:
+        source_spec = dict(configuration.BUNDLED_SOURCE_SPEC)
     directory = store.node_directory(config["name"])
     with store.acquire_operation_lock():
         if directory.exists() or directory.is_symlink():
@@ -184,17 +217,8 @@ def provision_node_workspace(
             phase="preparing",
             initialized=False,
             prepare_stage="reserved",
-            source_spec={
-                "local": (
-                    str(Path(project_source).resolve()) if project_source else None
-                ),
-                "repo": project_repo,
-                "ref": project_ref,
-            },
-            project_source=(
-                str(Path(project_source).resolve()) if project_source else project_repo
-            ),
         )
+        record_source(config, source_spec)
         configuration.validate_saved_node_config(config, config["name"])
         directory.parent.mkdir(exist_ok=True, mode=0o700)
         storage.validate_private_path(directory.parent)
@@ -285,24 +309,40 @@ def _install_file(source, target):
     os.replace(temporary, target)
 
 
-def refresh_node_scripts(store, config, *, dry_run=False):
+def refresh_node_scripts(store, config, *, dry_run=False, confirm=None, bundled=False):
     """Re-render a node's saved orchestration components from its own source.
 
     Updating the installed package does not touch a node's saved scripts, so a
     fixed reference script otherwise never reaches an existing validator. This
     renders the recorded source again and installs only the files that differ.
     Identity, keys, database, elections state and logs are never touched.
+
+    ``bundled`` moves the node to the kit installed with evernode: the plan
+    shows the move with the files it changes, and the node records the new
+    source once they are installed.
+
+    ``confirm`` is shown the plan before anything is installed and raises to
+    refuse it. The render it approved is the one installed: rendering again
+    could bring in a commit it was never shown.
     """
     directory = store.node_directory(config["name"])
     for component in SOURCE_COMPONENTS:
         storage.validate_private_path(directory / component)
+    move = bundled and not configuration.is_bundled_source(config.get("source_spec"))
+    rendered = (
+        dict(config, source_spec=dict(configuration.BUNDLED_SOURCE_SPEC))
+        if move
+        else config
+    )
     with tempfile.TemporaryDirectory(prefix=".refresh-", dir=directory) as tmp:
-        staged, manifest = render_source_snapshot(store, config, Path(tmp))
+        staged, manifest = render_source_snapshot(store, rendered, Path(tmp))
         plan = {
             "node": config["name"],
             "project_commit": manifest["project_commit"],
             "components": {},
         }
+        if move:
+            plan["source"] = {"from": config.get("project_source"), "to": "bundled"}
         work = []
         for component in SOURCE_COMPONENTS:
             live = directory / component
@@ -325,47 +365,57 @@ def refresh_node_scripts(store, config, *, dry_run=False):
                 work.append((staged / component / name, live / name))
             for name in removed:
                 work.append((None, live / name))
-        plan["changed"] = bool(work)
-        if dry_run or not work:
+        plan["changed"] = bool(work) or move
+        if dry_run or not plan["changed"]:
             return plan
-        backups = directory / ".script-backups"
-        backups.mkdir(exist_ok=True, mode=0o700)
-        # A unique suffix keeps two refreshes in the same second apart.
-        backup = Path(
-            tempfile.mkdtemp(
-                prefix=time.strftime("%Y%m%dT%H%M%SZ-", time.gmtime()), dir=backups
-            )
-        )
-        backup.chmod(0o700)
-        for source, target in work:
-            if target.exists():
-                saved = backup / target.relative_to(directory)
-                saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                shutil.copy2(target, saved)
-        for source, target in work:
-            if source is None:
-                target.unlink()
-            else:
-                _install_file(source, target)
-        # Removing the last file in a subdirectory leaves it behind, and the
-        # fingerprint below covers directories as well as files.
-        for component in SOURCE_COMPONENTS:
-            live = directory / component
-            for path in sorted(live.rglob("*"), reverse=True):
-                if (
-                    path.is_dir()
-                    and not any(path.iterdir())
-                    and not (staged / component / path.relative_to(live)).is_dir()
-                ):
-                    path.rmdir()
-        plan["backup"] = str(backup)
-        for component in SOURCE_COMPONENTS:
-            if storage.calculate_directory_fingerprint(
-                directory / component
-            ) != manifest["hashes"][component]:
-                raise process.OperationError(
-                    f"Refreshed {component} does not match the rendered source"
-                )
+        if confirm is not None:
+            confirm(plan)
+        if work:
+            plan["backup"] = str(_install_rendered_files(directory, staged, work))
+            for component in SOURCE_COMPONENTS:
+                if storage.calculate_directory_fingerprint(
+                    directory / component
+                ) != manifest["hashes"][component]:
+                    raise process.OperationError(
+                        f"Refreshed {component} does not match the rendered source"
+                    )
+    if move:
+        record_source(config, dict(configuration.BUNDLED_SOURCE_SPEC))
     config["project_commit"] = manifest["project_commit"]
     config["source_hashes"] = manifest["hashes"]
     return plan
+
+
+def _install_rendered_files(directory, staged, work):
+    """Back up the files ``work`` replaces or removes, then apply it."""
+    backups = directory / ".script-backups"
+    backups.mkdir(exist_ok=True, mode=0o700)
+    # A unique suffix keeps two refreshes in the same second apart.
+    backup = Path(
+        tempfile.mkdtemp(
+            prefix=time.strftime("%Y%m%dT%H%M%SZ-", time.gmtime()), dir=backups
+        )
+    )
+    backup.chmod(0o700)
+    for source, target in work:
+        if target.exists():
+            saved = backup / target.relative_to(directory)
+            saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.copy2(target, saved)
+    for source, target in work:
+        if source is None:
+            target.unlink()
+        else:
+            _install_file(source, target)
+    # Removing the last file in a subdirectory leaves it behind, and the
+    # fingerprint the caller checks covers directories as well as files.
+    for component in SOURCE_COMPONENTS:
+        live = directory / component
+        for path in sorted(live.rglob("*"), reverse=True):
+            if (
+                path.is_dir()
+                and not any(path.iterdir())
+                and not (staged / component / path.relative_to(live)).is_dir()
+            ):
+                path.rmdir()
+    return backup

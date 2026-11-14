@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "vendor/ever-validator/scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
 
 # Each operation: the call the dispatcher makes, and the DePool state once the
 # operation has actually been accepted. Signing is not the effect -- the
