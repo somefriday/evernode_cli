@@ -73,6 +73,7 @@ you lose your place.
 evernode node list                        # every node and its state
 evernode node status -n validator01       # health, sync, next step
 evernode node logs -n validator01 --follow
+evernode node log-level --all debug       # more detail in node logs; info switches back
 evernode doctor -n validator01            # status, free disk, schedule file
 evernode depool info -n validator01       # rounds, stake, pending transactions
 evernode election status -n validator01   # schedule and validator set

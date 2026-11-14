@@ -37,7 +37,7 @@ root:
 loggers:
   # node messages
   ever_node:
-    level: debug
+    level: info
   boot:
     level: info
   sync:
@@ -65,17 +65,17 @@ loggers:
   librdkafka:
     level: error
   validator:
-    level: debug
+    level: info
   validator_manager:
     level: info
   catchain:
     level: info
   validator_session:
-    level: debug
+    level: info
   telemetry:
-    level: debug
+    level: info
   validate_query:
-    level: debug
+    level: info
   ext_messages:
     level: info
   remp:

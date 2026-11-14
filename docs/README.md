@@ -82,6 +82,7 @@ A nominator's owner funds the contract after `nominator verify`. A solo or nomin
 | [`node restart`](node/restart.md)           | Stop and start a node.                                                 |
 | [`node remove`](node/remove.md)             | Remove a node's containers, keeping its keys and configuration.        |
 | [`node logs`](node/logs.md)                 | Read one of a node's logs.                                             |
+| [`node log-level`](node/log-level.md)       | Show or switch how much a node logs.                                   |
 | [`node sync`](node/sync.md)                 | Report whether a node is synchronized, or wait until it is.            |
 | [`node resources`](node/resources.md)       | Show CPU, memory, I/O and disk use.                                    |
 | [`node lsync`](node/lsync.md)               | Seed an unsynchronized node's database from another node on this host. |

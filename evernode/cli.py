@@ -14,6 +14,7 @@ from . import (
     elections,
     host,
     images,
+    log_level,
     nodes,
     process,
     provisioning,
@@ -168,6 +169,24 @@ def confirm_script_refresh(plan):
     )
 
 
+def handle_log_level(store, args):
+    """Show or switch the log level of the selected nodes."""
+    failed = False
+    for name in select_node_names(store, args):
+        try:
+            if args.level is None:
+                result = {"node": name, "log_level": log_level.read_level(store, name)}
+            else:
+                with store.acquire_operation_lock(name):
+                    applies = log_level.set_level(store, name, args.level)
+                result = {"node": name, "log_level": args.level, "applies": applies}
+        except (process.OperationError, OSError) as exc:
+            failed = True
+            result = {"node": name, "result": "failed", "error": str(exc)}
+        ui.print_json_result(result)
+    return 1 if failed else 0
+
+
 def handle_script_refresh(store, args):
     """Re-render saved orchestration scripts for the selected nodes."""
     names = select_node_names(store, args)
@@ -250,6 +269,8 @@ def main(argv=None):
             return setup_actions.handle_setup_action(store, args)
         if args.group == "node" and args.action == "sync-scripts":
             return handle_script_refresh(store, args)
+        if args.group == "node" and args.action == "log-level":
+            return handle_log_level(store, args)
         if args.group == "node" and args.action == "lsync":
             return handle_node_local_sync(store, args)
         if args.group == "node" and args.action == "update":

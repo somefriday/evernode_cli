@@ -159,6 +159,7 @@ def build_argument_parser():
         "restart",
         "remove",
         "logs",
+        "log-level",
         "sync",
         "resources",
     ):
@@ -174,8 +175,12 @@ def build_argument_parser():
             q = node.add_parser(command)
         if command not in ("list", "resources"):
             q.add_argument("-n", "--name")
-        if command in ("stop", "remove"):
+        if command in ("stop", "remove", "log-level"):
             q.add_argument("--all", action="store_true")
+        if command == "log-level":
+            q.add_argument(
+                "level", nargs="?", choices=("info", "debug"), help="Omit to show the level"
+            )
         if command in ("stop", "restart", "remove"):
             q.add_argument(
                 "--force",
