@@ -23,6 +23,7 @@ Asks for the Safe's seed phrases the first time, derives a key pair from each an
 ## Behaviour
 
 - For a node set up with `node setup --import-wallet`, at stage `node-started`.
+- Needs the vote engine that `host setup` installs: it derives the keys from each phrase, so no phrase is ever a process argument.
 - The first run asks for one seed phrase per custodian at a hidden prompt, and stores them root-only in the node's `keys/`.
 - A mistyped phrase fails this check; run it again with `--replace-seeds`.
 - Never prints phrases, deploys anything or moves funds.

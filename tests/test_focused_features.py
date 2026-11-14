@@ -236,6 +236,57 @@ class FocusedFeatureTests(unittest.TestCase):
         self.assertIn("--progress=plain", build.args[0])
         self.assertTrue(build.kwargs["stream"])
 
+    @staticmethod
+    def checkout(_repository, _ref, destination):
+        destination.mkdir(parents=True)
+        (destination / "placeholder").write_text("source")
+        return ("n" if destination.name == "ever-node" else "c") * 40
+
+    def build(self, **arguments):
+        return images.build_managed_image(
+            self.store, node_repo="node", node_ref="ref", cli_repo="cli", cli_ref="ref",
+            **arguments,
+        )
+
+    def test_a_second_build_of_the_same_sources_is_refused_while_the_first_runs(self):
+        refused = []
+
+        def command(argv, **_options):
+            if argv[:2] == ["docker", "build"] and not refused:
+                # Another terminal starts the same build while this one runs.
+                try:
+                    self.build()
+                except process.OperationError as exc:
+                    refused.append(str(exc))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with (
+            patch("evernode.images._git_checkout", side_effect=self.checkout),
+            patch("evernode.images.process.execute_command", side_effect=command),
+            patch("evernode.images.validate_node_image", return_value="sha256:" + "a" * 64),
+        ):
+            record, built = self.build()
+            self.assertTrue(built)
+            self.assertEqual(len(refused), 1)
+            self.assertIn("Another build of this image is running", refused[0])
+            # Once registered, the same sources are reused, not built again.
+            self.assertEqual(self.build(), (record, False))
+
+    def test_another_repository_is_another_image_and_the_default_keeps_its_key(self):
+        ids = iter(["sha256:" + "a" * 64, "sha256:" + "b" * 64])
+        with (
+            patch("evernode.images._git_checkout", side_effect=self.checkout),
+            patch("evernode.images.process.execute_command"),
+            patch("evernode.images.validate_node_image", side_effect=lambda _tag: next(ids)),
+        ):
+            default, default_built = self.build()
+            custom, custom_built = self.build(image_repo="custom/ever-node")
+        self.assertTrue(default_built and custom_built)
+        self.assertTrue(default["image"].startswith("local/ever-node:"))
+        self.assertTrue(custom["image"].startswith("custom/ever-node:"))
+        self.assertNotIn("image_repo", default["inputs"])
+        self.assertEqual(custom["inputs"]["image_repo"], "custom/ever-node")
+
     def test_import_seeds_are_private_and_not_part_of_metadata(self):
         directory = self.store.node_directory("validator")
         (directory / "keys").mkdir(parents=True)
@@ -355,7 +406,7 @@ class FocusedFeatureTests(unittest.TestCase):
     def test_a_missing_or_other_vote_engine_is_built_from_the_installed_sources(self):
         other = process.OperationError(
             "/usr/local/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.1: run sudo evernode host setup"
+            "evernode-vote 0.2.2: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             sources = Path(temporary)
@@ -374,12 +425,12 @@ class FocusedFeatureTests(unittest.TestCase):
             ["docker", "build", "--output", "/usr/local/bin", sources], timeout=3600, stream=True
         )
         self.assertEqual(find.call_count, 2)
-        self.assertIn("Building evernode-vote 0.2.1 with Docker", err.getvalue())
+        self.assertIn("Building evernode-vote 0.2.2 with Docker", err.getvalue())
 
     def test_a_build_that_leaves_another_engine_fails(self):
         other = process.OperationError(
             "/usr/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.1: run sudo evernode host setup"
+            "evernode-vote 0.2.2: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / "Cargo.toml").write_text("")
@@ -520,7 +571,7 @@ class FocusedFeatureTests(unittest.TestCase):
         ):
             self.assertIn("Docker's official Ubuntu repository", host.get_setup_plan())
             self.assertIn(
-                "build the vote engine evernode-vote 0.2.1 into /usr/local/bin with Docker",
+                "build the vote engine evernode-vote 0.2.2 into /usr/local/bin with Docker",
                 host.get_setup_plan(),
             )
 

@@ -315,58 +315,65 @@ def build_managed_image(
             # A forced rebuild is deliberately a new immutable artifact even if
             # source references resolve to the same commits.
             inputs["rebuild_nonce"] = secrets.token_hex(8)
+        if image_repo != DEFAULT_IMAGE_REPOSITORY:
+            # Another repository is another image: a reuse must not hand back
+            # a tag under a name the caller did not ask for. The default
+            # repository stays out, so records built before keep their keys.
+            inputs["image_repo"] = image_repo
         key = _record_key(inputs)
         tag = _image_tag(image_repo, key)
-        with store.acquire_operation_lock():
-            path = image_record_path(store, key)
-            if path.exists() and not rebuild:
-                record = load_image_record(store, key)
-                process.execute_command(
-                    ["docker", "image", "inspect", record["image_id"]]
-                )
-                return record, False
-        context = temporary / "context"
-        context.mkdir(mode=0o700)
-        shutil.copy2(_recipe_path(), context / "Dockerfile")
-        ignore = _recipe_path().with_name("ever-node.dockerignore")
-        if not ignore.exists():
-            ignore = _recipe_path().parent / ".dockerignore"
-        if ignore.exists():
-            shutil.copy2(ignore, context / ".dockerignore")
-        shutil.copytree(sources, context / "src")
-        process.execute_command(
-            [
-                "docker",
-                "build",
-                "--progress=plain",
-                "--pull",
-                "--no-cache",
-                "--tag",
-                tag,
-                "--build-arg",
-                "RUST_VERSION=" + rust_version,
-                "--build-arg",
-                "NODE_BUILD_FEATURES=" + node_features,
-                str(context),
-            ],
-            timeout=7200,
-            stream=True,
-        )
-        image_id = validate_node_image(tag)
-        record = {
-            "schema_version": 1,
-            "key": key,
-            "inputs": inputs,
-            "image": tag,
-            "image_id": image_id,
-        }
-        with store.acquire_operation_lock():
-            destination = image_record_path(store, key)
-            if destination.exists() and not rebuild:
-                return load_image_record(store, key), False
-            store.images_directory(create=True)
-            storage.write_json_atomically(destination, record)
-        return record, True
+        # One build per record at a time, from the check to the registration.
+        with store.acquire_image_build_lock(key):
+            with store.acquire_operation_lock():
+                path = image_record_path(store, key)
+                if path.exists() and not rebuild:
+                    record = load_image_record(store, key)
+                    process.execute_command(
+                        ["docker", "image", "inspect", record["image_id"]]
+                    )
+                    return record, False
+            context = temporary / "context"
+            context.mkdir(mode=0o700)
+            shutil.copy2(_recipe_path(), context / "Dockerfile")
+            ignore = _recipe_path().with_name("ever-node.dockerignore")
+            if not ignore.exists():
+                ignore = _recipe_path().parent / ".dockerignore"
+            if ignore.exists():
+                shutil.copy2(ignore, context / ".dockerignore")
+            shutil.copytree(sources, context / "src")
+            process.execute_command(
+                [
+                    "docker",
+                    "build",
+                    "--progress=plain",
+                    "--pull",
+                    "--no-cache",
+                    "--tag",
+                    tag,
+                    "--build-arg",
+                    "RUST_VERSION=" + rust_version,
+                    "--build-arg",
+                    "NODE_BUILD_FEATURES=" + node_features,
+                    str(context),
+                ],
+                timeout=7200,
+                stream=True,
+            )
+            image_id = validate_node_image(tag)
+            record = {
+                "schema_version": 1,
+                "key": key,
+                "inputs": inputs,
+                "image": tag,
+                "image_id": image_id,
+            }
+            with store.acquire_operation_lock():
+                destination = image_record_path(store, key)
+                if destination.exists() and not rebuild:
+                    return load_image_record(store, key), False
+                store.images_directory(create=True)
+                storage.write_json_atomically(destination, record)
+            return record, True
 
 
 def remove_managed_image(store, image_reference, *, dry_run=False):

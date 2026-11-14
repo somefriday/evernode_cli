@@ -20,7 +20,7 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 if args == ["--version"]:
-    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.1"))
+    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.2"))
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 with open(os.environ["FAKE_ENGINE_LOG"], "a") as log:
@@ -269,7 +269,7 @@ class VoteGroupTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_ENGINE_VERSION": "evernode-vote 0.0.9"}):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertEqual(code, 1)
-        self.assertIn("needs evernode-vote 0.2.1: run sudo evernode host setup", err)
+        self.assertIn("needs evernode-vote 0.2.2: run sudo evernode host setup", err)
         with patch("evernode.voting.shutil.which", return_value=None):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertIn("evernode-vote is not installed: run sudo evernode host setup", err)

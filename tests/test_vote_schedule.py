@@ -20,7 +20,7 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys, time
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("evernode-vote 0.2.1")
+    print("evernode-vote 0.2.2")
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 rings = {n["name"]: open(n["keyring"]).read() for n in (net or {}).get("nodes", []) if n.get("keyring")}
@@ -201,6 +201,24 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("joined already: it now votes with validator01 (before: validator01)", out)
         [entry] = self.stored()
         self.assertEqual(entry["endpoint"], "http://other")
+
+    def test_the_same_proposal_on_another_network_does_not_take_the_schedule_over(self):
+        """A proposal can hash the same on two networks; one host keeps one schedule for it."""
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 60)})
+        self.join()
+        self.add_node("devnode", "solo")
+        self.configs["devnode"]["network"] = "devnet"
+        engine_runs = len(self.calls())
+        code, _, err = self.run_vote(
+            "join", "-n", "devnode", "--endpoint", "http://devnet", "--proposal", PROPOSAL, "--yes"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("joined already for nodes on main", err)
+        self.assertIn("vote leave --proposal", err)
+        self.assertEqual(len(self.calls()), engine_runs)
+        [entry] = self.stored()
+        self.assertEqual((entry["nodes"], entry["endpoint"]), (["validator01"], "http://gql"))
 
     def test_a_depool_node_joins_with_its_key_ring_and_no_wallet(self):
         self.add_node("depool01", "depool", workchain=0)

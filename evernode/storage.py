@@ -150,26 +150,45 @@ class NodeStateStore:
     @contextlib.contextmanager
     def acquire_operation_lock(self, name=None):
         """Order: node lock, then short registry lock. Never the reverse."""
+        if name is not None:
+            configuration.validate_node_name(name)
+        with self._lock(
+            None if name is None else name + ".lock",
+            f"Another operation holds the {name or 'registry'} lock; retry after it finishes",
+        ):
+            yield
+
+    @contextlib.contextmanager
+    def acquire_image_build_lock(self, key):
+        """Held from an image record's check to its registration: two builds of
+        the same sources would both tag the image, and one record would then
+        name an image its tag no longer points to."""
+        with self._lock(
+            f"image-{key}.lock",
+            "Another build of this image is running; once it finishes, its image is reused",
+        ):
+            yield
+
+    @contextlib.contextmanager
+    def _lock(self, filename, busy):
+        """Hold locks/FILENAME, or the registry's .lock; refuse at once if it is held."""
         self.validate_state_root()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         validate_private_path(self.root)
-        if name is None:
+        if filename is None:
             path = self.root / ".lock"
         else:
-            configuration.validate_node_name(name)
             locks = self.root / "locks"
             locks.mkdir(exist_ok=True, mode=0o700)
             validate_private_path(locks)
-            path = locks / (name + ".lock")
+            path = locks / filename
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as stream:
             validate_private_path(path)
             try:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise process.OperationError(
-                    f"Another operation holds the {name or 'registry'} lock; retry after it finishes"
-                ) from None
+                raise process.OperationError(busy) from None
             yield
 
 

@@ -151,11 +151,16 @@ impl Wallet {
 /// The key ever-cli and ever-sdk derive from a seed phrase: BIP39 (English, 12 to 24 words, checksum
 /// checked), BIP32 on secp256k1 along [`DERIVATION_PATH`], and the private key found there taken as the
 /// ed25519 secret. The phrase never appears in an error.
-fn key_from_phrase(phrase: &str) -> Result<SigningKey> {
+pub fn key_from_phrase(phrase: &str) -> Result<SigningKey> {
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase).map_err(|e| anyhow::anyhow!("not a BIP39 phrase: {e}"))?;
     let path = DERIVATION_PATH.parse::<bip32::DerivationPath>().map_err(|e| anyhow::anyhow!("{DERIVATION_PATH}: {e}"))?;
     let derived = bip32::XPrv::derive_from_path(mnemonic.to_seed(""), &path).map_err(|e| anyhow::anyhow!("derivation: {e}"))?;
     Ok(SigningKey::from_bytes(&derived.private_key().to_bytes().into()))
+}
+
+/// A key pair as ever-cli prints and reads it (`getkeypair`, `--setkey FILE`): public and secret in hex.
+pub fn key_pair_json(key: &SigningKey) -> serde_json::Value {
+    serde_json::json!({"public": hex::encode(key.verifying_key().to_bytes()), "secret": hex::encode(key.to_bytes())})
 }
 
 /// One wallet message: dry-run on `account` (the wallet's current state), sent, and followed to its
@@ -245,6 +250,7 @@ mod tests {
         for (phrase, public, secret) in vectors {
             let key = key_from_phrase(phrase).unwrap();
             assert_eq!((hex::encode(key.verifying_key().to_bytes()), hex::encode(key.to_bytes())), (public.into(), secret.into()));
+            assert_eq!(key_pair_json(&key), serde_json::json!({"public": public, "secret": secret}));
             // as typed: extra spaces and a line break change nothing
             let typed = format!("  {}\n", phrase.replace(' ', "   "));
             assert_eq!(key_from_phrase(&typed).unwrap().to_bytes(), key.to_bytes());

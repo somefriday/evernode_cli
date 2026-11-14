@@ -138,15 +138,9 @@ for (( i=1; i <= $((CUSTODIANS)); i++ )); do
     [[ -f ${KEY_FILES_DIR}/${WAL_NAME}_seed_${i}.txt ]] && SeedPhrase[$i]=$(cat "${KEY_FILES_DIR}/${WAL_NAME}_seed_${i}.txt")
     SeedPhrase[$i]=$(echo "${SeedPhrase[$i]}" | tr -d '"')
     
-    # generate public key
-    PubKey=$($CALL_CLI genpubkey "${SeedPhrase[$i]}" | \
-        tee "${KEY_FILES_DIR}/${WAL_NAME}_PubKeyCard_${i}.txt" | \
-        grep "Public key:" | awk '{print $3}' | \
-        tee "${KEY_FILES_DIR}/${WAL_NAME}_pub_${i}_.key")
-    echo "PubKey${i}: $PubKey"
-    
-    # generate pub/sec keypair file
-    if ! KEY_PAIR_JSON="$($CALL_CLI -j getkeypair -p "${SeedPhrase[$i]}")"; then
+    # generate pub/sec keypair file. A seed phrase is never a process argument,
+    # which every user of the host can read: evernode-vote takes it on stdin.
+    if ! KEY_PAIR_JSON="$(echo "${SeedPhrase[$i]}" | evernode-vote key-from-phrase)"; then
         echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair from seed phrase ${i}"
         exit 1
     fi
@@ -154,13 +148,18 @@ for (( i=1; i <= $((CUSTODIANS)); i++ )); do
         echo "###-ERROR(${SelfScriptName} line $LINENO): Can't save key pair to file ${KEY_FILES_DIR}/${WAL_NAME}_${i}.keys.json"
         exit 1
     fi
+
+    # public key, from the key pair
+    PubKey=$(jq -r .public "${KEY_FILES_DIR}/${WAL_NAME}_${i}.keys.json" | tee "${KEY_FILES_DIR}/${WAL_NAME}_pub_${i}_.key")
+    echo "Public key: $PubKey" > "${KEY_FILES_DIR}/${WAL_NAME}_PubKeyCard_${i}.txt"
+    echo "PubKey${i}: $PubKey"
 done
-# write seed phrases to Node_Addr_Keys_File
+# write seed phrases to Node_Addr_Keys_File; yq reads them from its environment, not its arguments
 json_array=$(printf '%s\n' "${SeedPhrase[@]}" | jq -R . | jq -s .)
-yq e -ioj ".nodes[0].${VALIDATOR_NAME}.SeedPhrases = $json_array" "$Node_Addr_Keys_File"
+SEED_PHRASES="$json_array" yq e -ioj ".nodes[0].${VALIDATOR_NAME}.SeedPhrases = env(SEED_PHRASES)" "$Node_Addr_Keys_File"
 #=======================================================================================
-# generate multisignature wallet address
-if ! WalletAddress="$($CALL_CLI genaddr "$Wallet_Code" --abi "$Wallet_ABI" --setkey "${SeedPhrase[1]}" --wc "$WorkChain")"; then
+# generate multisignature wallet address from the first key pair file, as the node's container sees it
+if ! WalletAddress="$($CALL_CLI genaddr "$Wallet_Code" --abi "$Wallet_ABI" --setkey "${INPL_KEYS_DIR}/MSKeys_${WAL_NAME}/${WAL_NAME}_1.keys.json" --wc "$WorkChain")"; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate wallet address"
     echo "$WalletAddress"
     echo -e "----------------------------------------------------------------------------------------------------------------------------\n"

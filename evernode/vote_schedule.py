@@ -162,6 +162,7 @@ def join(store, options, proposal):
     engine = voting.find_engine()
     # Joined already: the preview is held to what earlier passes read, as every tick is.
     joined = open_entry(store.load(), proposal)
+    refuse_another_network(store.state, joined, names, proposal)
     with external_key_rings(store, sources) as external:
         net = {"endpoint": endpoint, "nodes": nodes + external}
         if joined is not None and joined.get("config_version") is not None:
@@ -180,6 +181,7 @@ def join(store, options, proposal):
         install_cron(store)
         data = store.load()
         entry = open_entry(data, proposal)
+        refuse_another_network(store.state, entry, names, proposal)
         if entry is None:
             entry = {
                 "proposal": proposal,
@@ -208,6 +210,33 @@ def join(store, options, proposal):
     else:
         print(f"{proposal[:12]} is {entry['state']}.")
     return 0
+
+
+def refuse_another_network(state, entry, names, proposal):
+    """This host keeps one schedule per proposal, and a proposal can have the same
+    hash on two networks. Joining it again for nodes on another network would take
+    the schedule over and end the first network's votes, so that is refused. Only
+    managed nodes name their network; a join with key rings alone cannot be told."""
+    if entry is None:
+        return
+    before, now = _networks(state, entry.get("nodes") or []), _networks(state, names)
+    if before and now and before != now:
+        raise process.OperationError(
+            f"{proposal[:12]} is joined already for nodes on {', '.join(sorted(before))} "
+            f"({voters(entry)}); joining it for {', '.join(sorted(now))} would end those votes. "
+            f"To move it, leave it first: sudo evernode vote leave --proposal {proposal}"
+        )
+
+
+def _networks(state, names):
+    """The networks these managed nodes are on; a node removed since says nothing."""
+    networks = set()
+    for name in names:
+        try:
+            networks.add(state.load_node_config(name)["network"])
+        except (process.OperationError, KeyError):
+            pass
+    return networks
 
 
 def leave(store, proposal):

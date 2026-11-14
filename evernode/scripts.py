@@ -22,6 +22,9 @@ HOST_SCRIPTS = {
 
 # These two only generate keys, addresses and config files. Every other host
 # script reads the chain or sends a message, so it needs the node's console.
+# They derive key pairs with the vote engine, which reads a seed phrase on
+# standard input: ever-cli takes it only as an argument, which every user of
+# the host can read.
 OFFLINE_SCRIPTS = {
     "Msig-prep.sh",
     "DePool-prep.sh",
@@ -185,6 +188,11 @@ def execute_validator_script(
         storage.validate_private_path(item)
     if script not in OFFLINE_SCRIPTS:
         require_node_console(config)
+    else:
+        # voting imports this module through wallets, so it is imported here.
+        from . import voting
+
+        voting.find_engine()
     environment = os.environ.copy()
     # These scripts otherwise reopen /dev/tty, which is unavailable in the
     # detached process session. The setup command has already collected approval.

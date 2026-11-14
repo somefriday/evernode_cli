@@ -24,6 +24,7 @@ mod stake;
 mod timeline;
 mod wallet;
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
@@ -291,6 +292,9 @@ enum Cmd {
     },
     /// Generate an ed25519 key pair (JSON: public, secret)
     GenKey,
+    /// The key pair ever-cli derives from a seed phrase (JSON: public, secret). The phrase is read from
+    /// standard input: as a process argument, every user of the host could read it.
+    KeyFromPhrase,
     /// Make an EverWallet: a wallet file with a new key (or --secret) and its masterchain address. Send the
     /// address some EVER and the wallet's first message deploys it. The account BOC with --balance is for a
     /// test zerostate.
@@ -493,12 +497,11 @@ fn main() -> Result<()> {
             let net = Net::load(&net)?;
             stake::run_elect(&net, net.node(&node)?, stake as u128 * EVER, Duration::from_secs(poll))?;
         }
-        Cmd::GenKey => {
-            let key = ed25519_dalek::SigningKey::from_bytes(&rand::random());
-            println!(
-                "{}",
-                serde_json::json!({"public": hex::encode(key.verifying_key().to_bytes()), "secret": hex::encode(key.to_bytes())})
-            );
+        Cmd::GenKey => println!("{}", wallet::key_pair_json(&ed25519_dalek::SigningKey::from_bytes(&rand::random()))),
+        Cmd::KeyFromPhrase => {
+            let mut phrase = String::new();
+            std::io::stdin().read_to_string(&mut phrase).context("reading the seed phrase from standard input")?;
+            println!("{}", wallet::key_pair_json(&wallet::key_from_phrase(&phrase)?));
         }
         Cmd::MintWallet { name, balance, secret } => {
             let key = ed25519_dalek::SigningKey::from_bytes(&match secret {

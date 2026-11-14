@@ -99,20 +99,10 @@ if [[ -z $SeedPhrase ]];then
 fi
 echo "Seed phrase saved to ${KEY_FILES_DIR}/depool_seed.txt"
 
-#----------------------------------------------------------    
-# generate public key
-PubKey="$($CALL_CLI genpubkey "$SeedPhrase" | tee "${KEY_FILES_DIR}/depool_PubKeyCard.txt" | grep "Public key:" | awk '{print $3}' | tee "${KEY_FILES_DIR}/depool_pub.key")"
-if [[ -z $PubKey ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): Can not generate PubKey."
-    echo
-    exit 1
-fi
-echo "PubKey: $PubKey"
-echo "Public Key saved to ${KEY_FILES_DIR}/depool_pub.txt"
-
-#----------------------------------------------------------    
-# generate pub/sec keypair file
-if ! KEY_PAIR_JSON="$($CALL_CLI -j getkeypair -p "$SeedPhrase")"; then
+#----------------------------------------------------------
+# generate pub/sec keypair file. A seed phrase is never a process argument,
+# which every user of the host can read: evernode-vote takes it on stdin.
+if ! KEY_PAIR_JSON="$(echo "$SeedPhrase" | evernode-vote key-from-phrase)"; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate key pair from the DePool seed phrase"
     exit 1
 fi
@@ -129,6 +119,13 @@ if [[ -z $key_public ]] || [[ -z $key_secret ]];then
 fi
 echo "Key pair file saved to ${KEY_FILES_DIR}/depool.keys.json"
 
+#----------------------------------------------------------
+# public key, from the key pair
+PubKey="$(echo "$key_public" | tee "${KEY_FILES_DIR}/depool_pub.key")"
+echo "Public key: $PubKey" > "${KEY_FILES_DIR}/depool_PubKeyCard.txt"
+echo "PubKey: $PubKey"
+echo "Public Key saved to ${KEY_FILES_DIR}/depool_pub.key"
+
 Validator_addr="$(cat "${KEYS_DIR}/${VALIDATOR_NAME}.addr")"
 [[ -z "$Validator_addr" ]] && echo "###-ERROR(${SelfScriptName} line $LINENO): Validator address not found in ${KEYS_DIR}/${VALIDATOR_NAME}.addr" && exit 1
 Validator_WC=${Validator_addr%%:*}
@@ -140,8 +137,8 @@ if [[ "$Validator_WC" == "-1" ]];then
     echo "###-WARNING(${SelfScriptName} line $LINENO): Validator address WC is -1. Change it to $Depool_WC to avoid extra fees"
 fi
 #=======================================================================================
-# generate depool address
-if ! DepoolAddress="$($CALL_CLI genaddr $Depool_Code --abi $Depool_ABI --setkey "${SeedPhrase}" --wc "$Depool_WC")"; then
+# generate depool address from the key pair file, as the node's container sees it
+if ! DepoolAddress="$($CALL_CLI genaddr $Depool_Code --abi $Depool_ABI --setkey "${INPL_KEYS_DIR}/DPKeys_${VALIDATOR_NAME}/depool.keys.json" --wc "$Depool_WC")"; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): Can't generate DePool address"
     echo "$DepoolAddress"
     echo -e "----------------------------------------------------------------------------------------------------------------------------\n"

@@ -32,7 +32,7 @@ Reads the proposal from the chain, shows what it changes, asks, votes with every
 - Cron runs `evernode vote tick` every minute. A pass is due 40 s after a new validator set starts, and a minute later while a vote is missing.
 - Every pass reads each key ring again: after an election it votes with the node's new key.
 - When a `--keyring` file is readable by other users, join refuses it: `chmod 600` it, or `docker exec CONTAINER chmod 600 /PATH` for one in a container; ever-node keeps that mode. Join only reads the mode, and passes do not check it again.
-- Joining again replaces the nodes, key rings and endpoint. `--all` means the nodes that exist now, except removed ones; `-n` still takes a removed node.
+- Joining again replaces the nodes, key rings and endpoint. `--all` means the nodes that exist now, except removed ones; `-n` still takes a removed node. A proposal joined for managed nodes on one network is refused for nodes on another (one schedule per proposal): `vote leave` it first.
 - When the proposal is accepted, expires or loses too many rounds, the entry closes as `applied` or `not applied` and the cron line is removed.
 
 ## See also
