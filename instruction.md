@@ -44,9 +44,10 @@ Clone the repository directly on the server:
 git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli
 ```
 
-Keep this checkout for updates. The election scripts install with evernode
-itself: `node create` gives each node the copy installed with evernode, and
-`node sync-scripts` refreshes nodes from it after an upgrade.
+Keep this checkout for updates and for building the vote engine. The election
+scripts install with evernode itself: `node create` gives each node the copy
+installed with evernode, and `node sync-scripts` refreshes nodes from it after
+an upgrade.
 
 Install the command globally from the cloned checkout. The CLI is isolated in
 a virtual environment, so it does not modify the operating system's managed Python:
@@ -375,6 +376,27 @@ different global-network configurations, insufficient staging space, or a
 target already synchronized. If the copy fails or is interrupted, or the copied
 database does not start, it restores the target's previous database and starts
 both nodes again. Do not use it to clone a validating source node.
+
+## 8. Vote on a network config change
+
+Validators change the network's configuration by vote: they can burn the
+config master key (the "dictator"), set a param, or upgrade the config or
+elector code. One validator proposes and pays; every validator who supports
+the change joins it; evernode then votes in every round from cron until the
+change is decided, and stops by itself:
+
+```bash
+export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/<project>/graphql
+sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # shows the price, asks, pays; prints the hash
+sudo -E evernode vote join -n validator01 --proposal HASH              # votes now and in every round
+sudo -E evernode vote status                                           # round end, elections, joined proposals
+sudo evernode vote history                                             # every proposal joined here, and its votes
+```
+
+A DePool validator's Safe is in workchain 0 and cannot pay; it proposes with a
+wallet file (`--from FILE`) and joins like everyone else. Building the vote
+engine, prices, param values, wallet files and how the schedule works are in
+[voting_instruction.md](voting_instruction.md).
 
 ## Routine commands
 

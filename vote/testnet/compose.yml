@@ -1,0 +1,51 @@
+# Validators of a network made by testnet/gen.sh. The run's compose.env has RUN_DIR, NET_PREFIX and
+# COMPOSE_PROJECT_NAME:  docker compose --env-file $RUN/compose.env -f testnet/compose.yml up -d
+# Fixed addresses: the DHT entries in the global config are signed for ${NET_PREFIX}.11.. port 30303.
+# Control servers are published on the host's loopback only (127.0.0.1:13031..), which is all
+# evernode-vote needs together with the console key files in $RUN/keys.
+x-node: &node
+  image: ever-node-local:e406862
+  mem_limit: 6g
+  stop_grace_period: 30s
+  restart: unless-stopped
+  ulimits:
+    nofile: { soft: 1048576, hard: 1048576 }
+
+services:
+  node1:
+    <<: *node
+    volumes:
+      - ${RUN_DIR:?set RUN_DIR}/net/node1:/node
+      - ${RUN_DIR}/net/zerostate:/zerostate:ro
+      - node1-db:/db
+    ports: ["127.0.0.1:13031:3031"]
+    networks: { net: { ipv4_address: "${NET_PREFIX:-172.33.0}.11" } }
+
+  node2:
+    <<: *node
+    volumes:
+      - ${RUN_DIR}/net/node2:/node
+      - ${RUN_DIR}/net/zerostate:/zerostate:ro
+      - node2-db:/db
+    ports: ["127.0.0.1:13032:3031"]
+    networks: { net: { ipv4_address: "${NET_PREFIX:-172.33.0}.12" } }
+
+  node3:
+    <<: *node
+    volumes:
+      - ${RUN_DIR}/net/node3:/node
+      - ${RUN_DIR}/net/zerostate:/zerostate:ro
+      - node3-db:/db
+    ports: ["127.0.0.1:13033:3031"]
+    networks: { net: { ipv4_address: "${NET_PREFIX:-172.33.0}.13" } }
+
+volumes:
+  node1-db:
+  node2-db:
+  node3-db:
+
+networks:
+  net:
+    ipam:
+      config:
+        - subnet: "${NET_PREFIX:-172.33.0}.0/24"

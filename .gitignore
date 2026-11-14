@@ -11,3 +11,7 @@ election-troubleshooting.md
 signing-reliability-design.md
 tests/e2e/results/
 tests/e2e/production-differences.md
+
+# The vote engine's build, and its test networks' runs (they hold wallet keys).
+vote/target/
+vote/runs/

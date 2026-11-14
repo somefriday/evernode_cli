@@ -2,7 +2,7 @@
 
 One page per command. Each has an example, what the command does, its flags, and how it behaves. The rules these pages follow are in [rules.md](rules.md).
 
-Every command except `host check` needs root. `--state-dir DIR` goes before the group (default `/var/lib/ever-validator`); `evernode --version` prints the version.
+Every command except `host check` and the offline and key-file `vote` commands needs root. `--state-dir DIR` goes before the group (default `/var/lib/ever-validator`); `evernode --version` prints the version.
 
 ## Setup by validator type
 
@@ -155,3 +155,20 @@ A nominator's owner funds the contract after `nominator verify`. A solo or nomin
 | Command                      | What it does                                   |
 | ---------------------------- | ---------------------------------------------- |
 | [`doctor`](doctor/doctor.md) | Print one node's status with a few host facts. |
+
+## Network config votes
+
+| Command                                   | What it does                                                               |
+| ----------------------------------------- | -------------------------------------------------------------------------- |
+| [`vote status`](vote/status.md)           | Show the network's governance state and the proposals joined on this host. |
+| [`vote param`](vote/param.md)             | Print a config param.                                                      |
+| [`vote simulate`](vote/simulate.md)       | Play a proposal's whole life offline.                                      |
+| [`vote propose`](vote/propose.md)         | Register a proposal and pay its price.                                     |
+| [`vote join`](vote/join.md)               | Vote for a proposal now and in every round, from cron.                     |
+| [`vote leave`](vote/leave.md)             | Stop voting for a joined proposal.                                         |
+| [`vote history`](vote/history.md)         | List every proposal joined on this host and the votes sent.                |
+| [`vote cast`](vote/cast.md)               | Vote with validator keys named by file.                                    |
+| [`vote run`](vote/run.md)                 | Vote for a change, named by what it does, in every round.                  |
+| [`vote burn`](vote/burn.md)               | Vote for the master-key burn in every round.                               |
+| [`vote burn-key`](vote/burn-key.md)       | Print the key a burn installs.                                             |
+| [`vote mint-wallet`](vote/mint-wallet.md) | Make a new wallet file to pay for proposals.                               |

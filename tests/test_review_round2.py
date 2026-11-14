@@ -24,6 +24,7 @@ from evernode import (
     scripts,
     stake,
     storage,
+    voting,
     wallets,
 )
 from support import make_node_configuration
@@ -207,6 +208,15 @@ class SmallFixTests(unittest.TestCase):
             self.assertRaisesRegex(process.OperationError, "referenced by: v1"),
         ):
             images.remove_managed_image(store, record["image"])
+
+    def test_r2_22_the_safes_own_address_decides_whether_it_can_pay(self):
+        imported = make_node_configuration("v1", wallet=profile(depool_address="0:" + "b" * 64))
+        voting.require_masterchain_safe(imported)
+        basechain = make_node_configuration(
+            "v1", wallet=profile(wallet_address="0:" + "a" * 64, depool_address="0:" + "b" * 64)
+        )
+        with self.assertRaisesRegex(process.OperationError, "workchain 0"):
+            voting.require_masterchain_safe(basechain)
 
 
 if __name__ == "__main__":

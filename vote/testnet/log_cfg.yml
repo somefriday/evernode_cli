@@ -1,0 +1,50 @@
+# ever-node logging for the local network: everything to stdout (docker logs).
+# Levels follow upstream tests/test_run_net/log_cfg.yml, lowered from trace to info/debug.
+refresh_rate: 30 seconds
+
+appenders:
+  stdout:
+    kind: console
+    encoder:
+      pattern: "{d(%Y-%m-%d %H:%M:%S.%f)} {l} [{t}] {I}: {m}{n}"
+
+root:
+  level: error
+  appenders:
+    - stdout
+
+loggers:
+  ever_node:
+    level: info
+  boot:
+    level: info
+  sync:
+    level: info
+  adnl:
+    level: warn
+  overlay:
+    level: warn
+  rldp:
+    level: warn
+  dht:
+    level: warn
+  ever_block:
+    level: off
+  executor:
+    level: off
+  tvm:
+    level: off
+  validator:
+    level: info
+  validator_manager:
+    level: info
+  catchain:
+    level: error
+  validator_session:
+    level: info
+  storage:
+    level: warn
+  telemetry:
+    level: info
+  ext_messages:
+    level: info

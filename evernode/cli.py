@@ -22,6 +22,7 @@ from . import (
     stake,
     storage,
     ui,
+    voting,
 )
 
 
@@ -235,6 +236,9 @@ def main(argv=None):
             checks = host.collect_host_dependency_report()
             ui.print_json_result(checks)
             return 0 if host.host_dependencies_available(checks) else 1
+        # Only votes with managed nodes' keys need root; voting.py asks for it then.
+        if args.group == "vote":
+            return voting.handle_vote(args)
         require_root_privileges()
         os.umask(0o077)
         store = storage.NodeStateStore(args.state_dir)

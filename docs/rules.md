@@ -9,7 +9,7 @@ questions in the same place, for an operator at a terminal and for an agent read
   A command without subcommands uses its own name twice: `docs/doctor/doctor.md`.
 - `docs/README.md` is the index. It lists every page in one line and gives the setup sequence for
   each validator type. A new command is not documented until it is in the index.
-- Longer guides (`instruction.md`) stay at the repository root and link
+- Longer guides (`instruction.md`, `voting_instruction.md`) stay at the repository root and link
   here for flags. A page never repeats a guide; it links to it.
 
 ## The page

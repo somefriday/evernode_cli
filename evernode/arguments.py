@@ -12,8 +12,29 @@ ADDRESS_OPTIONS = (
     "--depool-address",
     "--owner-address",
     "--validator-address",
+    "--pay-from",
 )
 ADDRESS_VALUE = re.compile(r"^-[0-9]+:[0-9a-fA-F]{64}$")
+# The vote engine's commands an operator uses (the test network's stay with
+# evernode-vote itself), and evernode's own: join, leave and history, and tick,
+# which only cron runs.
+VOTE_COMMANDS = (
+    "status",
+    "param",
+    "simulate",
+    "propose",
+    "join",
+    "leave",
+    "history",
+    "cast",
+    "run",
+    "burn",
+    "burn-key",
+    "mint-wallet",
+    "tick",
+)
+HIDDEN_VOTE_COMMANDS = ("tick",)
+DEFAULT_STATE_DIR = "/var/lib/ever-validator"
 
 
 def normalize_address_arguments(argv):
@@ -48,7 +69,7 @@ def build_argument_parser():
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument(
         "--state-dir",
-        default="/var/lib/ever-validator",
+        default=DEFAULT_STATE_DIR,
         help="root-owned storage directory; put before the command",
     )
     groups = p.add_subparsers(dest="group")
@@ -417,4 +438,112 @@ def build_argument_parser():
     q.add_argument("--dry-run", action="store_true")
     q = groups.add_parser("doctor")
     q.add_argument("-n", "--name")
+    q = groups.add_parser(
+        "vote",
+        help="Vote on a network config change: burn the config master key, set a "
+        "param, upgrade code",
+        description="Runs evernode-vote. Without -n or --all it needs no root and no "
+        "node, only an endpoint and keys. Managed nodes vote through join, every round "
+        "from cron. See evernode vote COMMAND --help.",
+    )
+    q.add_argument(
+        "command",
+        choices=VOTE_COMMANDS,
+        metavar="{"
+        + ",".join(c for c in VOTE_COMMANDS if c not in HIDDEN_VOTE_COMMANDS)
+        + "}",
+    )
+    q.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        metavar="OPTIONS",
+        help="evernode's vote options, then the command's own",
+    )
+    return p
+
+
+def build_vote_schedule_parser(command):
+    """Options of join, leave, history and tick, which evernode runs itself."""
+    p = argparse.ArgumentParser(prog=f"evernode vote {command}", allow_abbrev=False)
+    if command in ("join", "leave", "history"):
+        p.add_argument(
+            "--proposal",
+            metavar="HASH",
+            required=command != "history",
+            help="The proposal's hash, as propose and status print it",
+        )
+    if command == "join":
+        nodes = p.add_mutually_exclusive_group()
+        nodes.add_argument("-n", "--name", help="Vote with this managed node's keys")
+        nodes.add_argument(
+            "--all",
+            action="store_true",
+            help="Vote with every managed node's keys (those there are now)",
+        )
+        p.add_argument(
+            "--keyring",
+            action="append",
+            default=[],
+            metavar="PATH",
+            help="Vote with another node's config.json, or CONTAINER:/PATH inside a container",
+        )
+        p.add_argument(
+            "--endpoint", metavar="URL", help="GraphQL endpoint; default: $EVERNODE_ENDPOINT"
+        )
+        p.add_argument("--yes", action="store_true", help="Join without asking")
+    return p
+
+
+def build_vote_option_parser():
+    """evernode's own options of evernode vote; every other one is evernode-vote's.
+
+    Abbreviations are off: the engine's --keys must never be read as --keyring.
+    """
+    p = argparse.ArgumentParser(
+        prog="evernode vote COMMAND",
+        add_help=False,
+        allow_abbrev=False,
+        description="Options evernode adds to evernode-vote's own, which follow; "
+        "evernode passes --net itself.",
+    )
+    keys = p.add_mutually_exclusive_group()
+    keys.add_argument(
+        "-n", "--name", help="Vote with this managed node's validator keys (root)"
+    )
+    keys.add_argument(
+        "--all",
+        action="store_true",
+        help="Vote with every managed node's validator keys (root)",
+    )
+    p.add_argument(
+        "--keyring",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="A copy of a node's config.json with its validator_key_ring; "
+        "refresh it after every election",
+    )
+    p.add_argument(
+        "--control",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="A node's console.json: the node signs over its control server",
+    )
+    p.add_argument(
+        "--endpoint", metavar="URL", help="GraphQL endpoint; default: $EVERNODE_ENDPOINT"
+    )
+    payer = p.add_mutually_exclusive_group()
+    payer.add_argument(
+        "--pay-from-safe",
+        action="store_true",
+        help="propose: pay from the -n node's Safe with its key files",
+    )
+    payer.add_argument(
+        "--pay-from",
+        metavar="ADDRESS",
+        help="propose: pay from this masterchain wallet; its seed phrase is asked "
+        "in the terminal",
+    )
+    p.add_argument("--yes", action="store_true", help="Pay without asking")
     return p

@@ -12,7 +12,7 @@ flags: [docs/](docs/README.md).
 ```bash
 apt-get update
 apt-get install -y python3 python3-venv git
-git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli   # for updates; the election scripts install with evernode
+git clone https://github.com/somefriday/evernode_cli.git /root/evernode_cli   # for updates and the vote engine; the election scripts install with evernode
 
 install -d -m 0755 /opt/evernode
 python3 -m venv /opt/evernode/venv
@@ -22,6 +22,7 @@ ln -sfn /opt/evernode/venv/bin/evernode /usr/local/bin/evernode
 
 evernode host setup --yes   # Docker and script dependencies
 evernode host check
+docker build -o /usr/local/bin /root/evernode_cli/vote   # the engine of evernode vote
 ```
 
 Open each node's ADNL UDP port yourself; `host setup` does not touch the firewall.
@@ -32,6 +33,7 @@ Open each node's ADNL UDP port yourself; `host setup` does not touch the firewal
 cd /root/evernode_cli && git pull --ff-only
 /opt/evernode/venv/bin/python -m pip install --upgrade /root/evernode_cli
 evernode node sync-scripts --all   # the install alone does not refresh these
+docker build -o /usr/local/bin /root/evernode_cli/vote   # when evernode vote asks for it
 ```
 
 A node created before evernode shipped its own election scripts still takes them
@@ -78,11 +80,32 @@ evernode election status -n validator01   # schedule and validator set
 evernode node restart -n validator01      # after election stop; refuses while in a validator set
 ```
 
+## Network config votes
+
+Burn the config master key, set a param or upgrade code, by validator vote:
+
+```bash
+export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/<project>/graphql
+sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # shows the price, asks, pays
+sudo -E evernode vote join -n validator01 --proposal HASH              # votes now and in every round, from cron
+sudo -E evernode vote status                                           # round end, elections, joined proposals
+sudo evernode vote history                                             # every proposal joined here, and its votes
+```
+
+`--pay-from-safe` pays from a solo or nominator node's Safe. A DePool node's Safe
+is in the node's workchain, 0 by default, and the config contract takes payment
+only from the masterchain: pay with `--from FILE` or `--pay-from ADDRESS` instead
+([Paying](voting_instruction.md#paying)).
+
+Guide: [voting_instruction.md](voting_instruction.md); engine:
+[vote/README.md](vote/README.md).
+
 Groups: `host`, `node`, `wallet`, `depool`, `stake`, `nominator`, `election`,
-`image`, `doctor`. Add `--help` to any of them.
+`image`, `doctor`, `vote`. Add `--help` to any of them.
 
 ## Tests
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+(cd vote && cargo test --release)   # the vote engine, on the contracts' real code
 ```
