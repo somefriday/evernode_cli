@@ -557,6 +557,29 @@ class StakeOperationLockTests(unittest.TestCase):
         script.assert_not_called()
         self.assertIn("election lock", errors.getvalue())
 
+    def test_every_question_is_answered_before_the_lock_is_taken(self):
+        """While a prompt waits with the lock held, each scheduled run is skipped."""
+        events = []
+        with (
+            patch("evernode.cli.require_root_privileges"),
+            patch("evernode.cli.storage.NodeStateStore") as store,
+            patch("evernode.setup_actions.nodes.fetch_node_statistics",
+                  return_value={"sync_status": "synchronization_finished",
+                                "timediff": 1, "shards_timediff": 1}),
+            patch("evernode.setup_actions.ui.confirm_operation",
+                  side_effect=lambda *_: events.append("confirmed")),
+            patch("evernode.setup_actions.stake.ask_mode",
+                  side_effect=lambda *_: events.append("mode chosen") or "single"),
+            patch("evernode.setup_actions.stake.set_stake", return_value=({}, {})),
+            patch("evernode.setup_actions.elections.hold_election_lock",
+                  side_effect=lambda *_: events.append("locked") or contextlib.nullcontext()),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            store.return_value.load_node_config.return_value = operational_node()
+            cli.main(["stake", "set", "-n", "validator01"])
+        self.assertEqual(events, ["confirmed", "mode chosen", "locked"])
+
 
 class NodeLogCommandTests(unittest.TestCase):
     def setUp(self):
@@ -596,13 +619,16 @@ class ScriptRefreshCommandTests(unittest.TestCase):
                 confirm(plan)
             return plan
 
+        self.events = []
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
-            patch("evernode.cli.elections.hold_election_lock"),
+            patch("evernode.cli.elections.hold_election_lock",
+                  side_effect=lambda *_: self.events.append("locked") or contextlib.nullcontext()),
             patch("evernode.cli.provisioning.refresh_node_scripts",
                   side_effect=render) as refresh,
-            patch("evernode.cli.ui.confirm_operation") as confirm,
+            patch("evernode.cli.ui.confirm_operation",
+                  side_effect=lambda *_: self.events.append("asked")) as confirm,
             contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()),
         ):
@@ -617,9 +643,9 @@ class ScriptRefreshCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(refresh.call_count, 1)
         self.assertFalse(refresh.call_args.kwargs["dry_run"])
-        self.assertIsNone(refresh.call_args.kwargs["confirm"])
         self.assertFalse(refresh.call_args.kwargs["bundled"])
         confirm.assert_not_called()
+        self.assertEqual(self.events, ["locked"])
 
     def test_bundled_asks_the_refresh_to_move_the_node(self):
         code, refresh, confirm = self.run_refresh("--bundled", "--yes")
@@ -642,27 +668,37 @@ class ScriptRefreshCommandTests(unittest.TestCase):
         # The plan is printed before the question, then what was installed.
         self.assertIn('"changed": true', self.output)
         self.assertIn('"refreshed"', self.output)
+        # A question left open holds no lock, so scheduled runs go on.
+        self.assertEqual(self.events, ["asked", "locked"])
 
     def test_nothing_is_applied_when_no_file_differs(self):
         code, refresh, confirm = self.run_refresh(changed=False)
         self.assertEqual(code, 0)
         self.assertEqual(refresh.call_count, 1)
         confirm.assert_not_called()
+        self.assertEqual(self.events, [])
 
     def test_a_held_election_lock_fails_the_node_without_stopping_the_batch(self):
+        installed = []
+
+        def render(store, config, *, dry_run=False, confirm=None, bundled=False):
+            confirm({"changed": True})  # as the real one: just before installing
+            installed.append(config["name"])
+            return {"changed": True}
+
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
             patch("evernode.cli.elections.hold_election_lock",
                   side_effect=process.OperationError("holds validator01's election lock")),
-            patch("evernode.cli.provisioning.refresh_node_scripts") as refresh,
+            patch("evernode.cli.provisioning.refresh_node_scripts", side_effect=render),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
             store.return_value.list_node_names.return_value = ["validator01"]
             store.return_value.load_node_config.return_value = operational_node()
             code = cli.main(["node", "sync-scripts", "--all", "--yes"])
         self.assertEqual(code, 1)
-        refresh.assert_not_called()
+        self.assertEqual(installed, [])
         self.assertIn("election lock", output.getvalue())
 
 

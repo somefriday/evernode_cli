@@ -702,11 +702,11 @@ function Complete_And_Await() {
 # fee) and raising an alert, so an election gets BID_ATTEMPTS_MAX attempts, or
 # fewer when a failure is one no retry can change.
 #
-# Record_Bid_Attempt ELECTION_ID: a run is sending the bid.
+# Record_Bid_Attempt ELECTION_ID: a bid was sent and did not register.
 function Record_Bid_Attempt() {
     date +%s >> "${CURR_ELECTIONS_DIR}/$1_bid-attempts.txt"
 }
-# Bid_Attempts ELECTION_ID: how many runs have sent the bid.
+# Bid_Attempts ELECTION_ID: how many bids did not register.
 function Bid_Attempts() {
     local file="${CURR_ELECTIONS_DIR}/$1_bid-attempts.txt"
     if [[ -f $file ]];then grep -c . "$file"; else echo 0; fi

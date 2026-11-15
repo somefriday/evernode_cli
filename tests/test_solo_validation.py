@@ -643,6 +643,21 @@ class ElectionSequenceTests(unittest.TestCase):
         self.assertNotIn("run-election-sequence.sh", runner)
         self.assertIn(str(directory / "run-elections.sh"), self.cron.read_text())
 
+    def test_a_run_skipped_for_the_lock_says_so(self):
+        _, directory, _ = self.install("solo")
+        fake = directory / "bin"
+        fake.mkdir()
+        for code in (200, 0):
+            with self.subTest(flock_exit=code):
+                (fake / "flock").write_text(f"#!/bin/bash\nexit {code}\n")
+                (fake / "flock").chmod(0o755)
+                result = subprocess.run(
+                    ["bash", str(directory / "run-elections.sh")], capture_output=True,
+                    text=True, env={"PATH": f"{fake}:/usr/bin:/bin"}, timeout=30,
+                )
+                self.assertEqual(result.returncode, code)
+                self.assertEqual("skipped" in result.stdout, code == 200)
+
     def test_both_sequences_prepare_then_bid_and_run_no_inspection(self):
         for validator_type in ("solo", "depool"):
             with self.subTest(validator_type=validator_type):

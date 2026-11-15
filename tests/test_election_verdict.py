@@ -327,5 +327,42 @@ class ElectionPreparationTests(unittest.TestCase):
         self.assertNotIn("MC_TIME_DIFF=888", self.code)
 
 
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class ConsoleConfigRewriteTests(unittest.TestCase):
+    """The bid points console.json at the staking account before it asks the
+    console for the request. That file also holds the console's own key."""
+
+    def rewrite(self, jq_fails):
+        text = TAKE_PART.read_text()
+        start = text.index('    case "$STAKE_MODE" in\n        depool)\n            jq ".wallet_id')
+        end = text.index('"${NODE_CFG_DIR}/console.json"\n', text.index("mv -f", start))
+        block = text[start:end + len('"${NODE_CFG_DIR}/console.json"\n')]
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        console = directory / "console.json"
+        console.write_text('{"config": {"client_key": {"pvt_key": "k"}}, "wallet_id": "old"}')
+        console.chmod(0o600)
+        failing = 'jq() { [[ $1 == .wallet_id* ]] && return 2; command jq "$@"; }' if jq_fails else ""
+        program = f"""NODE_CFG_DIR={directory} STAKE_MODE=msig Validator_addr=-1:new SelfScriptName=t
+umask 022
+{failing}
+{block}"""
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        return result, console
+
+    def test_a_failed_rewrite_keeps_the_console_key(self):
+        result, console = self.rewrite(jq_fails=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(console.read_text())["wallet_id"], "old")
+        self.assertFalse((console.parent / "console.tmp").exists())
+
+    def test_the_rewritten_file_stays_private(self):
+        result, console = self.rewrite(jq_fails=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(console.read_text())["wallet_id"], "-1:new")
+        self.assertEqual(console.stat().st_mode & 0o777, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()

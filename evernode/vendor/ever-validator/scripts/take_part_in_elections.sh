@@ -500,6 +500,14 @@ else
             echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown staking mode $STAKE_MODE. Check STAKE_MODE in env.sh "
             exit 1
     esac
+    # A rewrite that failed (a full disk) must not replace the console's key file,
+    # and the new file keeps the private mode the old one had.
+    if ! jq -e '.config.client_key' "${NODE_CFG_DIR}/console.tmp" >/dev/null 2>&1;then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot rewrite ${NODE_CFG_DIR}/console.json. Can't continue. Exit"
+        rm -f "${NODE_CFG_DIR}/console.tmp"
+        exit 1
+    fi
+    chmod 600 "${NODE_CFG_DIR}/console.tmp"
     mv -f "${NODE_CFG_DIR}/console.tmp"  "${NODE_CFG_DIR}/console.json"
     if ! $CALL_CONS -c "election-bid $Validating_Start $Validating_Stop ${INPL_CURR_ELECTIONS_DIR}/${elections_id}_query.boc ${NET_GLOBAL_ID}" &> "${CURR_ELECTIONS_DIR}/${elections_id}-bid.log";then
         echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot make query.boc for elections $elections_id. Can't continue. Exit"
@@ -661,7 +669,6 @@ echo -e "-----------------------------------------------------------\n"
 # and five of those from one custodian fill it and stop the node bidding at
 # all. The six DePool operations have resumed like this for a while; this path
 # was the one that still did not.
-Record_Bid_Attempt "$elections_id"
 New_Elect_Trans_ID=""
 if [[ ${Required_Signs} -gt 1 ]];then
     New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Stake_DST_Addr" \
@@ -801,6 +808,8 @@ if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
 fi
 # Not registered, and it cannot register later: its messages are dead. The
 # next scheduled run sends it again, until this election has had its attempts.
+# Only a bid that got this far counts: a run that stopped before sending did not try.
+Record_Bid_Attempt "$elections_id"
 declare -i Bid_Attempt=$(Bid_Attempts "$elections_id")
 Next_Step="This was attempt ${Bid_Attempt} of ${BID_ATTEMPTS_MAX:-3}; the next scheduled run sends it again in this election."
 if [[ $Bid_Attempt -ge ${BID_ATTEMPTS_MAX:-3} ]];then

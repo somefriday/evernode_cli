@@ -45,7 +45,7 @@ export NODE_SYNC_TOLERANCE=20           # Seconds the node may lag, or this serv
 # command reported. Every wait for an effect is longer than this, so by the
 # time a failure is reported nothing further can execute.
 export MSG_LIFETIME=60
-# Runs that send a bid in one election before the node stops trying: a bid that
+# Bids in one election that may fail to register before the node stops trying: a bid that
 # does not register is sent again by the next scheduled run, in the same election.
 export BID_ATTEMPTS_MAX=3
 export STAKE_MODE="depool"              # can be 'msig' or 'depool'

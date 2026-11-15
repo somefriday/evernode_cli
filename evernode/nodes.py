@@ -396,6 +396,7 @@ def local_sync(store, source_name, target_name, *, timeout=30):
         token = uuid.uuid4().hex
         staging = workspace / f".node_db-lsync-{token}.staging"
         backup = workspace / f".node_db-lsync-{token}.backup"
+        failed = workspace / f".node_db-lsync-{token}.failed"
         source_stopped = target_stopped = backup_created = False
         recovery_errors = []
         try:
@@ -434,11 +435,9 @@ def local_sync(store, source_name, target_name, *, timeout=30):
             if backup_created:
                 try:
                     stop_node(target, timeout, disable_elections=False)
+                    # Set aside, not deleted: the old database is back first.
                     if target_db.exists() or target_db.is_symlink():
-                        failed = workspace / f".node_db-lsync-{token}.failed"
-                        _remove_directory(failed)
                         os.replace(target_db, failed)
-                        _remove_directory(failed)
                     os.replace(backup, target_db)
                     backup_created = False
                 except (OSError, process.OperationError) as restore_error:
@@ -456,7 +455,10 @@ def local_sync(store, source_name, target_name, *, timeout=30):
                 message += "; " + "; ".join(recovery_errors)
             raise process.OperationError(message) from None
         finally:
+            # Last, once both nodes run again: each is a whole database, and
+            # deleting one takes minutes.
             _remove_directory(staging)
+            _remove_directory(failed)
         # The target runs on the copy, so the sync is done and nothing below may
         # undo it: removing the old database is cleanup, and a failure or an
         # interrupt there leaves only that directory behind.

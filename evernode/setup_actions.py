@@ -147,11 +147,15 @@ def handle_setup_action(store, args):
         )
     with contextlib.ExitStack() as stack:
         stack.enter_context(store.acquire_operation_lock(name))
-        if action in ELECTION_LOCKED_ACTIONS:
-            stack.enter_context(elections.hold_election_lock(store, name))
         config = _require_setup_node(store, name, action)
+        # Every question comes before the election lock: while one waits for
+        # an answer with the lock held, each scheduled election run is skipped.
         if mutating:
             ui.confirm_operation(args.yes, _confirmation_question(args, config))
+        if action == ("stake", "set") and args.amount is None and args.mode is None and not args.all_balance:
+            args.mode = stake.ask_mode(store, config)
+        if action in ELECTION_LOCKED_ACTIONS:
+            stack.enter_context(elections.hold_election_lock(store, name))
         if action == ("wallet", "create"):
             result_config, result, phrases = wallets.wallet_create(store, config)
             _print_new_secrets("Safe wallet", result["wallet"]["address"], phrases)

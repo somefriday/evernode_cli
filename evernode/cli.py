@@ -1,5 +1,6 @@
 """Command routing for evernode."""
 
+import contextlib
 import os
 import shutil
 import signal
@@ -195,23 +196,31 @@ def handle_script_refresh(store, args):
     failed = False
     for name in names:
         try:
-            with store.acquire_operation_lock(name):
+            with store.acquire_operation_lock(name), contextlib.ExitStack() as installing:
                 config = store.load_node_config(name)
-                with elections.hold_election_lock(store, name):
-                    plan = provisioning.refresh_node_scripts(
-                        store,
-                        config,
-                        dry_run=args.dry_run,
-                        confirm=None if args.yes else confirm_script_refresh,
-                        bundled=args.bundled,
-                    )
-                    # A dry run, or an interactive run that found nothing to
-                    # change, only shows the plan.
-                    if args.dry_run or (not args.yes and not plan["changed"]):
-                        ui.print_json_result(plan)
-                        continue
-                    store.save_node_config(config)
-                    ui.print_json_result({"node": name, "refreshed": plan})
+
+                def approve(plan):
+                    if not args.yes:
+                        confirm_script_refresh(plan)
+                    # Only the install needs the election lock (a running
+                    # election reads these scripts as it goes), and it is taken
+                    # after the question, so a prompt left open holds up no run.
+                    installing.enter_context(elections.hold_election_lock(store, name))
+
+                plan = provisioning.refresh_node_scripts(
+                    store,
+                    config,
+                    dry_run=args.dry_run,
+                    confirm=approve,
+                    bundled=args.bundled,
+                )
+                # A dry run, or an interactive run that found nothing to
+                # change, only shows the plan.
+                if args.dry_run or (not args.yes and not plan["changed"]):
+                    ui.print_json_result(plan)
+                    continue
+                store.save_node_config(config)
+                ui.print_json_result({"node": name, "refreshed": plan})
         except (process.OperationError, OSError, ValueError) as exc:
             failed = True
             ui.print_json_result({"node": name, "result": "failed", "error": str(exc)})

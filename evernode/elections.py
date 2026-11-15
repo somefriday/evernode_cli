@@ -155,11 +155,14 @@ def enable_node_election_schedule(store, config, executable="/usr/local/bin/ever
         sequence.write_text(_depool_sequence_program(workspace / "scripts"))
     os.chmod(sequence, 0o700)
     runner.write_text(
-        "#!/bin/bash\nset -euo pipefail\nexec flock -n "
-        + shlex.quote(str(lock))
-        + " /bin/bash "
-        + shlex.quote(str(sequence))
-        + "\n"
+        "#!/bin/bash\n"
+        f"flock -n -E 200 {shlex.quote(str(lock))} /bin/bash {shlex.quote(str(sequence))}\n"
+        "status=$?\n"
+        "# A run skipped for the lock says so: one held by a command left waiting\n"
+        "# at a prompt would otherwise stop the elections without a trace.\n"
+        "[[ $status -ne 200 ]] || echo \"$(date '+%F %T %Z') skipped: another run"
+        " or an evernode command holds this node's election lock\"\n"
+        "exit $status\n"
     )
     os.chmod(runner, 0o700)
     interval = configuration.build_node_environment(config)["CRONTAB_INTERVAL"]

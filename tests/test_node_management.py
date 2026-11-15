@@ -385,7 +385,8 @@ class LocalSyncTests(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         self.assertTrue((target_dir / "lsync.json").exists())
 
-    def test_local_sync_restores_target_database_when_target_start_fails(self):
+    def _target_fails_to_start(self, raised, remove=None):
+        """Run local sync where the target does not start on the copy; return the starts."""
         starts = []
 
         def copy_database(command, **_kwargs):
@@ -405,16 +406,35 @@ class LocalSyncTests(unittest.TestCase):
             patch("evernode.nodes.stop_node"),
             patch("evernode.nodes.start_node", side_effect=start),
             patch("evernode.nodes.process.execute_command", side_effect=copy_database),
+            patch("evernode.nodes._remove_directory", side_effect=remove)
+            if remove else contextlib.nullcontext(),
         ):
-            with self.assertRaisesRegex(process.OperationError, "Local sync failed"):
+            with self.assertRaises(raised):
                 nodes.local_sync(self.store, "source", "target")
+        self.assertEqual(
+            (self.store.node_directory("target") / "node_db/state").read_text(), "target-state"
+        )
+        return starts
 
+    def test_local_sync_restores_target_database_when_target_start_fails(self):
+        self.assertEqual(
+            self._target_fails_to_start(process.OperationError), ["source", "target", "target"]
+        )
         target_dir = self.store.node_directory("target")
-        self.assertEqual((target_dir / "node_db/state").read_text(), "target-state")
         self.assertFalse(
             any(path.name.endswith(".backup") for path in target_dir.iterdir())
         )
-        self.assertEqual(starts, ["source", "target", "target"])
+
+    def test_an_interrupt_while_the_failed_copy_is_deleted_keeps_the_old_database(self):
+        """Deleting a whole copy takes minutes, so it comes after the restore and the restarts."""
+
+        def remove(path):
+            if path.name.endswith(".failed"):
+                raise KeyboardInterrupt
+
+        self.assertEqual(
+            self._target_fails_to_start(KeyboardInterrupt, remove), ["source", "target", "target"]
+        )
 
     def test_an_interrupt_while_the_old_database_is_removed_keeps_the_copy(self):
         """The target already runs on the copy, so only the old database is left."""

@@ -619,9 +619,14 @@ function Get_Account_Info() {
         # only says where this node's Safe is; its DePool is always in 0.
         if [[ "${acc_wc}" == "0" ]] || [[ "${acc_wc}" == "-1" ]];then
             local ACCOUNT_INFO=$($CALL_CONS -j -c "getaccount $ACCOUNT")
-            if echo "${ACCOUNT_INFO}" | grep -iq 'Nonexist' || echo "${ACCOUNT_INFO}" | grep -iq 'Error';then
+            if echo "${ACCOUNT_INFO}" | grep -iq 'Nonexist';then
                 echo "None 0 0"
-                return
+                return 0
+            fi
+            # Unread is not empty: a caller must not take it for a balance of 0.
+            if [[ -z $ACCOUNT_INFO ]] || echo "${ACCOUNT_INFO}" | grep -iq 'Error';then
+                echo "None 0 0"
+                return 1
             fi
         else
             local ACCOUNT_INFO=$($CALL_CLI -j account "${ACCOUNT}" 2>&1 | jq .)

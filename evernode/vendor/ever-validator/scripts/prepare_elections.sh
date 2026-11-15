@@ -431,10 +431,12 @@ Proxy1_Info="$(Get_Account_Info $dp_proxy1)"
 
 Proxy0_Bal=$(( $(echo "$Proxy0_Info" |awk '{print $2}') ))      # nanotokens
 Proxy1_Bal=$(( $(echo "$Proxy1_Info" |awk '{print $2}') ))      # nanotokens
+# Only a proxy that reads as Active is topped up: one that could not be read
+# shows a balance of 0, which says nothing about what it holds.
 
 # topup Proxy0 if needed
-echo "---INFO(${SelfScriptName} line $LINENO): Proxy0 balance is $( echo $Proxy0_Bal | awk '{print $1/1000000000}') tokens"
-if [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD ]];then
+echo "---INFO(${SelfScriptName} line $LINENO): Proxy0 (${Proxy0_Info%% *}) balance is $( echo $Proxy0_Bal | awk '{print $1/1000000000}') tokens"
+if [[ ${Proxy0_Info%% *} == "Active" && $Proxy0_Bal -lt $TOPUP_THRESHOLD ]];then
     echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy0 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
         "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): Proxy0 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
@@ -448,8 +450,8 @@ if [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD ]];then
 fi
 
 # topup Proxy1 if needed
-echo "---INFO(${SelfScriptName} line $LINENO): Proxy1 balance is $( echo $Proxy1_Bal | awk '{print $1/1000000000}') tokens"
-if [[ $Proxy1_Bal -lt $TOPUP_THRESHOLD ]];then
+echo "---INFO(${SelfScriptName} line $LINENO): Proxy1 (${Proxy1_Info%% *}) balance is $( echo $Proxy1_Bal | awk '{print $1/1000000000}') tokens"
+if [[ ${Proxy1_Info%% *} == "Active" && $Proxy1_Bal -lt $TOPUP_THRESHOLD ]];then
     echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy1 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
         "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): Proxy1 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1

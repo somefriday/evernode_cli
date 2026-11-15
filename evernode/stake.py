@@ -255,6 +255,13 @@ def _resolve_mode(mode, amount, spendable, facts):
     return ui.select_choice(None, "stake mode", choices, flag="--mode")
 
 
+def ask_mode(store, config):
+    """The stake mode menu on its own, so it can be answered before the
+    election lock is taken."""
+    spendable = _spendable_nanotokens(_observe(store, config), _settings(config))
+    return _resolve_mode(None, None, spendable, _chain_facts(config))
+
+
 def set_stake(store, config, amount=None, mode=None):
     """Record what this validator stakes in each election.
 
