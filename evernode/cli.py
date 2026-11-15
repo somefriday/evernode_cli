@@ -214,17 +214,17 @@ def handle_script_refresh(store, args):
                     confirm=approve,
                     bundled=args.bundled,
                 )
-                # The runner and the sequence come with evernode, not the kit:
-                # a node whose schedule is installed gets this version's.
-                if not args.dry_run and elections.node_election_cron_path(name).exists():
-                    elections.write_election_programs(store, config)
                 # A dry run, or an interactive run that found nothing to
                 # change, only shows the plan.
-                if args.dry_run or (not args.yes and not plan["changed"]):
-                    ui.print_json_result(plan)
-                    continue
-                store.save_node_config(config)
-                ui.print_json_result({"node": name, "refreshed": plan})
+                shown_only = args.dry_run or (not args.yes and not plan["changed"])
+                if not shown_only:
+                    store.save_node_config(config)
+                # The runner and the sequence come with evernode, not the kit:
+                # a node whose schedule is installed gets this version's. After
+                # the record, which a failure here must not leave unsaved.
+                if not args.dry_run and elections.node_election_cron_path(name).exists():
+                    elections.write_election_programs(store, config)
+                ui.print_json_result(plan if shown_only else {"node": name, "refreshed": plan})
         except (process.OperationError, OSError, ValueError) as exc:
             failed = True
             ui.print_json_result({"node": name, "result": "failed", "error": str(exc)})

@@ -685,10 +685,14 @@ class ScriptRefreshCommandTests(unittest.TestCase):
                 patch("evernode.cli.elections.node_election_cron_path") as cron,
                 patch("evernode.cli.elections.write_election_programs") as write,
             ):
+                # The record is saved first, so a write that fails cannot leave
+                # the source of a --bundled move unrecorded.
+                saved_first = []
+                write.side_effect = lambda store, _: saved_first.append(store.save_node_config.called)
                 cron.return_value.exists.return_value = True
                 code, _, _ = self.run_refresh(*flags)
                 self.assertEqual(code, 0)
-                self.assertEqual(write.call_count, rewritten)
+                self.assertEqual(saved_first, [True] * rewritten)
 
     def test_a_held_election_lock_fails_the_node_without_stopping_the_batch(self):
         installed = []

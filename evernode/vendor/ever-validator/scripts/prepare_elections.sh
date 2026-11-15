@@ -104,7 +104,11 @@ if [[ ! -f ${SafeC_Wallet_ABI} ]];then
     echo "###-ERROR(${SelfScriptName} line $LINENO): ${SafeC_Wallet_ABI} NOT FOUND! Can't continue"
     exit 1
 fi
-Validator_Acc_Info="$(Get_Account_Info "${Validator_addr}")"
+# A failed read would show a balance of 0 and raise the alert below for nothing.
+if ! Validator_Acc_Info="$(Get_Account_Info "${Validator_addr}")";then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot read the validator account ${Validator_addr}. Can't continue. Exit"
+    exit 1
+fi
 declare -i Validator_Acc_LT=$(echo "$Validator_Acc_Info" | awk '{print $3}')
 Val_Adrr_HEX=${Validator_addr##*:}
 
@@ -189,7 +193,12 @@ fi
 # ===============================================================
 # Get unsend transactins in validator contract
 echo -e "\n--- INFO: Check unsend transactions in validator contract..."
-Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
+# A failed read is not an empty list: the stop at a half-signed transaction
+# below depends on it.
+if ! Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")";then
+    echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot get transactions list from validator contract. Can't continue. Exit"
+    exit 1
+fi
 declare -i Trans_QTY=$(echo "${Trans_List}" | jq -r ".transactions|length")
 declare -i Exist_El_Trans_Qty=0
 declare -i Exist_DP_Trans_Qty=0

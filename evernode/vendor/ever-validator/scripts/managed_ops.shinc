@@ -69,7 +69,8 @@ function Get_DP_Own_Stake() {
 # adds another half-signed transfer until the wallet's queue is full.
 #
 # The match is exact on destination, value, payload, bounce and send flags.
-# More than one match is ambiguous and refused rather than guessed.
+# More than one match is ambiguous and refused rather than guessed (status 2;
+# 1 is a wallet or key that could not be read).
 # Input:
 #  - msig_address
 #  - destination address
@@ -115,7 +116,7 @@ function Find_Matching_Pending_Trans() {
     done
     if [[ $count -gt 1 ]]; then
         printf "###-ERROR: More than one pending transaction matches this request; resolve them with 'evernode depool info' and 'evernode depool confirm' (without a DePool: 'evernode stake status' and 'evernode stake confirm') before retrying.\n" >&2
-        return 1
+        return 2
     fi
     [[ $count -eq 1 ]] && printf "%s\n" "${kept% }"
     return 0
@@ -548,18 +549,20 @@ function Sign_To_Execution() {
     local Trans_ID="$3"
     local Deadline="$4"
     local Label="$5"
-    local entry status unsigned index key_file mask received required sent=0 tries=0 wait_until
+    local entry unsigned index key_file mask received required sent=0 tries=0 wait_until unread=""
     while :; do
         if [[ $(date +%s) -ge $Deadline ]];then
-            echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} is still unsigned and its deadline has passed, so nothing further was sent."
+            if [[ -n $unread ]];then
+                echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying."
+            else
+                echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} is still unsigned and its deadline has passed, so nothing further was sent."
+            fi
             return 1
         fi
-        entry=$(Get_Pending_Entry "$MSIG_ADDR" "$Trans_ID")
-        status=$?
-        if [[ $status -ne 0 ]];then
-            echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying."
-            return 1
-        fi
+        # A wallet that could not be read is read again until the deadline:
+        # stopping would leave the transaction half signed.
+        unread=yes
+        entry=$(Get_Pending_Entry "$MSIG_ADDR" "$Trans_ID") || { sleep "${EFFECT_POLL_INTERVAL:-2}"; continue; }
         if [[ -z $entry ]];then
             if [[ $sent -gt 0 ]];then
                 printf "%s\n" "+++-INFO: ${Label}: transaction ${Trans_ID} executed after ${sent} signature(s) from this node."
@@ -571,9 +574,8 @@ function Sign_To_Execution() {
         received=$(jq -r '.signsReceived' <<< "$entry")
         required=$(jq -r '.signsRequired' <<< "$entry")
         mask=$(jq -r '.confirmationsMask' <<< "$entry")
-        if ! unsigned=$(Unsigned_Local_Keys "$MSIG_ADDR" "$MSIG_NAME" "$mask");then
-            return 1
-        fi
+        unsigned=$(Unsigned_Local_Keys "$MSIG_ADDR" "$MSIG_NAME" "$mask") || { sleep "${EFFECT_POLL_INTERVAL:-2}"; continue; }
+        unread=""
         if [[ -z $unsigned ]];then
             local expires_at
             expires_at=$(Trans_Expires_At "$MSIG_ADDR" "$Trans_ID") || expires_at=""
@@ -916,24 +918,28 @@ function Submit_And_Identify() {
     # earlier one. Sixty seconds of slack absorbs the difference between this
     # host's clock and the chain's, which is what stamps the id.
     local window_start=$(( $(date +%s) - 60 ))
-    for (( attempt=0; attempt < 3; attempt++ )); do
-        result=$(Send_File_To_BC "$File")
-        if [[ $result != "success" ]];then
-            echoerr "###-WARNING: the node did not acknowledge the message (${result:-no answer}); checking whether it arrived anyway."
-        fi
-        # shellcheck disable=SC2154
-        if [[ ${Required_Signs:-1} -le 1 ]];then
-            # No transaction is created: submitTransaction transfers inline and
-            # returns 0, so the caller's effect predicate is the only check.
-            return 0
+    # Three sends, each followed by a look, and one last look after the last
+    # pause: the message has expired by then, so that answer is final.
+    for (( attempt=0; attempt <= 3; attempt++ )); do
+        if [[ $attempt -lt 3 ]];then
+            result=$(Send_File_To_BC "$File")
+            if [[ $result != "success" ]];then
+                echoerr "###-WARNING: the node did not acknowledge the message (${result:-no answer}); checking whether it arrived anyway."
+            fi
+            # shellcheck disable=SC2154
+            if [[ ${Required_Signs:-1} -le 1 ]];then
+                # No transaction is created: submitTransaction transfers inline and
+                # returns 0, so the caller's effect predicate is the only check.
+                return 0
+            fi
         fi
         identified=$(Find_Matching_Pending_Trans "$MSIG_ADDR" "$Dest" "$Value" "$PayLoad" \
-            "$Key_File" "$window_start" "$Bounce") || return 1
-        if [[ -n $identified ]];then
-            printf "%s\n" "$identified"
-            return 0
-        fi
-        sleep "$interval"
+            "$Key_File" "$window_start" "$Bounce")
+        case $? in
+            0) if [[ -n $identified ]];then printf "%s\n" "$identified"; return 0; fi ;;
+            2) return 1 ;;  # more than one entry matches: refused, never guessed
+        esac                # 1, the wallet could not be read: the next look decides
+        [[ $attempt -lt 3 ]] && sleep "$interval"
     done
     echoerr "###-ERROR: the submission to ${Dest} did not appear in wallet ${MSIG_ADDR}, so it was never accepted and nothing was signed. Nothing was transferred; the operation can be made again."
     return 1

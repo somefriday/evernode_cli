@@ -331,34 +331,31 @@ function Get_SC_current_state() {
     local s_acc="${ACCOUNT##*:}"
     # account workchain
     local acc_wc="${ACCOUNT%%:*}"
-    if $FORCE_USE_DAPP; then
-        for (( Try=0; Try <= 5; Try++ )); do
-            rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
-            local LC_OUTPUT="$($CALL_CLI account "$ACCOUNT" --dumpboc "${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
-            [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
-            sleep 3
-        done
-    else
+    local use_cli=$FORCE_USE_DAPP
+    if ! $FORCE_USE_DAPP; then
         NODE_WC="0"
-        if [[ "${NODE_WC}" == "${acc_wc}" ]] || [[ "${acc_wc}" == "-1" ]];then
-            for (( Try=0; Try <= 5; Try++ ))
-            do
-                rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
-                local LC_OUTPUT="$($CALL_CONS -c "getaccountstate ${ACCOUNT} ${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
-                [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
-                sleep 3
-            done
-        else
-            # The node can only obtain acc status from WC where it is and master, so use ever-cli
-            for (( Try=0; Try <= 5; Try++ ))
-            do
-                rm -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
-                local LC_OUTPUT="$($CALL_CLI account "$ACCOUNT" --dumpboc "${INPL_ELECTIONS_WORK_DIR}/${s_acc}.boc")"
-                [[ -f "${ELECTIONS_WORK_DIR}/${s_acc}.boc" ]] && local result="written StateInit of account" && break
-                sleep 3
-            done
-        fi
+        # The node can only obtain acc status from WC where it is and master, so use ever-cli
+        [[ "${NODE_WC}" == "${acc_wc}" ]] || [[ "${acc_wc}" == "-1" ]] || use_cli=true
     fi
+    # Written under a temporary name, then renamed: another process reading the
+    # file (a scheduled run, or a read-only command fetching the same account)
+    # never finds it missing or half written.
+    local part="${s_acc}.boc.$$"
+    for (( Try=0; Try <= 5; Try++ )); do
+        rm -f "${ELECTIONS_WORK_DIR}/${part}"
+        if $use_cli; then
+            local LC_OUTPUT="$($CALL_CLI account "$ACCOUNT" --dumpboc "${INPL_ELECTIONS_WORK_DIR}/${part}")"
+        else
+            local LC_OUTPUT="$($CALL_CONS -c "getaccountstate ${ACCOUNT} ${INPL_ELECTIONS_WORK_DIR}/${part}")"
+        fi
+        if [[ -s "${ELECTIONS_WORK_DIR}/${part}" ]];then
+            mv -f "${ELECTIONS_WORK_DIR}/${part}" "${ELECTIONS_WORK_DIR}/${s_acc}.boc"
+            local result="written StateInit of account"
+            break
+        fi
+        sleep 3
+    done
+    rm -f "${ELECTIONS_WORK_DIR}/${part}"
     if [[ -z  $result ]]; then
         log_error_stack "Cannot get account state $ACCOUNT."
         echoerr "${LC_OUTPUT}"

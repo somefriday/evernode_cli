@@ -73,6 +73,12 @@ Complete_And_Await "$1" 0:wallet validator01 "The DePool top-up" Effect_Ok
                     PREPARE,
                 )
 
+    def test_a_failed_read_stops_the_run_instead_of_reading_as_nothing(self):
+        """A balance read as 0 raised a false alert; a pending list read as empty
+        skipped the stop at a half-signed transaction."""
+        self.assertIn('if ! Validator_Acc_Info="$(Get_Account_Info "${Validator_addr}")";then', PREPARE)
+        self.assertIn('if ! Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")";then', PREPARE)
+
 
 if __name__ == "__main__":
     unittest.main()

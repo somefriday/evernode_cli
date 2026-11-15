@@ -281,7 +281,7 @@ function Send_MSIG_Trans_Confirmation() {
 '''
 
     def sign(self, *, mask=1, signs=1, required=2, keys=3, delivery_fails=False,
-             deadline_offset=20, unreadable=False):
+             deadline_offset=20, unreadable=False, unreadable_once=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_keys(root, keys)
@@ -289,6 +289,14 @@ function Send_MSIG_Trans_Confirmation() {
             wallet = self.WALLET
             if unreadable:
                 wallet += 'function Get_MSIG_Trans_List() { return 2; }\n'
+            if unreadable_once:
+                wallet += (
+                    'eval "$(declare -f Get_MSIG_Trans_List | sed "1s/Get_MSIG_Trans_List/Wallet_List/")"\n'
+                    'function Get_MSIG_Trans_List() {\n'
+                    '    [[ -f "$TEST_ROOT/read" ]] || { touch "$TEST_ROOT/read"; return 2; }\n'
+                    '    Wallet_List "$@"\n'
+                    '}\n'
+                )
             body = wallet + (
                 f'Sign_To_Execution 0:wallet validator "{identifier}" '
                 f'"$(( $(date +%s) + {deadline_offset} ))" "The stake"\n'
@@ -354,10 +362,18 @@ function Send_MSIG_Trans_Confirmation() {
         self.assertEqual(trace, "")
 
     def test_an_unreadable_wallet_stops_rather_than_signs_blindly(self):
-        result, trace = self.sign(unreadable=True)
+        """It is read again until the deadline, and nothing is signed without it."""
+        result, trace = self.sign(unreadable=True, deadline_offset=3)
         self.assertIn("rc=1", result.stdout)
         self.assertIn("could not be read", result.stderr)
         self.assertEqual(trace, "")
+
+    def test_a_wallet_that_could_not_be_read_once_is_read_again(self):
+        """Stopping at the first failed read left the transaction half signed,
+        and every later run stopped at it for up to an hour."""
+        result, trace = self.sign(unreadable_once=True)
+        self.assertIn("rc=0", result.stdout)
+        self.assertEqual(trace, "sent:validator_2.keys.json\n")
 
     def test_a_transaction_already_gone_is_not_signed_again(self):
         """A retry that finds nothing pending has nothing to do: confirming an

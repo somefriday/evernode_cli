@@ -90,7 +90,8 @@ elif any(arg.startswith("getaccountstate ") for arg in args):
         print("simulated account fetch failure", file=sys.stderr)
         sys.exit(1)
     command = next(arg for arg in args if arg.startswith("getaccountstate "))
-    Path(os.environ["ELECTIONS_WORK_DIR"], Path(command.split()[-1]).name).touch()
+    # A state is never empty: a fetch that leaves an empty file has failed.
+    Path(os.environ["ELECTIONS_WORK_DIR"], Path(command.split()[-1]).name).write_bytes(b"state")
     print("written StateInit of account")
 elif "getCustodians" in args:
     print(json.dumps({"custodians": [{"index": "0", "pubkey": "1"}]}))

@@ -605,3 +605,53 @@ echo "$(Signing_Window 1) $(Signing_Window 3) $(Required_Signs=2 Signing_Window)
 """
         result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.stdout.split(), ["120", "240", "240"])
+
+
+@unittest.skipUnless(shutil.which("bash"), "Requires bash")
+class SubmissionLookTests(unittest.TestCase):
+    """What Submit_And_Identify makes of the looks after a submit to a wallet
+    that needs several signatures."""
+
+    def submit(self, looks):
+        """LOOKS: what each look finds, "status:id", in order."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        program = f"""source "{SCRIPTS / 'managed_ops.shinc'}"
+DIR={directory} Required_Signs=2 LC_Send_MSG_Timeout=0
+echoerr() {{ echo "$*" >&2; }}
+sleep() {{ :; }}
+Send_File_To_BC() {{ echo sent >> "$DIR/sends"; echo success; }}
+Find_Matching_Pending_Trans() {{
+    echo look >> "$DIR/looks"
+    local looks=({' '.join(looks)}) answer
+    answer=${{looks[$(( $(wc -l < "$DIR/looks") - 1 ))]}}
+    [[ -n ${{answer#*:}} ]] && echo "${{answer#*:}}"
+    return "${{answer%%:*}}"
+}}
+Submit_And_Identify 0:wallet 0:dest file 5 payload key
+"""
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        count = lambda name: len((directory / name).read_text().splitlines()) if (directory / name).exists() else 0
+        return result, count("sends"), count("looks")
+
+    def test_a_failed_look_is_no_answer(self):
+        """A read-only command rewriting the wallet's state file, or a console
+        that failed once, used to end it as if the submit had failed."""
+        result, sends, _ = self.submit(["1:", "0:77"])
+        self.assertEqual((result.returncode, result.stdout.strip(), sends), (0, "77", 2))
+
+    def test_a_submit_seen_only_after_the_last_send_is_found(self):
+        """Accepted in the last seconds of its lifetime, it used to be reported
+        as never accepted while it sat in the wallet with one signature."""
+        result, sends, looks = self.submit(["0:", "0:", "0:", "0:77"])
+        self.assertEqual((result.returncode, result.stdout.strip(), sends, looks), (0, "77", 3, 4))
+
+    def test_two_matching_entries_stop_at_once(self):
+        result, sends, _ = self.submit(["2:"])
+        self.assertEqual((result.returncode, sends), (1, 1))
+        self.assertNotIn("never accepted", result.stderr)
+
+    def test_a_submit_that_never_appears_is_reported_after_the_last_look(self):
+        result, sends, looks = self.submit(["0:", "0:", "0:", "0:"])
+        self.assertEqual((result.returncode, sends, looks), (1, 3, 4))
+        self.assertIn("never accepted", result.stderr)

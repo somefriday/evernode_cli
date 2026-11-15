@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
@@ -92,3 +93,38 @@ Get_Account_Custodians_Info {SAFE}
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("bash"), "Requires bash")
+class StateFileTests(unittest.TestCase):
+    def test_a_reader_never_finds_the_state_file_missing_or_half_written(self):
+        """depool info, stake status and the stake set menu fetch states without
+        the election lock, while a scheduled run reads the same files. A run
+        that read one half written after its submit left a half-signed
+        transaction, which stopped every run for up to an hour."""
+        text = (SCRIPTS / "functions.shinc").read_text()
+        start = text.index("function Get_SC_current_state() {")
+        function = text[start: text.index("\n}\n", start) + len("\n}\n")]
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        state = directory / f"{SAFE[3:]}.boc"
+        state.write_text("old state\n")
+        program = f"""ELECTIONS_WORK_DIR={directory} INPL_ELECTIONS_WORK_DIR={directory} FORCE_USE_DAPP=false
+log_error_stack() {{ :; }}; echoerr() {{ :; }}
+console() {{ local file="${{2##* }}"; printf 'new ' > "$file"; sleep 0.6; printf 'state\\n' >> "$file"; }}
+CALL_CONS=console
+{function}
+Get_SC_current_state {SAFE}
+"""
+        fetch = subprocess.Popen(["bash", "-c", program], stdout=subprocess.PIPE, text=True)
+        seen = set()
+        while fetch.poll() is None:
+            try:
+                seen.add(state.read_text())
+            except FileNotFoundError:
+                seen.add("missing")
+            time.sleep(0.02)
+        self.assertEqual(fetch.stdout.read().strip(), "written StateInit of account")
+        self.assertLessEqual(seen, {"old state\n", "new state\n"})
+        self.assertEqual(state.read_text(), "new state\n")
+        self.assertEqual(sorted(path.name for path in directory.iterdir()), [state.name])
