@@ -914,6 +914,9 @@ pub(crate) mod tests {
             assert!(e.contains("not counted"), "{e}");
             let external = campaign::effect(&after, &ballot, None, true, sb.now, expires).unwrap();
             assert!(!external.contains("counted"), "{external}");
+            // so an external vote is left unconfirmed, never recorded as counted; an answered one is not
+            assert!(campaign::unconfirmed(&after, &ballot, None));
+            assert!(!campaign::unconfirmed(&dry.state().unwrap(), &ballot, accepting));
         }
 
         /// #15: the external vote that would accept a removal fails after taking the seqno (exit 7): refused

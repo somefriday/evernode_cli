@@ -28,7 +28,7 @@ Records the request in the DePool and waits until the contract shows it.
 - Exactly one of `--amount`, `--all`, `--cancel`.
 - Nothing is paid at once: funds return to the Safe as each round completes, which needs the election schedule to keep running.
 - Withdrawing the stake behind the validator assurance ends validation.
-- Refused, with a red alarm, while one of the DePool's proxies is frozen: send the proxy its original state with the tokens it owes, then run the command again.
+- Goes ahead while a proxy of the DePool is frozen: the request is recorded, but nothing arrives until the proxy is restored and the schedule ticks again.
 
 ## See also
 

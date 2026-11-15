@@ -95,11 +95,11 @@ DEPOOL_STAKE_FEE_NANO=500000000
 Depool_BalanceThreshold=45000000000; Depool_Self_Balance=20000000000
 Current_Depool_Info='{"minStake":"10000000000"}'
 MSIG_AMOUNT=100000000000000
-MSG_LIFETIME=60
+MSG_LIFETIME=1
 BoldText=""; NormText=""
 # The wait polls for real, so keep it quick and bounded well inside the
 # subprocess timeout; a hang here is a failure worth seeing, not one to wait on.
-EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=2
+EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=1
 LC_Send_MSG_Timeout=1
 fake_cli() {
     case "$*" in
@@ -414,14 +414,14 @@ function Get_Account_Custodians_Info() { echo "1 1"; }
 function Get_Account_Info() {
     case $1 in
         0:wallet) echo "Active 100000000000";;
-        -1:proxy0) echo "Active 1000000000";;
+        -1:proxy0) echo "${TEST_PROXY0:-Active 1000000000}";;
         *) echo "Active 50000000000";;
     esac
 }
 function Get_DP_Info() {
     echo '{"poolClosed":false,"balanceThreshold":"45000000000","stakeFee":"500000000","proxies":["-1:proxy0","-1:proxy1"]}'
 }
-function fake_cli() { echo '{"value0":"5000000000"}'; }
+function fake_cli() { echo "{\"value0\":\"${TEST_DEPOOL_BALANCE:-5000000000}\"}"; }
 function Get_DP_Rounds() { echo '{}'; }
 function Rounds_Sorting_by_ID() {
     echo '[{"id":"1","stake":"0","participantQty":"0"},{"id":"2","stake":"0","participantQty":"0"}]'
@@ -438,7 +438,7 @@ class LowBalanceGateTests(unittest.TestCase):
     keep a stake out of a DePool too low to operate refused it as well, so the
     command failed exactly when it was needed."""
 
-    def dispatch(self, operation):
+    def dispatch(self, operation, *arguments, **environment):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             shutil.copyfile(
@@ -449,6 +449,7 @@ class LowBalanceGateTests(unittest.TestCase):
             for script, function in (
                 ("replenish_depool", "replenish_depool"),
                 ("ordinary_stake", "make_ordinary_stake"),
+                ("withdraw_entire_stake", "withdraw_entire_stake"),
             ):
                 (directory / "depool_functions" / f"{script}.shinc").write_text(
                     f'function {function}() {{ echo "reached {function}"; }}\n'
@@ -463,23 +464,35 @@ class LowBalanceGateTests(unittest.TestCase):
             (keys / "validator.addr").write_text("0:wallet\n")
             (keys / "validator_1.keys.json").write_text('{"public":"aa","secret":"bb"}')
             return subprocess.run(
-                ["bash", str(directory / "stake_to_depool.sh"), operation, "--", "--", "20"],
+                ["bash", str(directory / "stake_to_depool.sh"), operation, "--", "--", *arguments],
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
                 timeout=30,
+                env={**os.environ, **environment},
             )
 
     def test_a_replenish_runs_while_the_depool_and_a_proxy_are_low(self):
-        result = self.dispatch("replenish")
+        result = self.dispatch("replenish", "20")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("reached replenish_depool", result.stdout)
 
     def test_a_stake_is_still_refused_and_pointed_at_the_replenish(self):
-        result = self.dispatch("ordinary")
+        result = self.dispatch("ordinary", "20")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("reached", result.stdout)
         self.assertIn("evernode depool replenish", result.stdout)
+
+    def test_a_withdrawal_runs_while_a_proxy_is_frozen(self):
+        """It only records a request in the DePool: no message passes a proxy
+        (ELECT-8). A stake is still refused by the same proxy."""
+        healthy_depool = {"TEST_DEPOOL_BALANCE": "50000000000", "TEST_PROXY0": "Frozen 0 0"}
+        result = self.dispatch("WD-all", **healthy_depool)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reached withdraw_entire_stake", result.stdout)
+        result = self.dispatch("ordinary", "20", **healthy_depool)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Proxy balance is less than", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("bash"), "Requires bash")
@@ -594,9 +607,12 @@ Sign_To_Execution 0:wallet validator 77 $(( $(date +%s) + {deadline} )) "The tes
 
     def test_nothing_is_sent_that_could_outlive_the_deadline(self):
         """What makes a failure report final: no message it sent can still execute."""
-        result, sends = self.sign(lost=99, deadline=2)
+        result, sends = self.sign(lost=99, deadline=3)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(sends, 1)
+        # decided once, before the send: no "sending it again" that is then not sent
+        self.assertIn("never recorded the signature", result.stderr)
+        self.assertNotIn("sending it again", result.stderr)
 
     def test_a_wallet_that_needs_several_signatures_gets_room_for_a_resend(self):
         program = f"""source "{SCRIPTS / 'managed_ops.shinc'}"
@@ -619,7 +635,7 @@ class SubmissionLookTests(unittest.TestCase):
         program = f"""source "{SCRIPTS / 'managed_ops.shinc'}"
 DIR={directory} Required_Signs=2 LC_Send_MSG_Timeout=0
 echoerr() {{ echo "$*" >&2; }}
-sleep() {{ :; }}
+sleep() {{ echo "$1" >> "$DIR/sleeps"; }}
 Send_File_To_BC() {{ echo sent >> "$DIR/sends"; echo success; }}
 Find_Matching_Pending_Trans() {{
     echo look >> "$DIR/looks"
@@ -632,6 +648,8 @@ Submit_And_Identify 0:wallet 0:dest file 5 payload key
 """
         result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
         count = lambda name: len((directory / name).read_text().splitlines()) if (directory / name).exists() else 0
+        sleeps = directory / "sleeps"
+        self.sleeps = [int(line) for line in sleeps.read_text().split()] if sleeps.exists() else []
         return result, count("sends"), count("looks")
 
     def test_a_failed_look_is_no_answer(self):
@@ -650,6 +668,13 @@ Submit_And_Identify 0:wallet 0:dest file 5 payload key
         result, sends, _ = self.submit(["2:"])
         self.assertEqual((result.returncode, sends), (1, 1))
         self.assertNotIn("never accepted", result.stderr)
+
+    def test_the_last_look_waits_until_the_submit_can_no_longer_execute(self):
+        """It lives MSG_LIFETIME (60 s here) from before the first send, and its
+        block needs EFFECT_MIN_WAIT (10 s) to show: "absent" is final only then."""
+        result, _, looks = self.submit(["0:", "0:", "0:", "0:"])
+        self.assertEqual((result.returncode, looks), (1, 4))
+        self.assertGreaterEqual(self.sleeps[-1], 68)
 
     def test_a_submit_that_never_appears_is_reported_after_the_last_look(self):
         result, sends, looks = self.submit(["0:", "0:", "0:", "0:"])

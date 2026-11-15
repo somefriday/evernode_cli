@@ -3,6 +3,7 @@
 import contextlib
 import fcntl
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -39,6 +40,19 @@ def election_sequence_path(store, config):
     )
 
 
+# Each run marks its start and its end in the cron log, where election status
+# reads the latest one back.
+RUN_MARKS = (
+    "mark() { echo \"=== $(date '+%F %T %Z') election run $*\"; }\n"
+    "mark started\n"
+    "trap 'mark \"ended with status $?\"' EXIT\n"
+)
+_RUN_START = re.compile(r"^=== (.+) election run started$")
+_RUN_END = re.compile(r"^=== (.+) election run ended with status (\d+)$")
+_PROXY_BANNER = re.compile(r"^!!! PROXY (\d) OF THE DEPOOL (IS FROZEN|DOES NOT EXIST):$")
+_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _depool_sequence_program(scripts_dir):
     """Prepare, then bid, aborting if preparation fails.
 
@@ -49,7 +63,9 @@ def _depool_sequence_program(scripts_dir):
     DePool whose rounds were never advanced.
     """
     return (
-        "#!/bin/bash\nset -euo pipefail\ncd "
+        "#!/bin/bash\nset -euo pipefail\n"
+        + RUN_MARKS
+        + "cd "
         + shlex.quote(str(scripts_dir))
         + "\n"
         "./prepare_elections.sh\nsleep 120\n./take_part_in_elections.sh\n"
@@ -73,7 +89,7 @@ def _solo_sequence_program(scripts_dir, preparation_log):
     return f"""#!/bin/bash
 # Direct-to-elector election cycle, written by evernode election start.
 set -uo pipefail
-cd {shlex.quote(str(scripts_dir))}
+{RUN_MARKS}cd {shlex.quote(str(scripts_dir))}
 log={shlex.quote(str(preparation_log))}
 ./prepare_elections.sh 2>&1 | tee "$log"
 status=${{PIPESTATUS[0]}}
@@ -245,6 +261,41 @@ def cron_daemon_state():
     return "not running"
 
 
+def last_run(log):
+    """What the latest scheduled run wrote between its marks in the cron log:
+    when it started and ended, its exit status, its last error lines, and each
+    proxy whose alarm it raised. None when the log holds no marked run."""
+    try:
+        with open(log, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 262144))
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    lines = _COLOUR.sub("", text).splitlines()
+    starts = [index for index, line in enumerate(lines) if _RUN_START.match(line)]
+    if not starts:
+        return None
+    block = lines[starts[-1]:]
+    run = {"started": _RUN_START.match(block[0]).group(1), "ended": None, "status": None,
+           "errors": [], "proxies": []}
+    for index, line in enumerate(block):
+        end = _RUN_END.match(line)
+        banner = _PROXY_BANNER.match(line)
+        if end:
+            run["ended"], run["status"] = end.group(1), int(end.group(2))
+        elif "###-ERROR" in line:
+            run["errors"].append(line.strip())
+        elif banner and index + 1 < len(block):
+            run["proxies"].append({
+                "index": int(banner.group(1)),
+                "address": block[index + 1][len("!!! "):].strip(),
+                "status": "Frozen" if banner.group(2) == "IS FROZEN" else "Nonexist",
+            })
+    run["errors"] = run["errors"][-5:]
+    return run
+
+
 def describe_election_state(store, config, statistics=None, console_error=None):
     """Report the schedule, cron health and what the chain says about this node.
 
@@ -253,6 +304,7 @@ def describe_election_state(store, config, statistics=None, console_error=None):
     so they are reported separately and never inferred from the schedule.
     """
     result = election_schedule_status(store, config)
+    result["last_run"] = last_run(result["log"])
     result["cron_daemon"] = cron_daemon_state()
     if result["enabled"] and result["cron_daemon"] == "not running":
         result["warning"] = (

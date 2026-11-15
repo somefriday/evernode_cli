@@ -1242,9 +1242,10 @@ function Send_File_To_BC() {
 # the masterchain an account that then owes over 0.1 token is frozen. A proxy's
 # state (37 cells, 11262 bits) costs about 0.042 tokens a day at mainnet's
 # prices (p18); 0.1 a day is assumed.
-# Input: the proxy's last_paid (unix time). Output: nanotokens
+# Input: the proxy's last_paid (unix time). Output: nanotokens; 0 when last_paid
+# is unknown, and 0 is what a failed read reports ("None 0 0").
 function Proxy_Storage_Owed() {
-    [[ $1 =~ ^[0-9]+$ ]] || { echo 0; return; }
+    [[ $1 =~ ^[1-9][0-9]*$ ]] || { echo 0; return; }
     local since=$(( $(date +%s) - $1 ))
     [[ $since -gt 0 ]] || since=0
     echo $(( since * 100000000 / 86400 ))
@@ -1253,9 +1254,8 @@ function Proxy_Storage_Owed() {
 # top_app_account - top up one of the DePool's proxies from the validator's Safe.
 # The transfer also carries the storage the proxy owes, in whole tokens, so the
 # proxy gains about TopUpSum: a balance above the old one plus TopUpSum less a
-# token proves the transfer arrived, however long the proxy was idle. Whole
-# tokens keep the amount the same across runs, so a later run still recognises
-# its own pending transfer (OP-5).
+# token proves the transfer arrived. Whole tokens keep the amount the same
+# across runs, so a later run still recognises its own pending transfer (OP-5).
 # Input: account address, what it is to gain (nanotokens), validator address
 # Output: 0 once the account's balance shows the top-up
 function top_app_account () {
@@ -1268,9 +1268,21 @@ function top_app_account () {
     local Acc_Status="$(echo "$Acc_Info" | awk '{print $1}')"
     local Acc_Balance=$(echo "$Acc_Info" | awk '{print $2}')
     local Acc_Paid=$(echo "$Acc_Info" | awk '{print $3}')
-        [[ "$Acc_Status" == "None" ]] && log_error_stack "Account does not exist! (no tokens, no code, nothing" && return 1
-    [[ "$Acc_Status" == "Uninit" ]] && log_error_stack "Account Uninited" && return 1
+    # Only an Active account: a transfer that does not bounce would stay in a
+    # frozen one without unfreezing it (ELECT-7).
+    if [[ "$Acc_Status" != "Active" ]];then
+        log_error_stack "Account ${Account_Addr} reads as ${Acc_Status:-nothing}, not Active; nothing is sent"
+        return 1
+    fi
+    # A top-up carries 50 tokens of storage at most: 500 days at the rate
+    # assumed, and a bound on what a wrong reading can send. A proxy that owes
+    # more gets nothing: a shorter transfer would be credited and then taken in
+    # full, and the proxy frozen by it (ELECT-7).
     local Owed=$(Proxy_Storage_Owed "$Acc_Paid")
+    if [[ $Owed -gt 50000000000 ]];then
+        log_error_stack "Account ${Account_Addr} owes about $(( Owed / 1000000000 )) tokens of storage by the estimate, more than the 50 a top-up carries, so nothing is sent. Send it $(( (Owed + TopUpSum) / 1000000000 )) tokens that do not bounce, from any wallet."
+        return 1
+    fi
     local Amount=$(( TopUpSum + Owed / 1000000000 * 1000000000 ))
     # Submit_And_Identify and Complete_And_Await read it as well.
     local Custodians Required_Signs

@@ -49,7 +49,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 | [ELECT-5](#elect-5)   | A failed preparation stops a DePool run, not a solo run.              |
 | [ELECT-6](#elect-6)   | No bid beside a pending transaction.                                  |
 | [ELECT-7](#elect-7)   | A proxy is funded before it can freeze.                               |
-| [ELECT-8](#elect-8)   | No stake moves while a proxy is frozen.                               |
+| [ELECT-8](#elect-8)   | No stake moves to or from the elector while a proxy is not active.    |
 | [VOTE-1](#vote-1)     | Managed nodes vote only through `vote join`.                          |
 | [VOTE-2](#vote-2)     | A payment is asked about first.                                       |
 | [VOTE-3](#vote-3)     | One vote pass at a time.                                              |
@@ -470,8 +470,9 @@ The protocol these rules belong to is in [wallet-operations.md](wallet-operation
 **A reported failure is final.**
 
 - **Rule.** An operation must report failure only when nothing it sent can still execute. Every
-  wait outlasts the lifetime of every message sent before it, and a confirmation is sent again
-  only while a whole lifetime remains before the deadline.
+  wait outlasts the lifetime of every message sent before it, and a confirmation, the first for a
+  key as much as one sent again, is sent only while its whole lifetime and 10 s for its block
+  remain before the deadline.
 - **Why.** An operation that executes after it was reported as failed gets repeated by the
   operator.
 - **Enforced by.** `Signing_Window`, `Complete_And_Await`, `Sign_To_Execution`,
@@ -656,9 +657,12 @@ The run these rules belong to is in [elections.md](elections.md).
 **A proxy is funded before it can freeze.**
 
 - **Rule.** DePool preparation tops up a proxy whose balance, less its storage owed, is under
-  1.92 tokens. Storage owed is counted at 0.1 token a day since the proxy's last transaction. The
-  top-up is 5 tokens plus the storage owed in whole tokens, in a transfer that does not bounce. It
-  is done when the proxy's balance is at least the old one plus 4 tokens.
+  1.92 tokens. Storage owed is counted at 0.1 token a day since the proxy's last transaction, and
+  as none when that time is not known. The top-up is 5 tokens plus the storage owed in whole
+  tokens, in a transfer that does not bounce, and only to a proxy that reads as Active; a proxy
+  that owes more than 50 tokens gets nothing. It is done when the proxy's balance is at least the
+  old one plus 4 tokens. A top-up that fails ends preparation before the tick while the proxy owes
+  more storage than it holds.
 - **Why.** A frozen proxy can neither carry a stake to the elector nor bring one back. Its balance
   is as of its last transaction, so a proxy idle for weeks can owe more than it shows, and the
   next small message then freezes it. A transfer that bounces is credited only after the proxy
@@ -668,27 +672,53 @@ The run these rules belong to is in [elections.md](elections.md).
 - **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`.
 
 On mainnet a proxy's storage costs about 0.042 token a day, less than the 0.1 token counted, so a
-top-up that arrived shows the 4 tokens. Whole tokens keep the amount the same from one run to the
-next, which is how a run finds the top-up an earlier run left pending ([OP-5](#op-5)).
+top-up that arrived shows the 4 tokens. A transfer shorter than the debt would be credited and
+then taken in full, freezing the proxy, so above 50 tokens (500 days at the rate counted) nothing
+is sent and the error names what the proxy needs. Whole tokens keep the amount the same from one
+run to the next, which is how a run finds the top-up an earlier run left pending ([OP-5](#op-5)).
+Under 1 token (`MIN_PROXY_BALANCE` in the DePool's code) a proxy refuses the DePool's request, and
+the DePool rolls it back; only owing more than it holds freezes it, so only that stops the run. A
+proxy returns what it holds above 2 tokens to the validator's wallet on request
+(`withdrawExcessTons`).
 
 ### ELECT-8
 
-**No stake moves while a proxy is frozen.**
+**No stake moves to or from the elector while a proxy is not active.**
 
-- **Rule.** While one of the DePool's proxies is frozen, DePool preparation ends with status 1
-  before the tick, and evernode refuses `election start`, `depool stake-initial`, `depool stake`
-  and `depool withdraw`. Each stop shows an alarm, in red on a terminal, that names the proxy and
-  says to restore its state; preparation also sends an alert.
-- **Why.** The DePool sends each round's stake to the elector, and recovers it, through its
-  proxies. While one is frozen, a stake the DePool sends through it comes back, and a stake at the
-  elector stays there until the proxy's state is restored.
+- **Rule.** While one of the DePool's proxies is frozen, or does not read as Active, DePool
+  preparation ends with status 1 before the tick, and evernode refuses `election start`,
+  `depool stake-initial`, `depool stake`, and `depool confirm` of a transaction to the DePool,
+  with or without `--force`. Both proxies are read before either is judged. Each frozen one, and
+  each one read without error but without code, is named in an alarm, in red on a terminal;
+  preparation also sends an alert, and `election status` shows the latest run's alarm again.
+  `depool withdraw` and `depool replenish` go ahead.
+- **Why.** The stop is for stakes that travel between the DePool and the elector: the elector
+  keeps what bounces off a frozen proxy, so a stake it sends back to one is lost, and a proxy
+  that cannot be read may be frozen. A withdrawal only records a request in the DePool, which
+  pays it from its own rounds, and no message passes a proxy; it is paid when its round
+  completes, which needs the ticks to run again, so nothing arrives until the proxy is restored.
 - **Enforced by.** The proxy loop in `prepare_elections.sh`; `wallets.require_live_proxies`,
-  called by `wallets.depool_stake_initial`, `wallets.depool_stake`, `wallets.depool_withdraw`
-  and, for `election start`, by `cli.main`.
-- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_depool_commands.py`.
+  called by `wallets.depool_stake_initial`, `wallets.depool_stake`,
+  `setup_actions._review_transaction` and, for `election start`, by `cli.main`; the proxy check
+  in `stake_to_depool.sh`, which a withdrawal skips; `elections.last_run` for `election status`.
+- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_depool_commands.py`,
+  `tests/test_depool_operations.py`.
 
-evernode does not restore a frozen proxy: that needs the proxy's original state sent to it with
-the tokens it owes. `depool replenish`, `depool confirm` and the reports still run.
+The DePool sends to the elector through a proxy on a tick (`ticktock`) and on a bid
+(`participateInElections`). Preparation sends the tick, a bid follows only a preparation that
+succeeded ([ELECT-5](#elect-5)), and `depool confirm` could otherwise finish either one left
+pending. evernode does not restore a frozen proxy: that needs the state it had when it froze, its
+code and data, sent to it with the tokens it owes. A proxy without code was deleted by the chain,
+or never deployed, and cannot be rebuilt: only the DePool's constructor deploys its proxies. Right
+after `depool deploy`, one still on its way reads as not yet Active, without the alarm.
+
+What "lost" means, by the contracts in the kit: `Elector.sol` writes a payment that bounces back
+as the proxy's credit (`onBounce`), and only the proxy can claim it. The proxy asks only on the
+DePool's order (`recover_stake` in `DePoolProxy.sol`), and the DePool asks once: `updateRound2` in
+`DePool.sol` sends no second request for a round that waits for its reward. That round never
+completes, and the rounds stop rotating. When the proxy is already frozen as the DePool asks, the
+request itself bounces: the DePool steps the round back (`onBounce`) and asks again on a later
+tick, and nothing reaches the elector.
 
 ## Votes
 

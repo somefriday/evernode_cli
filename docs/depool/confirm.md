@@ -27,6 +27,7 @@ Adds the signatures of the custodian keys held on this node to one named pending
 - Signing executes the transfer the transaction carries. The question shows its value, destination and signatures first.
 - Refuses a transaction that pays none of this node's contracts (the elector, the config contract, its DePool and the DePool's proxies) unless `--force`.
 - An id the Safe does not hold is refused; a pending transaction expires an hour after it was made.
+- A transaction to the DePool is refused, even with `--force`, while one of its proxies does not read as Active: a tick or a bid there would make the DePool send to the elector through it. A frozen or missing proxy gets a red alarm. A withdrawal or a replenishment left pending is finished by running the same `depool withdraw` or `depool replenish` again.
 - A signature the Safe has not recorded within a minute was lost and is sent again, three times at most.
 - While one is pending, scheduled election runs stop before bidding.
 

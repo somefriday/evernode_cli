@@ -111,7 +111,9 @@ evernode runs kit scripts in three ways (`evernode/scripts.py`):
 ## State
 
 Everything evernode owns is under the state directory, `/var/lib/ever-validator` unless
-`--state-dir` names another. [state.md](state.md) describes each file.
+`--state-dir` names another. Its path may hold no whitespace, `:`, `$` or `%`: the election scripts
+split paths at whitespace, and Compose and cron cannot take the rest. [state.md](state.md) describes
+each file.
 
 ```
 <state dir>/

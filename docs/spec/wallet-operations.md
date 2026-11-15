@@ -65,8 +65,8 @@ The first two are set in `env.sh`. The others are in `managed_ops.shinc`.
       clock difference.
    4. Found: return its id. Two found: refuse. Not found: wait 10 s more and send the same
       message again. It is sent three times at most.
-   5. Look one last time after the third pause. The message has expired by then, so "not found"
-      is final: nothing was submitted.
+   5. Look one last time once the message's lifetime and 10 s more have passed since the first
+      send. It cannot execute after that, so "not found" is final: nothing was submitted.
 5. **Sign** (`Sign_To_Execution`, [OP-6](properties.md#op-6)), with more than one signature
    required. Until the deadline:
    1. Read the pending entry by its id. A read that fails is repeated.
@@ -74,11 +74,13 @@ The first two are set in `env.sh`. The others are in `managed_ops.shinc`.
    3. Find this node's key files that have not signed, from the entry's confirmation mask and
       the Safe's custodian list (`Unsigned_Local_Keys`). None left while signatures are missing:
       return 3, the transaction needs a key this node does not hold.
-   4. Send one confirmation, signed with the unsigned key of the lowest custodian index.
+   4. Send one confirmation, signed with the unsigned key of the lowest custodian index, only
+      while its lifetime and 10 s for its block remain before the deadline. Otherwise fail, and
+      send nothing ([OP-3](properties.md#op-3)).
    5. Wait up to 70 s, and never past the deadline, until the wallet shows that signature or the
       entry is gone (`Await_Signature_Recorded`).
-   6. Shown: take the next key. Gone: executed. Neither: send the confirmation again, three
-      times at most, and only while a whole lifetime remains before the deadline. Otherwise fail.
+   6. Shown: take the next key. Gone: executed. Neither: send the confirmation again, under
+      the rule in step 4, three times at most. Otherwise fail.
 6. **Await the effect** (`Await_Effect`, [OP-2](properties.md#op-2)). Ask the operation's own
    question of the chain, at once and then every 2 s, until it holds or the deadline passes.
 
@@ -90,14 +92,15 @@ The operation's effect is on chain. The command reports success only then.
 
 - A failure is reported only when nothing sent can still execute
   ([OP-3](properties.md#op-3)).
-- With one signature required, a failure means the transfer did not happen. Run the command
-  again.
+- With one signature required, the transfer happens at the submit, so a failure says only that
+  its effect was not seen. Check the result before running the command again.
 - With more, a failure after step 4 can leave a pending transaction with some signatures. It
   shows in `depool info`, `stake status` or `nominator info`. Finish it with
   [`depool confirm`](../depool/confirm.md) or [`stake confirm`](../stake/confirm.md), or let it
   expire after an hour. An operation that resumes finishes it when it runs again.
-- The final message says which case it was: the effect was never seen, or the chain could not be
-  read at all.
+- The final message says which case it was: the effect was not seen, or the chain did not answer
+  the last look, which leaves the state unknown. Neither advises a rerun: a transfer that executed
+  can still take effect.
 
 ## Deadlines
 
@@ -170,17 +173,22 @@ These are checked before anything is read.
 
 1. Read the Safe's pending list. If it holds no transaction with that id, stop. Nothing is sent
    ([OP-9](properties.md#op-9)).
-2. Name the node's own contracts: the elector and the config contract, then the DePool and its
+2. If the transaction pays the DePool, both proxies must read as Active, with or without
+   `--force` ([ELECT-8](properties.md#elect-8)): a tick or a bid left pending would make the
+   DePool send to the elector through them. The refusal says that a withdrawal or a
+   replenishment left pending is finished by running its own command again
+   ([OP-5](properties.md#op-5)).
+3. Name the node's own contracts: the elector and the config contract, then the DePool and its
    proxies, or the nominator contract.
-3. If the transaction pays none of them, stop unless `--force`. With `--force`, a DePool that
+4. If the transaction pays none of them, stop unless `--force`. With `--force`, a DePool that
    cannot be read does not stop it either.
-4. Ask, showing the value, the destination and whose contract it is, and the signatures it holds.
-   `--yes` skips the question but not step 3.
-5. Take the election lock.
-6. Read the pending list again. If it cannot be read, or the transaction is gone, stop.
-7. Set the deadline: now plus `Signing_Window` for the transaction's own number of signatures,
+5. Ask, showing the value, the destination and whose contract it is, and the signatures it holds.
+   `--yes` skips the question but not steps 2 and 4.
+6. Take the election lock.
+7. Read the pending list again. If it cannot be read, or the transaction is gone, stop.
+8. Set the deadline: now plus `Signing_Window` for the transaction's own number of signatures,
    and at most 5 s before the transaction expires. An expired transaction is refused.
-8. Sign as in step 5 above.
+9. Sign as in step 5 above.
 
 **Result**
 

@@ -188,7 +188,7 @@ function Await_Effect() {
     local Deadline="$2"
     local Interval="$3"
     shift 3
-    local status polls=0 unreadable=0 waited=0
+    local status polls=0 waited=0
     [[ $Interval -ge 1 ]] || Interval=1
     while :; do
         # Always one poll before the deadline is consulted: the effect may
@@ -200,12 +200,13 @@ function Await_Effect() {
             printf "%s\n" "+++-INFO: ${Label} is confirmed on chain after ${waited}s."
             return 0
         fi
-        [[ $status -eq 2 ]] && unreadable=$((unreadable + 1))
         if [[ $(date +%s) -ge $Deadline ]]; then
-            if [[ $unreadable -eq $polls ]]; then
-                echoerr "###-ERROR: ${Label} could not be checked - the chain did not answer any of ${polls} attempts over ${waited}s. The operation's own state is unknown; read it with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying."
+            # The effect only ever becomes true, so an answered "not yet" settles
+            # what came before it; an unanswered last poll leaves it open.
+            if [[ $status -eq 2 ]]; then
+                echoerr "###-ERROR: ${Label} could not be checked - the chain did not answer the last of ${polls} attempts over ${waited}s, so the operation's own state is unknown. Read it with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying."
             else
-                echoerr "###-ERROR: ${Label} did not take effect within ${waited}s, and its deadline has passed. Nothing further was sent. Read the wallet's pending transactions with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator: an entry still listed needs its remaining signatures, and no entry means the request never reached the wallet and can be made again."
+                echoerr "###-ERROR: ${Label} did not take effect within ${waited}s, and its deadline has passed. Nothing further was sent. Check 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before running it again: a pending entry still listed needs only its remaining signatures, and a transfer that executed can still take effect."
             fi
             return 1
         fi
@@ -534,7 +535,8 @@ function Await_Signature_Recorded() {
 # guarantees. Outside it, absence would also be what expiry looks like.
 # A confirmation the wallet has not recorded within its own lifetime was lost
 # (or refused) and is sent again, three times at most; Signing_Window gives
-# callers the room for that.
+# callers the room for that. No confirmation, first or again, is sent once its
+# lifetime and the wait for its block no longer fit before the deadline.
 # Input:
 #  - msig_address
 #  - msig_name
@@ -549,11 +551,17 @@ function Sign_To_Execution() {
     local Trans_ID="$3"
     local Deadline="$4"
     local Label="$5"
-    local entry unsigned index key_file mask received required sent=0 tries=0 wait_until unread=""
+    local entry unsigned index key_file mask received required sent=0 tries=0 wait_until unread="" last_index=""
+    # The last moment a confirmation may be sent: one sent later could still
+    # execute after this reported failure (OP-3). That binds a key's first send
+    # as much as a resend.
+    local latest_send=$(( Deadline - ${MSG_LIFETIME:-60} - ${EFFECT_MIN_WAIT:-10} ))
     while :; do
         if [[ $(date +%s) -ge $Deadline ]];then
             if [[ -n $unread ]];then
                 echoerr "###-ERROR: ${Label}: the wallet ${MSIG_ADDR} could not be read, so it is unknown whether transaction ${Trans_ID} still needs signatures. Read it with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying."
+            elif [[ $tries -gt 0 ]];then
+                echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${last_index} for transaction ${Trans_ID}, and its deadline has passed, so nothing further was sent. Check 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, for the signatures it does hold."
             else
                 echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} is still unsigned and its deadline has passed, so nothing further was sent."
             fi
@@ -583,6 +591,17 @@ function Sign_To_Execution() {
             return 3
         fi
         read -r index key_file <<< "$(head -n 1 <<< "$unsigned")"
+        # Another key than the last one sent: that one was recorded after all.
+        [[ $index == "$last_index" ]] || tries=0
+        if [[ $(date +%s) -gt $latest_send ]];then
+            if [[ $tries -gt 0 ]];then
+                echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}, and too little time is left before the deadline to send it again, so nothing further was sent. Check 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, for the signatures it does hold."
+            else
+                echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} still needs the signature of custodian ${index}, and too little time is left before the deadline for a confirmation to run its course, so nothing further was sent."
+            fi
+            return 1
+        fi
+        [[ $tries -gt 0 ]] && echoerr "###-WARNING: ${Label}: the signature of custodian ${index} was not recorded within its lifetime; sending it again."
         printf "%s\n" "---INFO: ${Label}: signing transaction ${Trans_ID} as custodian ${index} with ${key_file} (${received} of ${required} signatures so far)."
         if ! Send_MSIG_Trans_Confirmation "$Trans_ID" "$MSIG_ADDR" "$key_file" >/dev/null;then
             # The message may have arrived anyway, and the wallet's own mask is
@@ -592,6 +611,7 @@ function Sign_To_Execution() {
         fi
         sent=$((sent + 1))
         tries=$((tries + 1))
+        last_index=$index
         # A confirmation lives one message lifetime, so that is how long the
         # wallet gets to record it, not the whole deadline.
         wait_until=$(( $(date +%s) + ${MSG_LIFETIME:-60} + ${EFFECT_MIN_WAIT:-10} ))
@@ -603,12 +623,8 @@ function Sign_To_Execution() {
                return 0 ;;
         esac
         # Lost, or refused, which looks the same: sent again, three times at
-        # most, and only while the deadline leaves a new message its whole
-        # lifetime, so nothing sent can still execute once this reports failure.
-        if [[ $tries -lt 3 ]] && [[ $(( $(date +%s) + ${MSG_LIFETIME:-60} )) -le $Deadline ]];then
-            echoerr "###-WARNING: ${Label}: the signature of custodian ${index} was not recorded within its lifetime; sending it again."
-            continue
-        fi
+        # most; the check before each send decides whether there is still time.
+        [[ $tries -lt 3 ]] && continue
         echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}. A confirmation the wallet refuses is recorded in no block, so the chain cannot say why; check 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, for the signatures it does hold."
         return 1
     done
@@ -918,8 +934,10 @@ function Submit_And_Identify() {
     # earlier one. Sixty seconds of slack absorbs the difference between this
     # host's clock and the chain's, which is what stamps the id.
     local window_start=$(( $(date +%s) - 60 ))
-    # Three sends, each followed by a look, and one last look after the last
-    # pause: the message has expired by then, so that answer is final.
+    # Three sends, each followed by a look, and one last look once the message
+    # has expired and its block would show: built before the first send, it
+    # can execute until MSG_LIFETIME after it, so only then is "absent" final.
+    local final_look=$(( $(date +%s) + ${MSG_LIFETIME:-60} + ${EFFECT_MIN_WAIT:-10} )) pause
     for (( attempt=0; attempt <= 3; attempt++ )); do
         if [[ $attempt -lt 3 ]];then
             result=$(Send_File_To_BC "$File")
@@ -939,7 +957,12 @@ function Submit_And_Identify() {
             0) if [[ -n $identified ]];then printf "%s\n" "$identified"; return 0; fi ;;
             2) return 1 ;;  # more than one entry matches: refused, never guessed
         esac                # 1, the wallet could not be read: the next look decides
-        [[ $attempt -lt 3 ]] && sleep "$interval"
+        if [[ $attempt -lt 2 ]];then
+            sleep "$interval"
+        elif [[ $attempt -eq 2 ]];then
+            pause=$(( final_look - $(date +%s) ))
+            [[ $pause -gt 0 ]] && sleep "$pause"
+        fi
     done
     echoerr "###-ERROR: the submission to ${Dest} did not appear in wallet ${MSIG_ADDR}, so it was never accepted and nothing was signed. Nothing was transferred; the operation can be made again."
     return 1

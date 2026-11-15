@@ -171,6 +171,10 @@ pub(crate) enum Cast {
     /// the config counts it in the current round, or accepted the proposal with it: in this transaction
     /// (`None`: another copy of this key's vote was counted), and the config's state once it does
     Counted { tx: Option<HashBytes>, after: Box<ConfigAccount> },
+    /// the vote ran and the proposal is closed after it, with no answer from the config to say whether this vote
+    /// closed it (an external vote gets none): another vote may have, so it is not taken as counted, and the next
+    /// pass says how the proposal ended
+    Closed { after: Box<ConfigAccount> },
     /// the relay's multisig transaction waits for confirmations
     Pending { id: u64, received: u8, required: u8 },
 }
@@ -338,6 +342,8 @@ fn pass(net: &Net, target: &Target, opts: &Options, relay: Option<&Wallet>, st: 
                         return Ok(Step::Continue);
                     }
                 }
+                // closed as it ran: the next pass tells how it ended
+                Ok(Cast::Closed { .. }) => return Ok(Step::Continue),
                 // every vote would wait for custodians whose keys are elsewhere
                 Ok(Cast::Pending { id, received, required }) => {
                     return Ok(Step::Fail(anyhow::anyhow!(
@@ -823,7 +829,17 @@ fn landed(chain: &Graphql, cfg: &ConfigAccount, b: &Ballot, tx: &Executed, answe
         short(&b.proposal),
         tx.hash
     );
+    if unconfirmed(&after, b, answer) {
+        return Ok(Cast::Closed { after: Box::new(after) });
+    }
     Ok(Cast::Counted { tx: Some(tx.hash), after: Box::new(after) })
+}
+
+/// Whether a vote that ran is left unconfirmed: only the config's own answer, or the vote among the round's
+/// voters in its state `after`, says it counted. Without either, a proposal gone after it may have been closed
+/// by another vote first.
+pub(crate) fn unconfirmed(after: &ConfigAccount, b: &Ballot, answer: Option<(i32, &str)>) -> bool {
+    answer.is_none() && after.proposal(&b.proposal).is_none()
 }
 
 /// What a vote's transaction at time `at` did. The config's state `after` it shows a vote counted in its round.

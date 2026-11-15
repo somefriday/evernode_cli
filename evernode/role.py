@@ -192,6 +192,17 @@ def ask_role(store, config, args):
         raise process.OperationError(
             "Invalid workchain, cron interval or DePool numeric setting"
         )
+    # The DePool's constructor refuses anything else (EverX's DePool.sol; StEver's
+    # DePool derives from it), and only at deploy, once the Safe exists and this
+    # step can no longer change them.
+    if not (solo or nominator or importing) and not (
+        1 <= reward_fraction <= 99 and min_stake >= 1 and assurance >= min_stake
+    ):
+        raise process.OperationError(
+            "A DePool needs a participant reward fraction from 1 to 99, a minimum "
+            "stake of at least 1 token, and a validator assurance of at least the "
+            "minimum stake"
+        )
     settings = {
         "NODE_WC": workchain,
         "NOMINATOR_OWNER": owner or "",

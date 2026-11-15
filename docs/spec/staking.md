@@ -28,16 +28,16 @@ The stake fee is the DePool's own `stakeFee`. The DePool returns what it does no
 - Validator type `depool` and stage `imported` or `ready-for-elections`.
 - An amount of at least 1 token, where an amount is given. `depool withdraw` takes exactly one
   of its three forms.
-- For every operation but `replenish`, no frozen proxy ([ELECT-8](properties.md#elect-8)).
-  evernode checks this before it runs the script.
+- For `depool stake`, both proxies read as Active ([ELECT-8](properties.md#elect-8)). evernode
+  checks this before it runs the script. A withdrawal and a replenishment go ahead whatever state
+  the proxies are in.
 - Checked by `stake_to_depool.sh` before any operation:
   - the Safe is active and holds at least 1 token;
   - the DePool is active and not closed;
   - fewer than 5 transactions are pending in the Safe.
-- Checked for every operation but `replenish`:
-  - the DePool's own balance is at least its balance threshold less 2 tokens, and at least
-    12 tokens;
-  - each proxy holds at least 1.92 tokens.
+- Checked for every operation but `replenish`: the DePool's own balance is at least its balance
+  threshold less 2 tokens, and at least 12 tokens.
+- Checked for a stake, not for a withdrawal: each proxy holds at least 1.92 tokens.
 - Checked by the operation:
   - stake: the Safe holds the amount plus 1 token, and the amount is at least the DePool's
     minimum stake;
@@ -46,8 +46,9 @@ The stake fee is the DePool's own `stakeFee`. The DePool returns what it does no
 
 **Logic**
 
-1. evernode asks for confirmation, takes the election lock, checks the proxies (not for
-   `replenish`) and runs `stake_to_depool.sh` with the operation. The script does not ask again.
+1. evernode asks for confirmation, takes the election lock, checks the proxies (for
+   `depool stake`) and runs `stake_to_depool.sh` with the operation. The script does not ask
+   again.
 2. The script makes the checks above.
 3. The operation builds its message and follows the protocol
    ([wallet-operations.md](wallet-operations.md#one-operation)), with resume and the queue check.

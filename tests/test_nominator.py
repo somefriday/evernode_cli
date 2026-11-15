@@ -431,6 +431,55 @@ class ContractToolTests(unittest.TestCase):
         self.assertEqual(roles, {"owner": OWNER, "validator": HOT})
 
 
+
+class ContractAddressGuardTests(unittest.TestCase):
+    """prepare derives the address from the code; a node whose contract is
+    deployed must not be pointed at another one without being asked to."""
+
+    def prepare(self, *, derived, new_contract=False):
+        deployed = "-1:" + "1" * 64
+        config = nominator_config(
+            wallet={"mode": "new", "custodians": 1, "required_signatures": 1,
+                    "wallet_address": "-1:" + "a" * 64, "depool_address": None},
+            setup_stage="ready-for-elections", nominator={"address": deployed},
+        )
+        manifest = {"address": derived, "factory": FACTORY, "validator": "-1:" + "a" * 64,
+                    "owner": OWNER, "codeHash": CODE_HASH, "upstreamCommit": "x"}
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            for name in ("code.boc", "init.boc", "factory-deploy.boc"):
+                (work / name).write_bytes(b"x")
+            with patch("evernode.nominator.resolve_contract_source", return_value=VENDOR), \
+                    patch("evernode.nominator.build_tools_image", return_value=("local/tools:x", False)), \
+                    patch("evernode.nominator.work_directory", return_value=work), \
+                    patch("evernode.nominator.process.execute_command",
+                          return_value=unittest.mock.Mock(stdout=json.dumps(manifest))), \
+                    patch("evernode.nominator.configuration.write_node_environment") as written:
+                try:
+                    nominator.prepare(unittest.mock.MagicMock(), config, source=None, recipe=None,
+                                      new_contract=new_contract)
+                    error = None
+                except process.OperationError as caught:
+                    error = caught
+        return config, written, error
+
+    def test_another_address_is_refused_for_a_deployed_contract(self):
+        config, written, error = self.prepare(derived="-1:" + "2" * 64)
+        self.assertIn("--new-contract", str(error))
+        written.assert_not_called()
+        self.assertNotEqual(config["settings"].get("NOMINATOR_ADDR"), "-1:" + "2" * 64)
+
+    def test_the_same_address_prepares_again(self):
+        """What rebuilding a pruned tools image needs."""
+        config, written, error = self.prepare(derived="-1:" + "1" * 64)
+        self.assertIsNone(error)
+        written.assert_called_once()
+
+    def test_new_contract_moves_the_node_to_the_new_address(self):
+        config, _, error = self.prepare(derived="-1:" + "2" * 64, new_contract=True)
+        self.assertIsNone(error)
+        self.assertEqual(config["settings"]["NOMINATOR_ADDR"], "-1:" + "2" * 64)
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -635,12 +684,14 @@ class BidBranchTests(unittest.TestCase):
         assert "Stake_DST_Addr=$NOMINATOR_ADDR" in cls.branch
 
     def run_branch(self, *, stake=1000, contract="Active", contract_balance=5000,
-                   wallet_balance=15, image="local/tools:abc", transform_fails=False):
+                   wallet_balance=15, image="local/tools:abc", transform_fails=False,
+                   image_present=True):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             (directory / "1_query.boc").write_bytes(b"query")
             program = f"""set -uo pipefail
 SelfScriptName=take_part_in_elections.sh
+VALIDATOR_NAME=validator01
 MSIG_FIX_STAKE={stake}
 NOMINATOR_ADDR=-1:{"n" * 64}
 NOMINATOR_RESERVE=1000000000
@@ -652,7 +703,10 @@ elections_id=1
 Exist_Nom_Trans_Qty=0
 Validator_Acc_Balance_nT=$(( {wallet_balance} * 1000000000 ))
 function Get_Account_Info() {{ echo "{contract} $(( {contract_balance} * 1000000000 )) 1"; }}
-function docker() {{ {"return 1" if transform_fails else 'cp "$CURR_ELECTIONS_DIR/1_query.boc" "$CURR_ELECTIONS_DIR/1_stake.boc"'}; }}
+function docker() {{
+    [[ $1 == image ]] && return {0 if image_present else 1}
+    {"return 1" if transform_fails else 'cp "$CURR_ELECTIONS_DIR/1_query.boc" "$CURR_ELECTIONS_DIR/1_stake.boc"'}
+}}
 # The kit reads files with 'base64 FILE' throughout and runs on Linux; the
 # BSD base64 on a developer's Mac takes no positional file, so the harness
 # supplies the Linux behaviour rather than testing the platform.
@@ -704,6 +758,13 @@ echo "RESULT dest=$Stake_DST_Addr value=$NANOSTAKE payload=${{validator_query_pa
         output = self.run_branch(image="").stdout
         self.assertIn("NOMINATOR_TOOLS_IMAGE is not set", output)
         self.assertIn("nominator prepare", output)
+
+    def test_a_pruned_tool_image_is_named_with_the_command_that_rebuilds_it(self):
+        """Only a bid runs it, so an image prune removes it."""
+        output = self.run_branch(image_present=False).stdout
+        self.assertIn("is not on this host", output)
+        self.assertIn("evernode nominator prepare -n validator01", output)
+        self.assertNotIn("dest=-1:", output)
 
     def test_a_transform_that_fails_stops_the_bid(self):
         self.assertIn(
@@ -1063,8 +1124,8 @@ FUNDING_STUBS = r"""
 KEYS_DIR="$TEST_ROOT"; INPL_KEYS_DIR="$TEST_ROOT"; VALIDATOR_NAME=validator
 INPL_ELECTIONS_WORK_DIR="$TEST_ROOT"; ELECTIONS_WORK_DIR="$TEST_ROOT"; SIG_ID_OPTION=""
 INPL_SafeC_Wallet_ABI=safe.abi; SafeC_Wallet_ABI="$TEST_ROOT/safe.abi"; : >"$SafeC_Wallet_ABI"
-CALL_BC=bc; CALL_CLI=fake_cli; MSG_LIFETIME=60; LC_Send_MSG_Timeout=1
-EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=2
+CALL_BC=bc; CALL_CLI=fake_cli; MSG_LIFETIME=1; LC_Send_MSG_Timeout=1
+EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=1
 echoerr() { echo "$*" >&2; }
 fake_cli() {
     case "$*" in

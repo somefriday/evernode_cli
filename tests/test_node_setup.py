@@ -97,6 +97,18 @@ class NodeSetupTests(unittest.TestCase):
                 self.assertNotIn("create a new managed node", said.getvalue())
                 console.assert_not_called()
 
+    def test_setup_refuses_depool_settings_the_contract_would_refuse(self):
+        """The DePool's constructor refuses them only at deploy, after the Safe
+        exists, when node setup can no longer change them."""
+        self.created()
+        for flags in (("--reward-fraction", "100"), ("--reward-fraction", "0"),
+                      ("--min-stake", "0"), ("--validator-assurance", "5", "--min-stake", "10")):
+            with self.subTest(flags=flags):
+                code, _ = self.setup("--validator-type", "depool", "--custodians", "3",
+                                     "--required-signatures", "2", "--cron-interval", "15", *flags)
+                self.assertEqual(code, 1)
+                self.assertFalse(configuration.has_role(self.saved()))
+
     def test_setup_saves_the_role_and_renders_it_into_env_sh(self):
         self.created()
         code, out = self.setup("--validator-type", "solo", "--custodians", "3",

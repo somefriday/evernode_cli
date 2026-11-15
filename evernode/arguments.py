@@ -386,6 +386,11 @@ def build_argument_parser():
                 help="single-nominator contract directory; defaults to the one "
                 "installed with evernode",
             )
+            q.add_argument(
+                "--new-contract",
+                action="store_true",
+                help="move a node whose contract is deployed to the new address",
+            )
         q.add_argument("--yes", action="store_true")
     q = nominator.add_parser("info", help="Where this validator's money is")
     q.add_argument("-n", "--name", required=True)

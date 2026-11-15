@@ -128,12 +128,23 @@ def _review_transaction(store, config, args):
     --force, since signing it sends the money there."""
     wallets.require_confirmable(config, args.group, args.transaction_id)
     name, wanted = config["name"], str(args.transaction_id)
-    wallet = wallets.node_wallet_profile(config)["wallet_address"]
-    pending = scripts.read_wallet_pending(store, config, wallet).get("pending_transactions") or []
+    profile = wallets.node_wallet_profile(config)
+    pending = scripts.read_wallet_pending(store, config, profile["wallet_address"]).get("pending_transactions") or []
     entry = next((item for item in pending if str(item.get("id")) == wanted), None)
     if entry is None:
         raise process.OperationError(f"{name}'s Safe holds no pending transaction {wanted}")
     dest = str(entry.get("dest", "")).lower()
+    if dest == str(profile.get("depool_address") or "").lower():
+        # A tick or a bid left pending makes the DePool ask the elector through
+        # its proxies once it executes (ELECT-8). Nothing here tells one from a
+        # withdrawal, so the refusal names the command that can finish that.
+        try:
+            wallets.require_live_proxies(store, config)
+        except process.OperationError as error:
+            raise process.OperationError(
+                f"{error}. A withdrawal or a replenishment left pending is finished by "
+                "running the same depool withdraw or depool replenish again"
+            ) from error
     try:
         whose = _own_contracts(store, config).get(dest)
     except process.OperationError:
@@ -270,6 +281,7 @@ def handle_setup_action(store, args):
                 store,
                 config,
                 source=args.contract_source,
+                new_contract=args.new_contract,
                 recipe=Path(__file__).resolve().parent
                 / "assets"
                 / "nominator-tools.Dockerfile",

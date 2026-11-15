@@ -40,7 +40,7 @@ function TD_unix2human() {{ printf "%s\\n" "$1"; }}
 KEYS_DIR="{root}"
 INPL_ELECTIONS_WORK_DIR="{root}"; ELECTIONS_WORK_DIR="{root}"
 INPL_SafeC_Wallet_ABI=safe.abi; SafeC_Wallet_ABI="{root}/safe.abi"
-MSG_LIFETIME=60; EFFECT_POLL_INTERVAL=1
+MSG_LIFETIME=1; EFFECT_MIN_WAIT=1; EFFECT_POLL_INTERVAL=1
 CALL_CLI=fake_cli
 function fake_cli() {{
     case "$*" in
@@ -281,12 +281,12 @@ function Send_MSIG_Trans_Confirmation() {
 '''
 
     def sign(self, *, mask=1, signs=1, required=2, keys=3, delivery_fails=False,
-             deadline_offset=20, unreadable=False, unreadable_once=False):
+             deadline_offset=20, unreadable=False, unreadable_once=False, readable_after=0):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_keys(root, keys)
             identifier = (int(time.time()) << 32) | 3
-            wallet = self.WALLET
+            wallet = "START=$(date +%s)\n" + self.WALLET
             if unreadable:
                 wallet += 'function Get_MSIG_Trans_List() { return 2; }\n'
             if unreadable_once:
@@ -297,9 +297,17 @@ function Send_MSIG_Trans_Confirmation() {
                     '    Wallet_List "$@"\n'
                     '}\n'
                 )
+            if readable_after:
+                wallet += (
+                    'eval "$(declare -f Get_MSIG_Trans_List | sed "1s/Get_MSIG_Trans_List/Wallet_List/")"\n'
+                    'function Get_MSIG_Trans_List() {\n'
+                    f'    [[ $(date +%s) -ge $(( START + {readable_after} )) ]] || return 2\n'
+                    '    Wallet_List "$@"\n'
+                    '}\n'
+                )
             body = wallet + (
                 f'Sign_To_Execution 0:wallet validator "{identifier}" '
-                f'"$(( $(date +%s) + {deadline_offset} ))" "The stake"\n'
+                f'"$(( START + {deadline_offset} ))" "The stake"\n'
                 'echo "rc=$?"\n'
             )
             result = run_bash(
@@ -359,6 +367,14 @@ function Send_MSIG_Trans_Confirmation() {
         result, trace = self.sign(deadline_offset=-5)
         self.assertIn("rc=1", result.stdout)
         self.assertIn("nothing further was sent", result.stderr)
+        self.assertEqual(trace, "")
+
+    def test_nothing_is_sent_once_its_lifetime_no_longer_fits_before_the_deadline(self):
+        """The wallet reads only late. A confirmation sent then could execute
+        after this reported failure, and a rerun would pay twice (OP-3). Only a
+        resend used to be held to that."""
+        result, trace = self.sign(readable_after=3, deadline_offset=4)
+        self.assertIn("rc=1", result.stdout)
         self.assertEqual(trace, "")
 
     def test_an_unreadable_wallet_stops_rather_than_signs_blindly(self):

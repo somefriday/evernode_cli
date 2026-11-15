@@ -26,9 +26,9 @@ Asks for the validator type, a new or an existing Safe and, for a DePool validat
 | `--required-signatures` | N                           | asked; `2` without a terminal; nominator: menu | Signatures a Safe transaction needs.                             |
 | `--owner-address`       | `-1:…`                      | asked                                          | Nominator: the cold owner wallet. Cannot be changed later.       |
 | `--depool-type`         | `EverX` `StEver`            | menu; `EverX` without a terminal               | DePool contract. DePool validators only.                         |
-| `--validator-assurance` | TOKENS                      | asked; `50000` without a terminal              | DePool: stake the validator must hold.                           |
-| `--min-stake`           | TOKENS                      | asked; `10` without a terminal                 | DePool: smallest participant stake.                              |
-| `--reward-fraction`     | PERCENT                     | asked; `65` without a terminal                 | DePool: participants' share of rewards.                          |
+| `--validator-assurance` | TOKENS                      | asked; `50000` without a terminal              | DePool: validator's own stake, at least the minimum stake.       |
+| `--min-stake`           | TOKENS                      | asked; `10` without a terminal                 | DePool: smallest participant stake, at least 1 token.            |
+| `--reward-fraction`     | PERCENT                     | asked; `65` without a terminal                 | DePool: participants' share of rewards, 1 to 99.                 |
 | `--balance-threshold`   | TOKENS                      | asked; `20` without a terminal                 | DePool: its own operating balance.                               |
 | `--cron-interval`       | MINUTES                     | asked; `10` without a terminal                 | Minutes between election runs; use a divisor of 60.              |
 | `--workchain`           | `0` `-1`                    | menu; `0` without a terminal                   | Workchain of a DePool validator's Safe; its DePool stays in 0.   |

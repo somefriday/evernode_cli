@@ -65,10 +65,10 @@ INPL_SafeC_Wallet_ABI=safe.abi
 # Reading the custodian set needs the wallet ABI on disk, as on a real node.
 SafeC_Wallet_ABI="$TEST_ROOT/safe.abi"; : >"$SafeC_Wallet_ABI"
 MSIG_AMOUNT=$TEST_WALLET; Required_Signs=$TEST_REQUIRED; DEPOOL_STAKE_FEE_NANO=500000000
-MSG_LIFETIME=60
+MSG_LIFETIME=1
 LC_Send_MSG_Timeout=1
 # The wait polls for real, so bound it well inside the subprocess timeout.
-EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=2
+EFFECT_POLL_INTERVAL=1; EFFECT_WAIT_MAX=4; EFFECT_MIN_WAIT=1
 Get_SC_current_state() { echo "written StateInit of account"; }
 Current_Depool_Info='{"minStake":"10000000000"}'
 fake_cli() {

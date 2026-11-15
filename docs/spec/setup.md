@@ -61,7 +61,9 @@ Command: [`node setup`](../node/setup.md). Code: `role.handle_node_setup`, `role
 2. Ask whether the Safe exists already.
 3. Ask the node's workchain, 0 or -1, and the minutes between election runs, 1 to 59.
 4. For a DePool validator ask the DePool type. For a new DePool ask its four terms: validator
-   assurance, minimum stake, participant reward fraction, balance threshold.
+   assurance, minimum stake, participant reward fraction, balance threshold. Refuse what the
+   DePool's constructor refuses: a reward fraction outside 1 to 99, a minimum stake under 1
+   token, or an assurance under the minimum stake.
 5. For a nominator validator ask the cold owner's address. It must be in the masterchain.
 6. Ask the Safe's custodians and required signatures. A nominator validator's Safe defaults to
    one key. The other types default to 3 custodians and 2 signatures.
@@ -253,7 +255,7 @@ Command: [`depool stake-initial`](../depool/stake-initial.md). Code:
 **Requires**
 
 - Stage `depool-deployed`.
-- No frozen proxy ([ELECT-8](properties.md#elect-8)).
+- Both proxies read as Active ([ELECT-8](properties.md#elect-8)).
 - The Safe holds at least the validator assurance plus 1 token.
 
 **Logic**
@@ -314,8 +316,11 @@ Command: [`nominator prepare`](../nominator/prepare.md). Code: `nominator.prepar
    2. builds the contract's initial state from the owner and the Safe, which fixes its address;
    3. builds the deployer's message, which fixes the deployer's address;
    4. writes `manifest.json`.
-4. Save the address and the tools image in the settings, the record and `env.sh`.
-5. The stage becomes `nominator-prepared`, from `wallet-deployed`, `imported` or
+4. If the node's contract is deployed (stage `nominator-deployed`, `nominator-verified` or
+   `ready-for-elections`) and this address differs, stop unless `--new-contract`: the node would
+   bid from an empty contract while its stake sits in the old one.
+5. Save the address and the tools image in the settings, the record and `env.sh`.
+6. The stage becomes `nominator-prepared`, from `wallet-deployed`, `imported` or
    `nominator-prepared`.
 
 **Result**

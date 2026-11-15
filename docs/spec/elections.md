@@ -26,7 +26,9 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
 - A role, and setup stage `imported` or `ready-for-elections`.
 - For a solo or nominator validator, a recorded stake.
 - A synchronized node. A server clock that is late but within 10 s is a warning.
-- For a DePool validator, no frozen proxy ([ELECT-8](properties.md#elect-8)).
+- For a DePool validator, both proxies read as Active ([ELECT-8](properties.md#elect-8)).
+- For a nominator validator, the tools image that `nominator prepare` builds is on the host: a
+  bid splices its stake with it, and an image prune removes it.
 - No schedule installed yet.
 
 **Logic** of `election start`:
@@ -35,7 +37,8 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
 2. Under the node lock, write the two programs (`elections.write_election_programs`):
    - the *sequence*: `run-election-sequence.sh` for a DePool validator,
      `run-solo-election-sequence.sh` for a solo or nominator validator. The other type's file is
-     removed if it is there;
+     removed if it is there. A sequence writes a mark into the cron log when a run starts, and
+     one with its exit status when it ends;
    - the *runner*, `run-elections.sh`.
 3. Write `/etc/cron.d/evernode-NAME`: every N minutes, as root, the runner, with its output
    appended to `logs/validator/election-cron.log`.
@@ -51,7 +54,10 @@ with `# Managed by evernode`. It does not end a run that is in progress.
 
 - the schedule: whether the cron file is installed, and whether a cron daemon runs on the host;
 - the chain: whether the node reports itself in the current set and in the next set, and whether
-  it is validating.
+  it is validating;
+- the latest run, read back between its marks (`elections.last_run`): when it started and ended,
+  its exit status, its last error lines, and each proxy alarm it raised. `election status` shows
+  such an alarm again, in red.
 
 **Result**
 
@@ -128,15 +134,18 @@ validator.
 
 ### Preparation, DePool
 
-8. For each proxy ([ELECT-7](properties.md#elect-7)):
-   - Frozen: show the alarm, raise an alert and end with status 1, before the tick
-     ([ELECT-8](properties.md#elect-8)).
-   - Not active, or not readable: log it. No top-up.
-   - Active: subtract its storage owed from its balance. Under 1.92 tokens: send it 5 tokens plus
-     the storage owed in whole tokens from the Safe, in a transfer that does not bounce, and wait
-     for its balance to show the old one plus 4 tokens.
+8. Read both proxies, then judge each ([ELECT-8](properties.md#elect-8)):
+   - Frozen, or without code (read without error as nonexistent or uninit): show its alarm and
+     raise an alert.
+   - Not readable, or in another state: log it and raise an alert. The next run reads it again.
 
-   A top-up that fails is logged, and preparation goes on.
+   Any of these ends preparation with status 1, before the tick. Then each proxy whose balance,
+   less its storage owed, is under 1.92 tokens gets 5 tokens plus the storage owed in whole tokens
+   from the Safe, in a transfer that does not bounce, and preparation waits for its balance to
+   show the old one plus 4 tokens ([ELECT-7](properties.md#elect-7)). One that owes more than 50
+   tokens gets nothing. A top-up that fails is logged and raises an alert; if the proxy owes more
+   storage than it holds, preparation ends with status 1, before the tick, and the next run tries
+   again. Otherwise preparation goes on.
 9. Read the DePool's own balance (`getDePoolBalance`). If it is below the DePool's balance
    threshold less 3 tokens, send the difference plus 10 tokens from the Safe. Follow the protocol
    ([wallet-operations.md](wallet-operations.md#one-operation)) and wait for the balance to show
@@ -277,4 +286,5 @@ The runner itself ends with status 200 when it skipped the run.
 - The election's files in `elections/ID/` ([state.md](state.md#elections-directory)): the log of
   decisions, the request, the messages and the three markers.
 - Lines that start with `###-ERROR` are failures. The scripts also send these as alerts to
-  Telegram when `env.sh` names a bot and a chat; evernode sets neither.
+  Telegram when `env.sh` names a bot and a chat; evernode sets neither. `election status` shows
+  the latest run's.

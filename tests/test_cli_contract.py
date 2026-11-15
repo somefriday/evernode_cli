@@ -157,6 +157,10 @@ class CommandContractTests(unittest.TestCase):
     def test_log_paths_and_container_targets_stay_node_specific(self):
         config = make_node_configuration()
         store = storage.NodeStateStore("/var/lib/ever-validator")
+        # the election scripts split paths at whitespace
+        for root in ("/srv/validator data", "/srv/validator\tdata"):
+            with self.subTest(root=root), self.assertRaises(process.OperationError):
+                storage.NodeStateStore(root)
         for component, filename in (
             ("node", "node.log"),
             ("stderr", "stderr.log"),

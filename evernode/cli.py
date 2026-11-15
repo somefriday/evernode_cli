@@ -17,6 +17,7 @@ from . import (
     images,
     log_level,
     nodes,
+    nominator,
     process,
     provisioning,
     resources,
@@ -337,12 +338,11 @@ def main(argv=None):
                 config = store.load_node_config(
                     configuration.validate_node_name(args.name)
                 )
-                ui.print_json_result(
-                    {
-                        "name": config["name"],
-                        **describe_election_state(store, config),
-                    }
-                )
+                state = describe_election_state(store, config)
+                # A proxy the latest run stopped at gets the same alarm as a refused command.
+                for proxy in (state.get("last_run") or {}).get("proxies", []):
+                    wallets.proxy_alarm(proxy["index"], proxy["address"], proxy["status"])
+                ui.print_json_result({"name": config["name"], **state})
             elif args.action == "start":
                 name = configuration.validate_node_name(args.name)
                 config = store.load_node_config(name)
@@ -363,6 +363,8 @@ def main(argv=None):
                     print(f"Warning: {nodes.late_clock(behind)}", file=sys.stderr)
                 if configuration.validator_type(config) == "depool":
                     wallets.require_live_proxies(store, config)
+                if configuration.validator_type(config) == "nominator":
+                    nominator.require_tools_image(config)
                 if args.dry_run:
                     ui.print_json_result({"enable_managed_schedule": name})
                 else:

@@ -124,8 +124,10 @@ class AwaitEffectTests(unittest.TestCase):
             'Await_Effect "the stake" $(( $(date +%s) - 1 )) 2 absent\n'
         )
         self.assertIn("depool info", result.stderr)
-        self.assertIn("needs its remaining signatures", result.stderr)
-        self.assertIn("never reached the wallet", result.stderr)
+        self.assertIn("needs only its remaining signatures", result.stderr)
+        # a transfer that executed can still land: a blind rerun would send it twice
+        self.assertIn("can still take effect", result.stderr)
+        self.assertNotIn("can be made again", result.stderr)
 
     def test_an_unreadable_chain_is_not_reported_as_an_absent_effect(self):
         """"The node never answered" and "the stake is not there" are
@@ -152,6 +154,20 @@ class AwaitEffectTests(unittest.TestCase):
             'echo "rc=$?"\n'
         )
         self.assertIn("rc=0", result.stdout)
+
+    def test_a_chain_that_stops_answering_leaves_the_state_unknown(self):
+        """An answered "not yet" before it says nothing about the time after."""
+        result = self.run_case(
+            'function silenced() {\n'
+            '    local count="$TEST_ROOT/count"\n'
+            '    echo x >> "$count"\n'
+            '    [[ $(wc -l < "$count") -le 1 ]] && return 1\n'
+            '    return 2\n'
+            '}\n'
+            'Await_Effect "the stake" $(( $(date +%s) + 1 )) 1 silenced\n'
+        )
+        self.assertIn("state is unknown", result.stderr)
+        self.assertNotIn("did not take effect", result.stderr)
 
     def test_a_partly_unreadable_chain_reports_the_absent_effect(self):
         """One failed read among several does not make the state unknown."""

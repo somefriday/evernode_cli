@@ -594,7 +594,13 @@ case "$STAKE_MODE" in
         # untouched. Only the cell tool can splice that, so it runs in the
         # pinned image the contract was compiled with.
         if [[ -z ${NOMINATOR_TOOLS_IMAGE:-} ]];then
-            echo "###-ERROR(${SelfScriptName} line $LINENO): NOMINATOR_TOOLS_IMAGE is not set in env.sh, so the election request cannot be prepared. Run: evernode nominator prepare"
+            echo "###-ERROR(${SelfScriptName} line $LINENO): NOMINATOR_TOOLS_IMAGE is not set in env.sh, so the election request cannot be prepared. Run: evernode nominator prepare -n ${VALIDATOR_NAME}"
+            exit 1
+        fi
+        # Only a bid runs it, so no container keeps it in use and an image prune
+        # removes it.
+        if ! docker image inspect "$NOMINATOR_TOOLS_IMAGE" >/dev/null 2>&1;then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): The nominator tools image ${NOMINATOR_TOOLS_IMAGE} is not on this host (an image prune removes it), so the election request cannot be prepared. Run: evernode nominator prepare -n ${VALIDATOR_NAME}"
             exit 1
         fi
         echo -n "---INFO: Insert the stake of ${MSIG_FIX_STAKE} tokens into the election request ... "

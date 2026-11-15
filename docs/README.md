@@ -2,7 +2,7 @@
 
 One page per command. Each has an example, what the command does, its flags, and how it behaves. The rules these pages follow are in [rules.md](rules.md). How evernode works inside is in the [specification](spec/README.md).
 
-Every command except `host check` and the offline and key-file `vote` commands needs root. `--state-dir DIR` goes before the group (default `/var/lib/ever-validator`); `evernode --version` prints the version.
+Every command except `host check` and the offline and key-file `vote` commands needs root. `--state-dir DIR` goes before the group (default `/var/lib/ever-validator`; no whitespace, `:`, `$` or `%` in it); `evernode --version` prints the version.
 
 ## Setup by validator type
 
@@ -64,7 +64,7 @@ sudo evernode nominator prepare -n validator01            # nominator; then nomi
 sudo evernode election start -n validator01               # once the former node is fenced
 ```
 
-A nominator's owner funds the contract after `nominator verify`. A solo or nominator stake has to be large enough to be elected: the elector seats the set with the largest total stake.
+A nominator's owner funds the contract after `nominator verify`. A bid the former node already made in the open election stays with its key, and a solo or nominator node would stake again under its own: start elections on it after that election closes. A solo or nominator stake has to be large enough to be elected: the elector seats the set with the largest total stake.
 
 ## Maintenance
 

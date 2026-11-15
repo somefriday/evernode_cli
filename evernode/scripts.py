@@ -242,10 +242,11 @@ def _import_verification_context(store, config):
 
 
 def read_account_status(store, config, address, timeout=60):
-    """The account's status as the kit reads it: Active, Uninit, Frozen or None.
+    """The account's status as the kit reads it: Active, Uninit, Frozen or
+    Nonexist, or None when it cannot be read.
 
-    None also when the account cannot be read. A deploy then goes ahead as
-    before, and the deploy script's own check of the account decides.
+    A deploy goes ahead on None as before, and the deploy script's own check of
+    the account decides.
     """
     scripts_dir = _import_verification_context(store, config)
     program = """set -eo pipefail
@@ -253,7 +254,10 @@ def read_account_status(store, config, address, timeout=60):
 set +u
 source ./env.sh
 source ./functions.shinc
-read -r status _ <<< "$(Get_Account_Info "$EVERNODE_ACCOUNT")"
+# A failed read and an account that does not exist both print "None 0 0";
+# only the return code tells them apart.
+info="$(Get_Account_Info "$EVERNODE_ACCOUNT")"
+read -r status _ <<< "$info"
 printf "%s\\n" "$status"
 """
     environment = os.environ.copy()
@@ -265,7 +269,9 @@ printf "%s\\n" "$status"
     except process.OperationError:
         return None
     lines = result.stdout.strip().splitlines()
-    return lines[-1] if lines else None
+    if not lines:
+        return None
+    return "Nonexist" if lines[-1] == "None" else lines[-1]
 
 
 def wait_for_active_account(store, config, address, label, timeout=240, interval=5):

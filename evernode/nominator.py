@@ -329,7 +329,22 @@ def resolve_contract_source(config, requested=None):
     )
 
 
-def prepare(store, config, *, source, recipe):
+def require_tools_image(config):
+    """The image a nominator bid splices its stake with. Only a bid runs it, so
+    no container keeps it in use, and an image prune removes it."""
+    image = (config.get("settings") or {}).get("NOMINATOR_TOOLS_IMAGE")
+    if not image or not docker.image_exists(image):
+        raise process.OperationError(
+            f"The nominator tools image {image or ''} is not on this host, so no bid "
+            f"can be prepared; run: evernode nominator prepare -n {config['name']}"
+        )
+
+
+# Stages at which this node's contract is on chain.
+CONTRACT_STAGES = ("nominator-deployed", "nominator-verified", "ready-for-elections")
+
+
+def prepare(store, config, *, source, recipe, new_contract=False):
     """Compile the contract and derive the address it will have.
 
     Nothing here reaches the chain or spends anything: it establishes which
@@ -390,6 +405,20 @@ def prepare(store, config, *, source, recipe):
         ) from exc
     for name in ("code.boc", "init.boc", "factory-deploy.boc"):
         (work / name).chmod(0o600)
+    # Other code gives another address. A node whose contract is deployed would
+    # then bid from an empty contract while its stake sits in the old one.
+    deployed = (config.get("nominator") or {}).get("address")
+    if (
+        deployed
+        and config.get("setup_stage") in CONTRACT_STAGES
+        and manifest["address"] != deployed
+        and not new_contract
+    ):
+        raise process.OperationError(
+            f"This node's contract is deployed at {deployed}, and this code gives "
+            f"{manifest['address']}. Prepare it from the source the deployed one was "
+            "built from, or use --new-contract to move the node to the new address"
+        )
     settings["NOMINATOR_ADDR"] = manifest["address"]
     # The election scripts splice the stake into the elector's request with
     # this image, so the node's environment has to name it.

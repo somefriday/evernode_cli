@@ -46,10 +46,12 @@ def pending_entry(id_, dest=DEPOOL, value="5000000000"):
 
 
 @contextlib.contextmanager
-def the_safe_holds(pending=None, depool=None, frozen=()):
+def the_safe_holds(pending=None, depool=None, proxies=None):
     """What a command reads from the chain: the Safe's pending list, the
     elector and config contract, the DePool's proxies (DEPOOL: what reading
-    the DePool raises instead) and each proxy's state (FROZEN: those frozen)."""
+    the DePool raises instead) and each proxy's state (PROXIES: those not
+    Active, by address; None is a proxy that could not be read)."""
+    proxies = proxies or {}
     if pending is None:
         pending = [pending_entry("7701911356660055489"), pending_entry("42")]
     with (
@@ -60,12 +62,12 @@ def the_safe_holds(pending=None, depool=None, frozen=()):
         patch("evernode.scripts.read_depool_state",
               return_value={"proxies": PROXIES}, side_effect=depool),
         patch("evernode.scripts.read_account_status",
-              side_effect=lambda _store, _config, address: "Frozen" if address in frozen else "Active"),
+              side_effect=lambda _store, _config, address: proxies.get(address, "Active")),
     ):
         yield
 
 class WithdrawalCommandTests(unittest.TestCase):
-    def run_command(self, *argv, stage="ready-for-elections", pending=None, depool=None, frozen=()):
+    def run_command(self, *argv, stage="ready-for-elections", pending=None, depool=None, proxies=None):
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
@@ -74,7 +76,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                                 "timediff": 1, "shards_timediff": 1}),
             patch("evernode.scripts.execute_validator_script") as script,
             patch("evernode.setup_actions.elections.hold_election_lock"),
-            the_safe_holds(pending, depool, frozen),
+            the_safe_holds(pending, depool, proxies),
             contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
@@ -196,12 +198,17 @@ class WithdrawalCommandTests(unittest.TestCase):
         script.assert_called_once()
 
     def test_force_signs_even_when_the_depool_cannot_be_read(self):
-        """A broken DePool is one of the cases --force is for."""
-        argv = ("depool", "confirm", "-n", "validator01", "--transaction-id", "42", "--yes")
+        """A broken DePool is one of the cases --force is for, except for a
+        transaction to the DePool itself: with its proxies unread, a tick or a
+        bid there could make it ask the elector through a frozen one (ELECT-8)."""
         broken = process.OperationError("the DePool did not answer")
-        for flags, expected in (((), 1), (("--force",), 0)):
-            with self.subTest(flags=flags):
-                code, script, _ = self.run_command(*argv, *flags, depool=broken)
+        pending = [pending_entry("42"), pending_entry("43", dest=PROXIES[1])]
+        for transaction, flags, expected in (("43", (), 1), ("43", ("--force",), 0), ("42", ("--force",), 1)):
+            with self.subTest(transaction=transaction, flags=flags):
+                code, script, _ = self.run_command(
+                    "depool", "confirm", "-n", "validator01", "--transaction-id", transaction, "--yes",
+                    *flags, pending=pending, depool=broken,
+                )
                 self.assertEqual(code, expected)
                 self.assertEqual(script.called, expected == 0)
 
@@ -210,31 +217,135 @@ class WithdrawalCommandTests(unittest.TestCase):
         with patch("evernode.setup_actions.ui.confirm_operation",
                    side_effect=lambda _, question: questions.append(question)):
             self.run_command("depool", "confirm", "-n", "validator01", "--transaction-id", "42",
-                             "--force", depool=process.OperationError("the DePool did not answer"))
+                             "--force", pending=[pending_entry("42", dest="0:" + "e" * 64)],
+                             depool=process.OperationError("the DePool did not answer"))
         self.assertIn("(could not be checked)", questions[0])
 
-    def test_a_frozen_proxy_refuses_the_depools_stake_operations_with_an_alarm(self):
-        """No stake goes through a frozen proxy until its state is restored; a
-        replenishment moves no stake and still goes ahead."""
+    def test_a_frozen_proxy_refuses_a_stake_with_an_alarm(self):
+        """No stake goes into rounds that travel through a frozen proxy."""
         for argv, stage in (
             (("depool", "stake", "--amount", "10"), "ready-for-elections"),
-            (("depool", "withdraw", "--all"), "ready-for-elections"),
             (("depool", "stake-initial"), "depool-deployed"),
         ):
             with self.subTest(command=" ".join(argv)):
                 code, script, text = self.run_command(
-                    *argv, "-n", "validator01", "--yes", stage=stage, frozen=PROXIES[1:]
+                    *argv, "-n", "validator01", "--yes", stage=stage, proxies={PROXIES[1]: "Frozen"}
                 )
                 self.assertEqual(code, 1)
                 script.assert_not_called()
                 self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
-                self.assertIn("can be lost", text)
+                self.assertIn("the state it had when it froze", text)
                 self.assertIn(f"Proxy 1 of validator01's DePool ({PROXIES[1]}) is frozen", text)
+
+    def test_a_proxy_that_cannot_be_read_refuses_a_stake_too(self):
+        """It may be frozen; nothing says otherwise until it reads as Active."""
+        argv = ("depool", "stake", "-n", "validator01", "--amount", "10", "--yes")
+        code, script, text = self.run_command(*argv, proxies={PROXIES[0]: None})
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("could not be read", text)
+        self.assertNotIn("PROXY 0", text)
+        code, script, text = self.run_command(*argv, depool=lambda *_args, **_kwargs: {"proxies": []})
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("proxies could not be read", text)
+
+    def test_each_frozen_or_missing_proxy_gets_its_alarm(self):
+        """Both are read before deciding. One without code was deleted by the
+        chain or never deployed, and nothing can rebuild it."""
+        code, script, text = self.run_command(
+            "depool", "stake", "-n", "validator01", "--amount", "10", "--yes",
+            proxies={PROXIES[0]: "Nonexist", PROXIES[1]: "Frozen"},
+        )
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("PROXY 0 OF THE DEPOOL DOES NOT EXIST:", text)
+        self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
+        self.assertIn(f"Proxy 0 of validator01's DePool ({PROXIES[0]}) does not exist", text)
+
+    def test_right_after_the_depool_deploy_a_missing_proxy_is_still_on_its_way(self):
+        code, script, text = self.run_command(
+            "depool", "stake-initial", "-n", "validator01", "--yes",
+            stage="depool-deployed", proxies={PROXIES[0]: "Nonexist"},
+        )
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("reads as Nonexist, not Active", text)
+        self.assertNotIn("DOES NOT EXIST", text)
+
+    def test_a_withdrawal_and_a_replenishment_go_ahead_while_a_proxy_is_frozen(self):
+        """Each only records a request in the DePool or adds to its balance: no
+        message passes a proxy, and nothing is asked of the elector."""
+        for argv in (("withdraw", "--all"), ("withdraw", "--amount", "10"), ("withdraw", "--cancel"),
+                     ("replenish", "--amount", "10")):
+            with self.subTest(command=" ".join(argv)):
+                code, script, _ = self.run_command(
+                    "depool", *argv, "-n", "validator01", "--yes", proxies=dict.fromkeys(PROXIES, "Frozen")
+                )
+                self.assertEqual(code, 0)
+                script.assert_called_once()
+
+    def test_nothing_to_the_depool_is_signed_while_a_proxy_is_frozen(self):
+        """A tick or a bid left pending would make the DePool ask the elector
+        through its proxies. A transaction to a proxy, such as the one that
+        restores it, is still signed."""
+        pending = [pending_entry("42"), pending_entry("43", dest=PROXIES[1])]
+        code, script, text = self.run_command(
+            "depool", "confirm", "-n", "validator01", "--transaction-id", "42", "--yes",
+            pending=pending, proxies={PROXIES[1]: "Frozen"},
+        )
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
+        self.assertIn("finished by running the same depool withdraw or depool replenish again", text)
         code, script, _ = self.run_command(
-            "depool", "replenish", "-n", "validator01", "--amount", "10", "--yes", frozen=PROXIES
+            "depool", "confirm", "-n", "validator01", "--transaction-id", "43", "--yes",
+            pending=pending, proxies={PROXIES[1]: "Frozen"},
         )
         self.assertEqual(code, 0)
         script.assert_called_once()
+
+    def test_election_status_shows_the_alarm_of_the_last_run(self):
+        state = {"enabled": True, "last_run": {"started": "t", "ended": "t", "status": 1, "errors": [],
+                 "proxies": [{"index": 1, "address": PROXIES[1], "status": "Frozen"}]}}
+        with (
+            patch("evernode.cli.require_root_privileges"),
+            patch("evernode.cli.storage.NodeStateStore") as store,
+            patch("evernode.cli.describe_election_state", return_value=state),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            store.return_value.load_node_config.return_value = operational_node()
+            code = cli.main(["election", "status", "-n", "validator01"])
+        self.assertEqual(code, 0)
+        self.assertIn(f"PROXY 1 OF THE DEPOOL IS FROZEN:", errors.getvalue())
+        self.assertEqual(json.loads(output.getvalue())["last_run"]["status"], 1)
+
+    def test_a_nominator_without_its_tools_image_cannot_start_elections(self):
+        """A bid splices its stake with that image, and an image prune removes it."""
+        config = make_node_configuration(
+            "validator01", setup_stage="ready-for-elections", validator_type="nominator",
+            wallet={"mode": "new", "custodians": 1, "required_signatures": 1,
+                    "wallet_address": "-1:" + "a" * 64, "depool_address": None},
+            settings={"NOMINATOR_TOOLS_IMAGE": "local/evernode-nominator-tools:abc"},
+        )
+        with (
+            patch("evernode.cli.require_root_privileges"),
+            patch("evernode.cli.storage.NodeStateStore") as store,
+            patch("evernode.cli.stake.require_recorded_stake"),
+            patch("evernode.cli.nodes.fetch_node_statistics",
+                  return_value={"sync_status": "synchronization_finished",
+                                "timediff": 1, "shards_timediff": 1}),
+            patch("evernode.nominator.docker.image_exists", return_value=False),
+            patch("evernode.cli.elections.enable_node_election_schedule") as enable,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            store.return_value.load_node_config.return_value = config
+            code = cli.main(["election", "start", "-n", "validator01", "--yes"])
+        self.assertEqual(code, 1)
+        enable.assert_not_called()
+        self.assertIn("evernode nominator prepare -n validator01", errors.getvalue())
 
     def test_a_frozen_proxy_refuses_the_election_schedule_with_an_alarm(self):
         with (
@@ -244,7 +355,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                   return_value={"sync_status": "synchronization_finished",
                                 "timediff": 1, "shards_timediff": 1}),
             patch("evernode.cli.elections.enable_node_election_schedule") as enable,
-            the_safe_holds(frozen=PROXIES[:1]),
+            the_safe_holds(proxies={PROXIES[0]: "Frozen"}),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
@@ -377,6 +488,27 @@ class ElectionStateReportTests(unittest.TestCase):
             with self.subTest(statistics=statistics):
                 value = self.describe(enabled=True, statistics=statistics)
                 self.assertEqual(value["chain"]["validating"], expected)
+
+    def test_the_last_run_is_read_back_from_its_marks(self):
+        """Only the latest marked run counts; colour codes and an older run's
+        errors are left out, and a proxy alarm it raised is named."""
+        log = self.store.node_directory(self.config["name"]) / "logs/validator/election-cron.log"
+        log.write_text(
+            "=== 2026-11-15 10:00:00 UTC election run started\n###-ERROR(old): stale\n"
+            "=== 2026-11-15 10:02:00 UTC election run ended with status 1\n"
+            "2026-11-15 10:15:00 UTC skipped: another run or an evernode command holds this node's election lock\n"
+            "=== 2026-11-15 10:30:00 UTC election run started\n"
+            "\x1b[31;1m###-ERROR(prepare_elections.sh line 455): Proxy1 -1:p1 is frozen\x1b[0m\n"
+            "!!! PROXY 1 OF THE DEPOOL IS FROZEN:\n!!! -1:p1\n!!! The DePool can neither send\n"
+            "=== 2026-11-15 10:31:00 UTC election run ended with status 1\n"
+        )
+        run = self.describe(enabled=True)["last_run"]
+        self.assertEqual((run["started"], run["status"]), ("2026-11-15 10:30:00 UTC", 1))
+        self.assertEqual(run["errors"], ["###-ERROR(prepare_elections.sh line 455): Proxy1 -1:p1 is frozen"])
+        self.assertEqual(run["proxies"], [{"index": 1, "address": "-1:p1", "status": "Frozen"}])
+
+    def test_a_log_without_a_marked_run_reports_none(self):
+        self.assertIsNone(self.describe(enabled=True)["last_run"])
 
     def test_being_elected_for_the_next_round_is_reported_separately(self):
         value = self.describe(enabled=True, statistics={"in_next_vset_p36": True})

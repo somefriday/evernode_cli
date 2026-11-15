@@ -626,27 +626,62 @@ def require_constructed_depool(store, config, profile):
         )
 
 
+def proxy_alarm(index, proxy, status):
+    """The red alarm for a proxy that stops the DePool's stakes: Frozen, or
+    without code (Nonexist or Uninit: deleted by the chain, or never deployed)."""
+    if status == "Frozen":
+        ui.alarm([
+            f"PROXY {index} OF THE DEPOOL IS FROZEN:",
+            proxy,
+            "The DePool can neither send a stake through it nor recover one.",
+            "Restore it now: send the proxy the state it had when it froze",
+            "(its code and data) with tokens to pay its storage debt. While it",
+            "stays frozen, the stake that goes through it is stuck and can be lost.",
+            "evernode refuses elections and stakes into the DePool until then.",
+        ])
+    else:
+        ui.alarm([
+            f"PROXY {index} OF THE DEPOOL DOES NOT EXIST:",
+            proxy,
+            "The chain deleted it, or it was never deployed. It cannot be rebuilt:",
+            "only the DePool deploys its proxies, and only while it is deployed.",
+            "The stake that goes through it cannot come back from the elector.",
+            "evernode refuses elections and stakes into the DePool.",
+        ])
+
+
 def require_live_proxies(store, config):
-    """Refuse, with an alarm, while one of the DePool's proxies is frozen: the
+    """Refuse unless both of the DePool's proxies read as Active (ELECT-8). The
     DePool sends each round's stake to the elector, and recovers it, through
-    them. Checked before a stake moves in or out, and before elections (ELECT-8)."""
+    them, and the elector keeps an answer that bounces off a frozen one. Both
+    are read before deciding, so each frozen or missing one gets its alarm; one
+    that cannot be read may be frozen."""
     profile = node_wallet_profile(config)
     state = scripts.read_depool_state(
         store, config, profile["depool_address"], profile["wallet_address"]
     )
-    for index, proxy in enumerate(state.get("proxies") or []):
-        if scripts.read_account_status(store, config, proxy) == "Frozen":
-            ui.alarm([
-                f"PROXY {index} OF THE DEPOOL IS FROZEN:",
-                proxy,
-                "The DePool can neither send a stake through it nor recover one.",
-                "Restore it now: send the proxy its original state (StateInit) with",
-                "tokens to pay its storage debt. While it stays frozen, the stake",
-                "that goes through it is stuck and can be lost.",
-                "evernode refuses elections and DePool stake operations until then.",
-            ])
+    proxies = state.get("proxies") or []
+    if not proxies:
+        raise process.OperationError("The DePool's proxies could not be read; nothing was sent")
+    statuses = [scripts.read_account_status(store, config, proxy) for proxy in proxies]
+    # Right after the DePool is deployed, its proxies may still be on their way.
+    deploying = config.get("setup_stage") == "depool-deployed"
+    lost = []
+    for index, (proxy, status) in enumerate(zip(proxies, statuses)):
+        if status == "Frozen" or (status in ("Nonexist", "Uninit") and not deploying):
+            proxy_alarm(index, proxy, status)
+            lost.append(
+                f"Proxy {index} of {config['name']}'s DePool ({proxy}) "
+                + ("is frozen; restore it first" if status == "Frozen" else "does not exist and cannot be rebuilt")
+            )
+    if lost:
+        raise process.OperationError("; ".join(lost))
+    for index, (proxy, status) in enumerate(zip(proxies, statuses)):
+        if status != "Active":
             raise process.OperationError(
-                f"Proxy {index} of {config['name']}'s DePool ({proxy}) is frozen; restore it first"
+                f"Proxy {index} of {config['name']}'s DePool ({proxy}) "
+                + ("could not be read" if status is None else f"reads as {status}, not Active")
+                + "; nothing was sent. Run the command again once it reads as Active"
             )
 
 
@@ -809,7 +844,10 @@ def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=Fa
         raise process.OperationError("Choose exactly one of --amount, --all, --cancel")
     if amount is not None and amount < 1:
         raise process.OperationError("Withdrawal amount must be at least one token")
-    require_live_proxies(store, config)
+    # No proxy check, even while one is frozen (ELECT-8): a withdrawal only
+    # records a request in the DePool, which pays it from its own rounds, and no
+    # message passes a proxy. It is paid when its round completes, which needs
+    # the ticks to run again, so nothing arrives until the proxy is restored.
     if withdraw_all:
         operation, extra = "WD-all", ()
     elif cancel:

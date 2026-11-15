@@ -146,6 +146,8 @@ pub fn pass(net: &Net, phash: HashBytes, dry_run: bool) -> Result<Report> {
     let mut voted = 0;
     // the config's state once it included our last vote's transaction: never older than what this pass read
     let mut latest: Option<ConfigAccount> = None;
+    // the proposal closed as one of our votes ran, which got no answer to say whether it counted
+    let mut unconfirmed = false;
     if !dry_run && settled && !timeline.near_switch() && !missing.is_empty() {
         for &(node, idx, key) in &missing {
             let ballot = Ballot { node: &net.nodes[node], vset: vset.id(), idx, key, proposal: phash };
@@ -163,6 +165,12 @@ pub fn pass(net: &Net, phash: HashBytes, dry_run: bool) -> Result<Report> {
                         report.votes.push(stream(counted));
                         voted += 1;
                         latest = Some(*after);
+                        failure = None;
+                        break;
+                    }
+                    Ok(Cast::Closed { after, .. }) => {
+                        latest = Some(*after);
+                        unconfirmed = true;
                         failure = None;
                         break;
                     }
@@ -186,7 +194,12 @@ pub fn pass(net: &Net, phash: HashBytes, dry_run: bool) -> Result<Report> {
     let (missing_now, view_now) = match &latest {
         Some(after) => match after.proposal(&phash) {
             None => {
-                close(&mut report, chain, after, "accepted with our vote", true)?;
+                let why = if unconfirmed {
+                    "accepted as our vote ran, which gets no answer to say whether it counted"
+                } else {
+                    "accepted with our vote"
+                };
+                close(&mut report, chain, after, why, true)?;
                 print_summary(&report);
                 return Ok(report);
             }

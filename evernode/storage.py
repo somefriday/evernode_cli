@@ -74,10 +74,14 @@ class NodeStateStore:
 
     def __init__(self, root):
         self.root = Path(root).expanduser().absolute()
-        # '%' ends a command in a cron line, where this path is written too.
-        if any(c in str(self.root) for c in ("\0", "\n", "\r", ":", "$", "%")):
+        # '%' ends a command in a cron line, where this path is written too, and
+        # the election scripts split paths at whitespace.
+        if any(c in str(self.root) for c in ("\0", ":", "$", "%")) or any(
+            c.isspace() for c in str(self.root)
+        ):
             raise process.OperationError(
-                "State directory contains unsupported Compose or cron path characters"
+                "State directory contains whitespace or a character Compose or cron "
+                "cannot take (':', '$', '%')"
             )
 
     def node_directory(self, name):

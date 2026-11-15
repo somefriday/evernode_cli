@@ -33,7 +33,8 @@ class ProxyTopUpTests(unittest.TestCase):
             + text[start: text.index("} # top_app_account", start)] + "}"
         )
 
-    def top_up(self, *, before=(), after_send=(), required=2, idle_days=0, landed=7000000000, lands=True):
+    def top_up(self, *, before=(), after_send=(), required=2, idle_days=0, landed=7000000000, lands=True,
+               status="Active"):
         """Top up the proxy; the wallet lists BEFORE, and AFTER_SEND once the
         message is sent. IDLE_DAYS: how long the proxy has had no transaction;
         LANDED: its balance once the top-up arrived, if it LANDS."""
@@ -45,7 +46,7 @@ class ProxyTopUpTests(unittest.TestCase):
 DIR={directory}
 MSG_LIFETIME=60 LC_Send_MSG_Timeout=10 EFFECT_WAIT_MAX=2 EFFECT_POLL_INTERVAL=1
 ELECTIONS_WORK_DIR=$DIR INPL_ELECTIONS_WORK_DIR=$DIR KEYS_DIR=$DIR VALIDATOR_NAME=v
-log_error_stack() {{ :; }}
+log_error_stack() {{ echo "$*" >&2; }}
 echoerr() {{ echo "$*" >&2; }}
 sleep() {{ :; }}
 Get_Account_Custodians_Info() {{ echo "3 {required}"; }}
@@ -53,7 +54,7 @@ Custodian_Key_Decimal() {{ echo {OURS}; }}
 Get_MSIG_Expiration_Time() {{ echo 3600; }}
 Get_MSIG_Trans_List() {{ cat "$DIR/pending.json"; }}
 Get_Account_Info() {{
-    [[ -f $DIR/executed ]] && echo "Active {landed} $(date +%s)" || echo "Active 2000000000 $(( $(date +%s) - {idle_days} * 86400 ))"
+    [[ -f $DIR/executed ]] && echo "Active {landed} $(date +%s)" || echo "{status} 2000000000 $(( $(date +%s) - {idle_days} * 86400 ))"
 }}
 cli() {{ echo "$*" > "$DIR/message"; while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && : > "$2"; [[ $1 == --lifetime ]] && echo "$2" > "$DIR/lifetime"; shift; done; }}
 CALL_CLI=cli
@@ -69,8 +70,8 @@ top_app_account {PROXY} 5000000000 {WALLET}
         signer.chmod(0o755)
         result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=60)
         trace = directory / "trace"
-        lifetime = (directory / "lifetime").read_text().strip()
-        self.message = (directory / "message").read_text()
+        lifetime = (directory / "lifetime").read_text().strip() if (directory / "lifetime").exists() else ""
+        self.message = (directory / "message").read_text() if (directory / "message").exists() else ""
         return result, trace.read_text().split("\n")[:-1] if trace.exists() else [], lifetime
 
     def test_another_custodians_transfer_is_never_signed(self):
@@ -112,6 +113,37 @@ top_app_account {PROXY} 5000000000 {WALLET}
         call a lost top-up done."""
         result, _, _ = self.top_up(required=1, idle_days=45, lands=False)
         self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_a_last_paid_of_zero_is_unknown_not_decades_of_storage(self):
+        """0 is what a failed read reports; counted as a time, it owed about
+        2,000 tokens, all of which the top-up would have carried."""
+        program = self.function + '\nfor paid in 0 "" null; do Proxy_Storage_Owed "$paid"; done\n'
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.stdout.split(), ["0", "0", "0"])
+
+    def test_a_proxy_owing_more_than_a_top_up_carries_gets_nothing(self):
+        """Idle 2,000 days, it owes about 200 tokens by the estimate. A 55-token
+        transfer would be credited and then taken in full, and the proxy frozen
+        by it, so nothing is sent and the amount it needs is named."""
+        result, trace, _ = self.top_up(required=1, idle_days=2000)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((trace, self.message), ([], ""))
+        self.assertIn("owes about 200 tokens", result.stderr)
+        self.assertIn("Send it 205 tokens", result.stderr)
+
+    def test_up_to_the_cap_the_storage_owed_travels_with_the_top_up(self):
+        result, _, _ = self.top_up(required=1, idle_days=500, landed=57000000000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"value":55000000000,"bounce":false', self.message)
+
+    def test_nothing_is_sent_to_a_proxy_that_is_not_active(self):
+        """A transfer that does not bounce would stay in a frozen proxy without
+        unfreezing it."""
+        for status in ("Frozen", "", "null"):
+            with self.subTest(status=status):
+                result, trace, _ = self.top_up(required=1, status=status)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((trace, self.message), ([], ""))
 
     def test_a_single_signature_wallet_is_confirmed_by_the_proxys_balance(self):
         result, trace, _ = self.top_up(required=1)

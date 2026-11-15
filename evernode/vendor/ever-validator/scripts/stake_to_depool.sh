@@ -259,6 +259,13 @@ Refuse_Low_Balance=true
 if [[ $STAKE_OP == "replenish" ]]; then
     Refuse_Low_Balance=false
 fi
+# A withdrawal, or cancelling one, only records a request in the DePool: no
+# message passes a proxy, so a proxy's balance, even a frozen one's, does not
+# refuse it (ELECT-8).
+Check_Proxies=$Refuse_Low_Balance
+case $STAKE_OP in
+    WD-all|WD-part|cancelWithdrawal) Check_Proxies=false ;;
+esac
 
 if $Refuse_Low_Balance && [[ $Depool_Self_Balance -lt $Depool_BalanceThreshold ]]; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool's own balance is below its threshold; top it up first with 'evernode depool replenish'."
@@ -291,7 +298,7 @@ echo "Depool proxy0: ${dp_proxy0} balance: ${Proxy0_Bal_Tk} tokens"
 echo "Depool proxy1: ${dp_proxy1} balance: ${Proxy1_Bal_Tk} tokens"
 declare -ir TOPUP_THRESHOLD=1920000000 # 1.92 tokens
 TOPUP_THRESHOLD_Tk=$(echo "scale=3; $((TOPUP_THRESHOLD)) / 1000000000" | $CALL_BC)
-if $Refuse_Low_Balance && [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD || $Proxy1_Bal -lt $TOPUP_THRESHOLD ]]; then
+if $Check_Proxies && [[ $Proxy0_Bal -lt $TOPUP_THRESHOLD || $Proxy1_Bal -lt $TOPUP_THRESHOLD ]]; then
     echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy balance is less than $TOPUP_THRESHOLD_Tk tokens."
     echo "    Proxy0 balance: ${Proxy0_Bal_Tk} tokens"
     echo "    Proxy1 balance: ${Proxy1_Bal_Tk} tokens"

@@ -434,38 +434,78 @@ fi
 
 #=================================================
 # Keep both proxies funded. Each carries a stake to the elector and brings it
-# back, and a frozen one can do neither, so it stops the run. A balance is as of
-# the proxy's last transaction, and the storage owed since is taken at its next
-# one, so that is subtracted first.
+# back. A frozen one can do neither, and the elector keeps an answer that
+# bounces off it, so the run stops before the tick and so before the bid, and
+# asks the elector for nothing (ELECT-8). Both are read and judged before either
+# is touched, so each problem gets its own alarm. A balance is as of the proxy's
+# last transaction, and the storage owed since is taken at its next one, so that
+# is subtracted first.
+Proxy_Stop=false
 for Proxy_Index in 0 1; do
     Proxy_Var="dp_proxy${Proxy_Index}"
     Proxy_Addr="${!Proxy_Var}"
-    read -r Proxy_Status Proxy_Bal Proxy_Paid <<< "$(Get_Account_Info "$Proxy_Addr")"
-    # A frozen proxy stops the run here, before the tick and so before the bid
-    # (ELECT-8): no stake goes through it until its state is restored.
-    if [[ $Proxy_Status == "Frozen" ]];then
-        printf "%b\n" "${BoldText}${RedBack}"
-        printf '!!! %s\n' \
-            "PROXY ${Proxy_Index} OF THE DEPOOL IS FROZEN:" \
-            "${Proxy_Addr}" \
-            "The DePool can neither send a stake through it nor recover one." \
-            "Restore it now: send the proxy its original state (StateInit) with" \
-            "tokens to pay its storage debt. While it stays frozen, the stake" \
-            "that goes through it is stuck and can be lost." \
-            "Elections for this node stop until then."
-        printf "%b\n" "${NormText}"
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen; restore it before elections continue." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_SOS_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen; elections stopped until it is restored." > /dev/null 2>&1
-        exit 1
+    # A failed read and an account that does not exist both print "None 0 0";
+    # only the return code tells them apart.
+    if Proxy_Info="$(Get_Account_Info "$Proxy_Addr")";then
+        read -r Proxy_Status Proxy_Bal Proxy_Paid <<< "$Proxy_Info"
+    else
+        Proxy_Status="unread" Proxy_Bal=0 Proxy_Paid=0
     fi
-    # Only a proxy that reads as Active is topped up: one that could not be read
-    # shows a balance of 0, which says nothing about what it holds.
-    if [[ $Proxy_Status != "Active" ]];then
-        echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} reads as ${Proxy_Status:-nothing}, so it is not topped up."
-        continue
-    fi
-    Proxy_Bal=$(( Proxy_Bal - $(Proxy_Storage_Owed "$Proxy_Paid") ))
+    Proxy_Balances[Proxy_Index]=$Proxy_Bal
+    Proxy_Paids[Proxy_Index]=$Proxy_Paid
+    case $Proxy_Status in
+        Active) ;;
+        Frozen|None|Uninit)
+            if [[ $Proxy_Status == "Frozen" ]];then
+                Proxy_Banner=(
+                    "PROXY ${Proxy_Index} OF THE DEPOOL IS FROZEN:" "${Proxy_Addr}"
+                    "The DePool can neither send a stake through it nor recover one."
+                    "Restore it now: send the proxy the state it had when it froze"
+                    "(its code and data) with tokens to pay its storage debt. While it"
+                    "stays frozen, the stake that goes through it is stuck and can be lost."
+                    "Elections for this node stop until then.")
+                Proxy_Error="is frozen; restore it before elections continue"
+            else
+                # Read without error, but without code: deleted by the chain, or
+                # never deployed. Only the DePool's constructor deploys proxies.
+                Proxy_Banner=(
+                    "PROXY ${Proxy_Index} OF THE DEPOOL DOES NOT EXIST:" "${Proxy_Addr}"
+                    "The chain deleted it, or it was never deployed. It cannot be rebuilt:"
+                    "only the DePool deploys its proxies, and only while it is deployed."
+                    "The stake that goes through it cannot come back from the elector."
+                    "Elections for this node stop.")
+                Proxy_Error="does not exist and cannot be rebuilt"
+            fi
+            printf "%b\n" "${BoldText}${RedBack}"
+            printf '!!! %s\n' "${Proxy_Banner[@]}"
+            printf "%b\n" "${NormText}"
+            echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} ${Proxy_Error}." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+                "${Tg_SOS_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} ${Proxy_Error}; elections stopped." > /dev/null 2>&1
+            Proxy_Stop=true
+            ;;
+        *)
+            # Not read, or in no state a proxy should be in: it may be frozen.
+            # The run stops the same way, and the next run reads it again (OP-8).
+            if [[ $Proxy_Status == "unread" ]];then
+                Proxy_Error="could not be read"
+            else
+                Proxy_Error="reads as ${Proxy_Status:-nothing}, not Active"
+            fi
+            echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} ${Proxy_Error}; preparation stops before the tick." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+                "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} ${Proxy_Error}; preparation stopped before the tick." > /dev/null 2>&1
+            Proxy_Stop=true
+            ;;
+    esac
+done
+if $Proxy_Stop;then
+    exit 1
+fi
+for Proxy_Index in 0 1; do
+    Proxy_Var="dp_proxy${Proxy_Index}"
+    Proxy_Addr="${!Proxy_Var}"
+    Proxy_Bal=$(( Proxy_Balances[Proxy_Index] - $(Proxy_Storage_Owed "${Proxy_Paids[Proxy_Index]}") ))
     echo "---INFO(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} holds $(awk '{print $1/1000000000}' <<< "$Proxy_Bal") tokens once it pays the storage it owes"
     [[ $Proxy_Bal -lt $TOPUP_THRESHOLD ]] || continue
     # top_app_account adds the storage it owes to the five tokens it gains.
@@ -475,11 +515,23 @@ for Proxy_Index in 0 1; do
         "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): ${Proxy_Note}" > /dev/null 2>&1
     top_app_account "$Proxy_Addr" $((5 * 1000000000)) "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy${Proxy_Index}_topup.log"
     if [[ ${PIPESTATUS[0]} -ne 0 ]];then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account"
+        # One that owes more storage than it holds, by the estimate, could be
+        # frozen by the DePool's next message: no tick until a run tops it up.
+        # Short of that it still works: under its 1 token minimum it refuses the
+        # DePool's request, which the DePool rolls back (ELECT-7).
+        Proxy_Error="Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account"
+        if [[ $Proxy_Bal -lt 0 ]];then
+            Proxy_Error+="; it owes more storage than it holds, so preparation stops before the tick"
+            Proxy_Stop=true
+        fi
+        echo "###-ERROR(${SelfScriptName} line $LINENO): ${Proxy_Error}" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account" > /dev/null 2>&1
+            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): ${Proxy_Error}" > /dev/null 2>&1
     fi
 done
+if $Proxy_Stop;then
+    exit 1
+fi
 
 #=================================================
 # Check DePool has enough balance to operate, and replenish if no
