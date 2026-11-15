@@ -854,16 +854,66 @@ pub(crate) mod tests {
             let after = now_sb.state().unwrap();
             assert!(!campaign::predict(&before, &after, &dry, &ballot, sb.now).unwrap(), "counted, not accepting");
             let expires = before.proposal(&plan.hash).unwrap().expires;
-            assert!(campaign::effect(&after, &ballot, false, sb.now, expires).unwrap().starts_with("counted"));
+            assert!(campaign::effect(&after, &ballot, None, false, sb.now, expires).unwrap().starts_with("counted"));
             // the same vote landing after the expiry: the contract deletes the proposal, counting nothing
             let mut late = Sandbox::new(&before, expires + 5).unwrap();
             assert!(late.vote_external(&key, v0.idx, &plan.hash).unwrap().accepted);
             let gone = late.state().unwrap();
             assert!(gone.proposal(&plan.hash).is_none());
-            let e = format!("{:#}", campaign::effect(&gone, &ballot, false, expires + 5, expires).unwrap_err());
+            let e = format!("{:#}", campaign::effect(&gone, &ballot, None, false, expires + 5, expires).unwrap_err());
             assert!(e.contains("not counted"), "{e}");
             // even a vote predicted to accept it is not counted once the proposal has expired
-            assert!(campaign::effect(&gone, &ballot, true, expires + 5, expires).is_err());
+            assert!(campaign::effect(&gone, &ballot, None, true, expires + 5, expires).is_err());
+        }
+
+        /// A vote its dry run shows accepting the proposal can find it closed when it runs: another
+        /// validator's vote accepted it first. The config's answer to a relayed vote says so; an external
+        /// vote gets no answer, so a proposal gone after it is not called counted either.
+        #[test]
+        fn a_vote_another_beat_to_the_proposal_is_not_counted() {
+            let mut sb = template(&HashBytes([1; 32]));
+            let plan = burn_plan(&sb);
+            register(&mut sb, &plan.proposal, true, 2 * EVER);
+            let wins = sb.state().unwrap().vote_setup(true).unwrap().min_wins as u32;
+            for n in 1..wins {
+                validators().vote_all(&mut sb, &giver(), 2 * EVER, &plan.hash).unwrap();
+                validators().install(&mut sb, n).unwrap();
+            }
+            // the last round: once the heavy validator voted, either light one completes it
+            let keys = validators().keys;
+            let unit = 1u64 << 40;
+            let list = [unit, unit, 3 * unit]
+                .iter()
+                .zip(&keys)
+                .map(|(&weight, key)| descriptor(&HashBytes(key.verifying_key().to_bytes()), weight))
+                .collect::<Result<_>>()
+                .unwrap();
+            sb.set_vset(NOW + wins * ROUND, NOW + (wins + 1) * ROUND, list).unwrap();
+            vote(&mut sb, &keys[2], 2, &plan.hash);
+            let before = sb.state().unwrap();
+            let expires = before.proposal(&plan.hash).unwrap().expires;
+            let n = node("vdp4");
+            let ballot = Ballot {
+                node: &n,
+                vset: before.current_vset().unwrap().id(),
+                idx: 0,
+                key: HashBytes(keys[0].verifying_key().to_bytes()),
+                proposal: plan.hash,
+            };
+            let mut dry = Sandbox::new(&before, sb.now).unwrap();
+            let predicted = dry.vote(&giver(), 2 * EVER, &keys[0], 0, &plan.hash).unwrap();
+            assert!(campaign::predict(&before, &dry.state().unwrap(), &predicted, &ballot, sb.now).unwrap(), "it would accept it");
+            let accepting = config::vote_status(predicted.answer().unwrap());
+            assert!(campaign::effect(&dry.state().unwrap(), &ballot, accepting, true, sb.now, expires).unwrap().contains("accepted with it"));
+            // validator #1's vote runs first and accepts it
+            assert!(matches!(config::vote_status(vote(&mut sb, &keys[1], 1, &plan.hash).answer().unwrap()), Some((6 | 7, _))));
+            let late = config::vote_status(vote(&mut sb, &keys[0], 0, &plan.hash).answer().unwrap());
+            let after = sb.state().unwrap();
+            assert!(after.proposal(&plan.hash).is_none());
+            let e = format!("{:#}", campaign::effect(&after, &ballot, late, true, sb.now, expires).unwrap_err());
+            assert!(e.contains("not counted"), "{e}");
+            let external = campaign::effect(&after, &ballot, None, true, sb.now, expires).unwrap();
+            assert!(!external.contains("counted"), "{external}");
         }
 
         /// #15: the external vote that would accept a removal fails after taking the seqno (exit 7): refused

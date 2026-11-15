@@ -406,7 +406,7 @@ class FocusedFeatureTests(unittest.TestCase):
     def test_a_missing_or_other_vote_engine_is_built_from_the_installed_sources(self):
         other = process.OperationError(
             "/usr/local/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.3: run sudo evernode host setup"
+            "evernode-vote 0.2.4: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             sources = Path(temporary)
@@ -425,12 +425,12 @@ class FocusedFeatureTests(unittest.TestCase):
             ["docker", "build", "--output", "/usr/local/bin", sources], timeout=3600, stream=True
         )
         self.assertEqual(find.call_count, 2)
-        self.assertIn("Building evernode-vote 0.2.3 with Docker", err.getvalue())
+        self.assertIn("Building evernode-vote 0.2.4 with Docker", err.getvalue())
 
     def test_a_build_that_leaves_another_engine_fails(self):
         other = process.OperationError(
             "/usr/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.3: run sudo evernode host setup"
+            "evernode-vote 0.2.4: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / "Cargo.toml").write_text("")
@@ -571,7 +571,7 @@ class FocusedFeatureTests(unittest.TestCase):
         ):
             self.assertIn("Docker's official Ubuntu repository", host.get_setup_plan())
             self.assertIn(
-                "build the vote engine evernode-vote 0.2.3 into /usr/local/bin with Docker",
+                "build the vote engine evernode-vote 0.2.4 into /usr/local/bin with Docker",
                 host.get_setup_plan(),
             )
 

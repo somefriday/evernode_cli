@@ -607,6 +607,12 @@ impl std::fmt::Display for Stop {
 
 impl std::error::Error for Stop {}
 
+/// Whether a payer holding `balance` can send `value` (the price plus 2 EVER) and its fees: the price plus
+/// 3 EVER in all, as the docs and the error say.
+fn can_pay(balance: u128, value: u128) -> bool {
+    balance >= value + EVER
+}
+
 /// Holds the lock at `path` until the process ends, taken once.
 fn hold_lock(path: &Path) -> Result<()> {
     static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
@@ -644,7 +650,7 @@ fn take_lock(path: &Path) -> Result<std::fs::File> {
 fn propose(chain: &Graphql, cfg: &ConfigAccount, plan: &Plan, r: &Registration, payer: &Wallet, opts: &Options, confirmed: &mut Option<u128>) -> Result<Transfer> {
     r.dry_run(cfg, &payer.address)?;
     let balance = chain.balance(&payer.address)?;
-    if balance <= r.value + EVER {
+    if !can_pay(balance, r.value) {
         return Err(Stop(format!(
             "{} holds {} EVER; the proposal needs {} EVER plus fees: send it the price plus 3 EVER and propose again",
             payer.name,
@@ -732,7 +738,9 @@ fn vote(chain: &Graphql, relay: &Wallet, cfg: &ConfigAccount, b: &Ballot) -> Res
     // the relay's message runs in a transaction of the config's own
     let tx = chain.follow(&message)?;
     ensure!(tx.ok(), "the config's transaction {} for the vote failed with exit code {:?}", tx.hash, tx.exit_code);
-    landed(chain, cfg, b, &tx, accepts, &format!("carried by {}", relay.name))
+    // the config answers the relay: that, not the dry run, says what the vote did
+    let answer = tx.sent_to(&relay.address).and_then(|m| m.op).and_then(config::vote_status);
+    landed(chain, cfg, b, &tx, answer, accepts, &format!("carried by {}", relay.name))
 }
 
 /// A vote by external message: signed by the validator, carried by nobody's wallet. It names the
@@ -776,7 +784,7 @@ pub(crate) fn vote_external(net: &Net, chain: &Graphql, b: &Ballot) -> Result<Ca
         bail!("the external vote with seqno {} did not land: another message took the seqno first, or it expired", cfg.seqno);
     };
     ensure!(!tx.aborted, "the external vote's transaction {} aborted (exit code {:?})", tx.hash, tx.exit_code);
-    landed(chain, &cfg, b, &tx, accepts, &format!("by external message (seqno {})", cfg.seqno))
+    landed(chain, &cfg, b, &tx, None, accepts, &format!("by external message (seqno {})", cfg.seqno))
 }
 
 /// What the config would do with vote `b`, from its dry run on `before` (at time `t`): count it (`false`), or
@@ -799,14 +807,13 @@ pub(crate) fn predict(before: &ConfigAccount, after: &ConfigAccount, dry: &TxRes
     Ok(true)
 }
 
-/// What vote `b` did, read from the config's state once that state includes the vote's transaction `tx`: the
-/// validator is among the round's voters, or the vote accepted the proposal (as its dry run predicted,
-/// `accepts`, and before the proposal's expiry). A proposal gone for any other reason did not count it.
-/// Prints the vote, with the transaction to look it up by.
-fn landed(chain: &Graphql, cfg: &ConfigAccount, b: &Ballot, tx: &Executed, accepts: bool, how: &str) -> Result<Cast> {
+/// What vote `b` did, from the config's answer to it (`answer`, a relayed vote's) or its state once that
+/// state includes the vote's transaction `tx` (see [`effect`]). Prints the vote, with the transaction to look
+/// it up by.
+fn landed(chain: &Graphql, cfg: &ConfigAccount, b: &Ballot, tx: &Executed, answer: Option<(i32, &str)>, accepts: bool, how: &str) -> Result<Cast> {
     let after = ConfigAccount::parse(&chain.account_after(&cfg.address, tx.lt)?)?;
     let expires = cfg.proposal(&b.proposal).map_or(0, |p| p.expires);
-    let what = effect(&after, b, accepts, tx.now, expires).with_context(|| format!("transaction {}", tx.hash))?;
+    let what = effect(&after, b, answer, accepts, tx.now, expires).with_context(|| format!("transaction {}", tx.hash))?;
     say!(
         "{} {}: voted as validator #{} ({}) for {} {how}: {what} (transaction {})",
         stamp(),
@@ -819,18 +826,27 @@ fn landed(chain: &Graphql, cfg: &ConfigAccount, b: &Ballot, tx: &Executed, accep
     Ok(Cast::Counted { tx: Some(tx.hash), after: Box::new(after) })
 }
 
-/// What a vote's transaction at time `at` did, from the config's state `after` it: the validator is among the
-/// round's voters, or the vote accepted the proposal (as its dry run predicted, `accepts`, and before
-/// `expires`). A proposal gone for any other reason did not count it.
-pub(crate) fn effect(after: &ConfigAccount, b: &Ballot, accepts: bool, at: u32, expires: u32) -> Result<String> {
-    Ok(match after.proposal(&b.proposal) {
-        Some(p) if p.vset_id == b.vset && p.voters.contains(&b.idx) => {
-            let won = if p.weight_remaining < 0 { ", the round is won" } else { "" };
-            format!("counted, {} validator(s) voted in this round{won}", p.voters.len())
+/// What a vote's transaction at time `at` did. The config's state `after` it shows a vote counted in its round.
+/// Otherwise a relayed vote has the config's own `answer` (status, text), which says it. An external vote
+/// gets no answer: a proposal gone before `expires`, as its dry run predicted (`accepts`), may still have been
+/// closed by another vote, or by the config's own tick, before this one ran, so that is not called counted.
+pub(crate) fn effect(after: &ConfigAccount, b: &Ballot, answer: Option<(i32, &str)>, accepts: bool, at: u32, expires: u32) -> Result<String> {
+    if let Some(p) = after.proposal(&b.proposal)
+        && p.vset_id == b.vset
+        && p.voters.contains(&b.idx)
+    {
+        let won = if p.weight_remaining < 0 { ", the round is won" } else { "" };
+        return Ok(format!("counted, {} validator(s) voted in this round{won}", p.voters.len()));
+    }
+    Ok(match (answer, after.proposal(&b.proposal)) {
+        (Some((6 | 7, _)), _) => "counted, and the proposal is accepted with it".to_string(),
+        (Some((2, _)), _) => "counted".to_string(),
+        (Some((_, text)), _) => bail!("the config answered \"{text}\": the vote was not counted"),
+        (None, Some(_)) => bail!("it ran, but the config does not count the vote"),
+        (None, None) if accepts && at < expires => {
+            "the proposal is closed, as this vote was to close it; an external vote gets no answer, so the next pass says how it ended".to_string()
         }
-        Some(_) => bail!("it ran, but the config does not count the vote"),
-        None if accepts && at < expires => "counted, and the proposal is accepted with it".to_string(),
-        None => bail!("it ran after the proposal had closed (it expired, or other votes accepted it): the vote was not counted"),
+        (None, None) => bail!("it ran after the proposal had closed (it expired, or other votes accepted it): the vote was not counted"),
     })
 }
 
@@ -840,6 +856,14 @@ mod tests {
 
     fn lock_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("evernode-vote-{name}-{}.lock", std::process::id()))
+    }
+
+    #[test]
+    fn the_stated_minimum_pays() {
+        let price = 5 * EVER;
+        let value = price + 2 * EVER; // what a registration sends
+        assert!(can_pay(price + 3 * EVER, value), "the price plus 3 EVER, as the docs and the error say");
+        assert!(!can_pay(price + 3 * EVER - 1, value));
     }
 
     #[test]

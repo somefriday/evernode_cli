@@ -125,8 +125,10 @@ transaction for the internal message a relay sent, must be found through the end
 is sent only if its dry run shows the config counting it (the validator among the round's voters) or
 accepting the proposal with it: the config takes an external vote's seqno before it counts the vote, so a
 vote that would count nothing is not sent. Then the config's state after the vote's transaction must list
-the validator among the round's voters, or the proposal must be gone with a vote the dry run said accepts it,
-landed before the proposal's expiry. Each vote prints that transaction's hash. A vote that is not counted is
+the validator among the round's voters, or, for a relayed vote, the config's answer must say the vote counted
+or accepted the proposal. An external vote gets no answer: a proposal gone after it may have been closed by
+another vote first, so it is reported as closed, not as counted, and the next pass says how it ended. Each
+vote prints that transaction's hash. A vote that is not counted is
 signed and sent again at the next pass; once another message took the seqno, a vote is called lost only if
 the config does not count its validator. `cast` without `--watch` ends once every key held is counted in the
 current round, or the round is won without them. It fails, after voting with the rest, if a listed node

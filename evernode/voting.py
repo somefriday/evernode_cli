@@ -34,7 +34,7 @@ from . import arguments, configuration, elections, process, storage, wallets
 
 ENGINE = "evernode-vote"
 # The engine release this module speaks to; vote/Cargo.toml has the same version.
-ENGINE_VERSION = "0.2.3"
+ENGINE_VERSION = "0.2.4"
 # host setup builds it from the vote/ sources this package carries.
 INSTALL = "sudo evernode host setup"
 # Commands that read neither the chain nor a key, and those that sign votes.
