@@ -428,30 +428,6 @@ def local_sync(store, source_name, target_name, *, timeout=30):
             backup_created = True
             os.replace(staging, target_db)
             start_node(store, target)
-            target_stopped = False
-            _remove_directory(backup)
-            backup_created = False
-            storage.write_json_atomically(
-                workspace / "lsync.json",
-                {
-                    "schema_version": 1,
-                    "source": source_name,
-                    "target": target_name,
-                    "source_masterchain_block": plan["source_stats"].get(
-                        "masterchainblocknumber"
-                    ),
-                    "image_id": source["image_id"],
-                    "global_config_sha256": plan["global_config_sha256"],
-                    "copied_bytes": plan["source_bytes"],
-                    "completed_at": int(time.time()),
-                },
-            )
-            return {
-                "source": source_name,
-                "target": target_name,
-                "copied_bytes": plan["source_bytes"],
-                "target_console_ready": True,
-            }
         except (OSError, process.OperationError, KeyboardInterrupt) as exc:
             # An interrupt takes the same way back as a failure, so the target
             # keeps its previous database and both nodes run again.
@@ -481,6 +457,31 @@ def local_sync(store, source_name, target_name, *, timeout=30):
             raise process.OperationError(message) from None
         finally:
             _remove_directory(staging)
+        # The target runs on the copy, so the sync is done and nothing below may
+        # undo it: removing the old database is cleanup, and a failure or an
+        # interrupt there leaves only that directory behind.
+        storage.write_json_atomically(
+            workspace / "lsync.json",
+            {
+                "schema_version": 1,
+                "source": source_name,
+                "target": target_name,
+                "source_masterchain_block": plan["source_stats"].get(
+                    "masterchainblocknumber"
+                ),
+                "image_id": source["image_id"],
+                "global_config_sha256": plan["global_config_sha256"],
+                "copied_bytes": plan["source_bytes"],
+                "completed_at": int(time.time()),
+            },
+        )
+        _remove_directory(backup)
+        return {
+            "source": source_name,
+            "target": target_name,
+            "copied_bytes": plan["source_bytes"],
+            "target_console_ready": True,
+        }
 
 
 def get_node_status(config):
@@ -853,14 +854,18 @@ def update_node_image(store, name, record=None, *, rollback=False, timeout=30):
                 "image": config["image"],
                 "image_id": config["image_id"],
             }
-        process.execute_command(["docker", "image", "inspect", target["image_id"]])
+        # Recorded before the node stops, under the lock image remove decides
+        # with: the replacement is either gone already, and this stops here, or
+        # the node record names it and image remove refuses.
+        with store.acquire_operation_lock():
+            process.execute_command(["docker", "image", "inspect", target["image_id"]])
+            config.update(target)
+            store.save_node_config(config)
         stop_node(config, timeout)
-        config.update(target)
         storage.write_json_atomically(
             store.node_directory(name) / "compose.json",
             docker.build_node_compose_config(config, store.node_directory(name)),
         )
-        store.save_node_config(config)
         try:
             start_node(store, config)
             synchronized_once = False

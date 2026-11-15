@@ -234,12 +234,41 @@ echo "REACHED_BID readable=$Elector_Readable"
         self.assertNotIn("You participate already", result.stdout)
         self.assertFalse(result.marked)
 
-    def test_the_verdict_falls_back_to_what_the_money_did(self):
+    def money_verdict(self, mode, balance_after):
+        """Run the script's own fallback for a stake of 50 tokens out of 100,
+        which a nominator's wallet instructs with a fee of 2."""
         source = (KIT / "take_part_in_elections.sh").read_text()
-        self.assertIn("if ! $Elector_Readable;then", source)
-        self.assertIn("Effect_Account_Balance_At_Most", source)
-        # A bid that moved funds correctly is never called a failure.
-        self.assertIn("so the elector accepted the bid", source)
+        sample = source[source.index("# Sampled before anything is sent"):
+                        source.index("declare -i New_Trans_Qty=0")]
+        start = source.index("if ! $Elector_Readable;then")
+        verdict = source[start: source.index('if Await_Effect "The bid in elections', start)]
+        sent = "2000000000" if mode == "nominator" else "50000000000"
+        with tempfile.TemporaryDirectory() as directory:
+            program = f"""source "{KIT / 'managed_ops.shinc'}"
+STAKE_MODE={mode} NOMINATOR_ADDR=-1:pool Validator_addr=-1:wallet elections_id=1
+Validator_Acc_Balance_nT=100000000000 Nominator_Balance_nT=100000000000
+Nominator_Stake_nT=50000000000 NANOSTAKE={sent}
+Elector_Readable=false Bid_Deadline=0 LC_Send_MSG_Timeout=1 CURR_ELECTIONS_DIR={directory}
+Get_Account_Info() {{ echo "Active {balance_after} 1"; }}
+Send_msg_toTelBot() {{ :; }}
+echoerr() {{ :; }}
+{sample}
+{verdict}"""
+            return subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+
+    def test_the_verdict_falls_back_to_what_the_money_did(self):
+        """The review's case: a nominator whose stake never left the contract.
+        A stake that left is reported, as unconfirmed, never as a failure."""
+        for mode in ("nominator", "msig"):
+            with self.subTest(mode=mode):
+                kept = self.money_verdict(mode, 100000000000)
+                self.assertEqual(kept.returncode, 1, kept.stdout)
+                self.assertIn("is still in", kept.stdout)
+                # Less the stake, plus the token the elector sends back with its confirmation.
+                left = self.money_verdict(mode, 51000000000)
+                self.assertEqual(left.returncode, 0, left.stdout)
+                self.assertIn("left -1:", left.stdout)
+                self.assertIn("is not confirmed", left.stdout)
 
     def test_the_two_unreadable_causes_are_reported_differently(self):
         search = (KIT / "functions.shinc").read_text()

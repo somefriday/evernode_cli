@@ -623,10 +623,11 @@ esac
 #####################################################################################################
 # Sampled before anything is sent, so an unreadable elector can still be
 # answered by what the money did. Read for every mode, used only when needed.
-declare -i Staking_Balance_Before=0
+# Staking_Amount is the stake itself: a nominator's wallet sends only the fee.
+declare -i Staking_Balance_Before=0 Staking_Amount=0
 case "$STAKE_MODE" in
-    msig)      Staking_Balance_Before=$Validator_Acc_Balance_nT ;;
-    nominator) Staking_Balance_Before=$Nominator_Balance_nT ;;
+    msig)      Staking_Balance_Before=$Validator_Acc_Balance_nT; Staking_Amount=$NANOSTAKE ;;
+    nominator) Staking_Balance_Before=$Nominator_Balance_nT; Staking_Amount=$Nominator_Stake_nT ;;
 esac
 declare -i New_Trans_Qty=0
 # ===============================================================
@@ -748,12 +749,10 @@ if ! Bid_ADNL=$(Get_Engine_ADNL_For_Election "$elections_id");then
         | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     exit 1
 fi
-# When the elector's list cannot be read, the registration itself cannot be
-# confirmed - but the money can. The stake leaves the staking account only if
-# the elector accepted it: a refused stake is returned straight away. So the
-# verdict becomes "it left and stayed gone", which is weaker evidence than the
-# participant list and far stronger than nothing. A bid that moved funds
-# correctly must never be reported as a failure.
+# When the elector's list cannot be read, the registration cannot be confirmed,
+# but the money can be followed. A stake still in the staking account was not
+# taken, which is a failure. A stake that left was most likely accepted, but a
+# refused one comes back a few blocks later, so that is reported as unconfirmed.
 if ! $Elector_Readable;then
     Staking_Account=""
     case "$STAKE_MODE" in
@@ -770,11 +769,12 @@ if ! $Elector_Readable;then
         echo "================================================================================================"
         exit 0
     fi
-    declare -i Stake_Gone_Below=$(( Staking_Balance_Before - NANOSTAKE + 2000000000 ))
+    # The slack covers the token the elector sends back with its confirmation.
+    declare -i Stake_Gone_Below=$(( Staking_Balance_Before - Staking_Amount + 2000000000 ))
     if Await_Effect "The stake leaving ${Staking_Account}" "$Bid_Deadline" \
             "$LC_Send_MSG_Timeout" Effect_Account_Balance_At_Most \
             "$Staking_Account" "$Stake_Gone_Below";then
-        echo "+++-INFO: The stake of $(( NANOSTAKE / 1000000000 )) tokens left ${Staking_Account} and was not returned, so the elector accepted the bid in elections $elections_id. Its participant list could not be read to confirm the registration itself." \
+        echo "+++-WARNING: The stake of $(( Staking_Amount / 1000000000 )) tokens left ${Staking_Account}, but the elector's participant list cannot be read, so its acceptance in elections $elections_id is not confirmed. Check the elector before assuming the round was won or missed." \
             | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
         echo
         echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"

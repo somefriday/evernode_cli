@@ -5,11 +5,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from evernode import configuration, docker, elections, nodes, process, storage
+from evernode import configuration, docker, elections, images, nodes, process, storage
 from evernode.cli import handle_node_local_sync, select_node_names, main
 from evernode.arguments import build_argument_parser
 
@@ -415,6 +416,40 @@ class LocalSyncTests(unittest.TestCase):
         )
         self.assertEqual(starts, ["source", "target", "target"])
 
+    def test_an_interrupt_while_the_old_database_is_removed_keeps_the_copy(self):
+        """The target already runs on the copy, so only the old database is left."""
+        stopped = []
+
+        def copy_database(command, **_kwargs):
+            shutil.copytree(
+                Path(str(command[-2]).rstrip("/")),
+                Path(str(command[-1]).rstrip("/")),
+                ignore=shutil.ignore_patterns("catchains"),
+            )
+
+        def remove(path):
+            if path.name.endswith(".backup"):
+                (path / "state").unlink()  # cut short part-way through
+                raise KeyboardInterrupt
+
+        with (
+            patch("evernode.nodes.fetch_node_statistics", side_effect=self._statistics),
+            patch(
+                "evernode.nodes.stop_node",
+                side_effect=lambda config, *_, **__: stopped.append(config["name"]),
+            ),
+            patch("evernode.nodes.start_node"),
+            patch("evernode.nodes.process.execute_command", side_effect=copy_database),
+            patch("evernode.nodes._remove_directory", side_effect=remove),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                nodes.local_sync(self.store, "source", "target")
+
+        target_dir = self.store.node_directory("target")
+        self.assertEqual((target_dir / "node_db/state").read_text(), "source-state")
+        self.assertEqual(stopped, ["target", "source"])
+        self.assertTrue((target_dir / "lsync.json").exists())
+
     def _interrupt(self, *, stop=None, copy=None):
         """Run local sync with these side effects; return the nodes started again."""
         started = []
@@ -735,6 +770,57 @@ class ElectionRunMaintenanceTests(unittest.TestCase):
                     with self.assertRaisesRegex(process.OperationError, "election lock"):
                         run()
         stop.assert_not_called()
+
+
+class ImageUpdateTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+        (self.store.root / "nodes").mkdir(mode=0o700)
+        self.store.node_directory("validator01").mkdir(mode=0o700)
+        (self.store.node_directory("validator01") / "elections").mkdir(mode=0o700)
+        self.store.save_node_config(
+            make_node_configuration("validator01", initialized=True, phase="console-ready")
+        )
+
+    def test_an_image_remove_while_the_node_stops_cannot_take_the_replacement(self):
+        """The review's case: removal used to succeed here, and the node was left
+        stopped with a missing image configured."""
+        replacement = {"image": "local/ever-node:new", "image_id": "sha256:" + "b" * 64, "key": "c" * 64}
+        record = images.image_record_path(self.store, replacement["key"])
+        record.parent.mkdir(parents=True)
+        record.write_text("{}")
+        outcome = []
+
+        def remove_while_stopping(*_args, **_kwargs):
+            try:
+                images.remove_managed_image(self.store, replacement["image"])
+                outcome.append("removed")
+            except process.OperationError as exc:
+                outcome.append(str(exc))
+
+        with (
+            patch("evernode.nodes.image_maintenance_blockers", return_value=[]),
+            patch("evernode.images.find_image_record", return_value=replacement),
+            patch("evernode.process.execute_command",
+                  return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch("evernode.nodes.stop_node", side_effect=remove_while_stopping),
+            patch("evernode.nodes.start_node"),
+            patch("evernode.nodes.fetch_node_statistics", return_value={}),
+            patch("evernode.nodes.is_node_synchronized", return_value=True),
+            patch("evernode.nodes.time.sleep"),
+        ):
+            nodes.update_node_image(self.store, "validator01", replacement)
+
+        self.assertEqual(outcome, ["Image is referenced by: validator01"])
+        self.assertTrue(record.exists())
+        self.assertEqual(
+            self.store.load_node_config("validator01")["image_id"], replacement["image_id"]
+        )
 
 
 class LogComponentTests(unittest.TestCase):
