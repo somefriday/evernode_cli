@@ -25,6 +25,7 @@ Sends the stake, signs it with the local custodian keys and waits until the DePo
 - The stake joins the round that is collecting now, and stays locked until that round completes.
 - The Safe must hold the amount plus fees.
 - Refused while a scheduled election run holds the node's lock; try again when it finishes.
+- Refused, with a red alarm, while one of the DePool's proxies is frozen: send the proxy its original state with the tokens it owes, then run the command again.
 
 ## See also
 

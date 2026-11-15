@@ -140,7 +140,7 @@ def _review_transaction(store, config, args):
         # A DePool that cannot be read is one more reason --force exists.
         if not args.force:
             raise
-        whose = None
+        whose = "could not be checked"
     if whose is None and not args.force:
         raise process.OperationError(
             f"Transaction {wanted} sends to {dest}, which is not one of {name}'s own "

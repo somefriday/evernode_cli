@@ -49,6 +49,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 | [ELECT-5](#elect-5)   | A failed preparation stops a DePool run, not a solo run.              |
 | [ELECT-6](#elect-6)   | No bid beside a pending transaction.                                  |
 | [ELECT-7](#elect-7)   | A proxy is funded before it can freeze.                               |
+| [ELECT-8](#elect-8)   | No stake moves while a proxy is frozen.                               |
 | [VOTE-1](#vote-1)     | Managed nodes vote only through `vote join`.                          |
 | [VOTE-2](#vote-2)     | A payment is asked about first.                                       |
 | [VOTE-3](#vote-3)     | One vote pass at a time.                                              |
@@ -656,17 +657,38 @@ The run these rules belong to is in [elections.md](elections.md).
 
 - **Rule.** DePool preparation tops up a proxy whose balance, less its storage owed, is under
   1.92 tokens. Storage owed is counted at 0.1 token a day since the proxy's last transaction. The
-  top-up is 5 tokens plus any debt beyond the balance. A frozen proxy raises an alert and is not
-  topped up.
+  top-up is 5 tokens plus the storage owed in whole tokens, in a transfer that does not bounce. It
+  is done when the proxy's balance is at least the old one plus 4 tokens.
 - **Why.** A frozen proxy can neither carry a stake to the elector nor bring one back. Its balance
   is as of its last transaction, so a proxy idle for weeks can owe more than it shows, and the
-  next small message then freezes it.
+  next small message then freezes it. A transfer that bounces is credited only after the proxy
+  pays its storage, so a proxy that owes more than it holds freezes before the tokens arrive.
 - **Enforced by.** The proxy loop in `prepare_elections.sh`; `Proxy_Storage_Owed` and
   `top_app_account` in `functions.shinc`.
 - **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`.
 
-On mainnet a proxy's storage costs about 0.042 token a day. A proxy that is already frozen is
-not unfrozen: that needs its state sent again by hand.
+On mainnet a proxy's storage costs about 0.042 token a day, less than the 0.1 token counted, so a
+top-up that arrived shows the 4 tokens. Whole tokens keep the amount the same from one run to the
+next, which is how a run finds the top-up an earlier run left pending ([OP-5](#op-5)).
+
+### ELECT-8
+
+**No stake moves while a proxy is frozen.**
+
+- **Rule.** While one of the DePool's proxies is frozen, DePool preparation ends with status 1
+  before the tick, and evernode refuses `election start`, `depool stake-initial`, `depool stake`
+  and `depool withdraw`. Each stop shows an alarm, in red on a terminal, that names the proxy and
+  says to restore its state; preparation also sends an alert.
+- **Why.** The DePool sends each round's stake to the elector, and recovers it, through its
+  proxies. While one is frozen, a stake the DePool sends through it comes back, and a stake at the
+  elector stays there until the proxy's state is restored.
+- **Enforced by.** The proxy loop in `prepare_elections.sh`; `wallets.require_live_proxies`,
+  called by `wallets.depool_stake_initial`, `wallets.depool_stake`, `wallets.depool_withdraw`
+  and, for `election start`, by `cli.main`.
+- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_depool_commands.py`.
+
+evernode does not restore a frozen proxy: that needs the proxy's original state sent to it with
+the tokens it owes. `depool replenish`, `depool confirm` and the reports still run.
 
 ## Votes
 

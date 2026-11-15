@@ -65,7 +65,7 @@ Complete_And_Await "$1" 0:wallet validator01 "The DePool top-up" Effect_Ok
         self.assertNotIn("FUNCNAME", PREPARE)
 
     def proxies(self, proxy0, proxy1):
-        """Run the script's own proxy check; return its top-ups and alerts."""
+        """Run the script's own proxy check; return how it ended, its top-ups and alerts."""
         functions = (SCRIPTS / "functions.shinc").read_text()
         start = functions.index("function Proxy_Storage_Owed() {")
         owed = functions[start: functions.index("\n}\n", start) + 3]
@@ -83,6 +83,7 @@ Send_msg_toTelBot() {{ echo "alert $2" >> {directory}/alerts; }}
         result = bash(program, PROXY0=proxy0, PROXY1=proxy1)
         alerts = Path(directory, "alerts")
         return (
+            result,
             [line for line in result.stdout.splitlines() if line.startswith("top-up")],
             alerts.read_text().splitlines() if alerts.exists() else [],
         )
@@ -91,16 +92,25 @@ Send_msg_toTelBot() {{ echo "alert $2" >> {directory}/alerts; }}
         """A balance is as of the last transaction; storage owed since is taken
         at the next one, and in the masterchain owing over 0.1 token freezes it."""
         now, day = int(__import__("time").time()), 86400
-        top_ups, _ = self.proxies(f"Active 3000000000 {now}", f"Active 3000000000 {now - 30 * day}")
+        _, top_ups, _ = self.proxies(f"Active 3000000000 {now}", f"Active 3000000000 {now - 30 * day}")
         self.assertEqual(top_ups, ["top-up -1:p1 5000000000"], "only the one idle for 30 days")
-        # one that owes more than it holds gets that covered too
-        top_ups, _ = self.proxies(f"Active 1000000000 {now - 60 * day}", f"Active 3000000000 {now}")
-        self.assertEqual(top_ups, ["top-up -1:p0 10000000000"])
+        # one that owes more than it holds as well: top_app_account adds what it owes
+        _, top_ups, _ = self.proxies(f"Active 1000000000 {now - 60 * day}", f"Active 3000000000 {now}")
+        self.assertEqual(top_ups, ["top-up -1:p0 5000000000"])
 
-    def test_a_frozen_proxy_raises_an_alert_and_an_unreadable_one_is_left_alone(self):
+    def test_an_unreadable_proxy_is_left_alone(self):
         now = int(__import__("time").time())
-        top_ups, alerts = self.proxies(f"Frozen 3000000000 {now}", "None 0 0")
-        self.assertEqual(top_ups, [])
+        result, top_ups, alerts = self.proxies("None 0 0", f"Active 3000000000 {now}")
+        self.assertEqual((result.returncode, top_ups, alerts), (0, [], []))
+
+    def test_a_frozen_proxy_stops_the_run_with_an_alarm(self):
+        """No tick, so no bid: no stake goes through it until its state is restored."""
+        now = int(__import__("time").time())
+        result, top_ups, alerts = self.proxies(f"Frozen 3000000000 {now}", f"Active 1000000000 {now}")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(top_ups, [], "the run stops before the other proxy too")
+        self.assertIn("PROXY 0 OF THE DEPOOL IS FROZEN:\n!!! -1:p0", result.stdout)
+        self.assertIn("can be lost", result.stdout)
         self.assertEqual(len(alerts), 1)
         self.assertIn("Proxy0 -1:p0 is frozen", alerts[0])
 

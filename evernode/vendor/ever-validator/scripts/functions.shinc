@@ -1250,8 +1250,13 @@ function Proxy_Storage_Owed() {
     echo $(( since * 100000000 / 86400 ))
 }
 #=================================================
-# top_app_account - send tokens to account. Mostly for use in prepare_elcetions.sh to topup Tik and proxy accounts
-# Input: account address, amount to topup, validator address
+# top_app_account - top up one of the DePool's proxies from the validator's Safe.
+# The transfer also carries the storage the proxy owes, in whole tokens, so the
+# proxy gains about TopUpSum: a balance above the old one plus TopUpSum less a
+# token proves the transfer arrived, however long the proxy was idle. Whole
+# tokens keep the amount the same across runs, so a later run still recognises
+# its own pending transfer (OP-5).
+# Input: account address, what it is to gain (nanotokens), validator address
 # Output: 0 once the account's balance shows the top-up
 function top_app_account () {
     local Account_Addr="$1"
@@ -1265,20 +1270,29 @@ function top_app_account () {
     local Acc_Paid=$(echo "$Acc_Info" | awk '{print $3}')
         [[ "$Acc_Status" == "None" ]] && log_error_stack "Account does not exist! (no tokens, no code, nothing" && return 1
     [[ "$Acc_Status" == "Uninit" ]] && log_error_stack "Account Uninited" && return 1
+    local Owed=$(Proxy_Storage_Owed "$Acc_Paid")
+    local Amount=$(( TopUpSum + Owed / 1000000000 * 1000000000 ))
     # Submit_And_Identify and Complete_And_Await read it as well.
     local Custodians Required_Signs
     Custodians=$(Get_Account_Custodians_Info "$Validator_addr") || return 1
     read -r _ Required_Signs <<< "$Custodians"
     # -------------------------------------------
-    # Make BOC file to send
+    # Make BOC file to send. It does not bounce: the chain then credits the value
+    # before it takes the storage owed, so even a proxy that owes more than it
+    # holds is paid up. A bouncing transfer is charged the storage first, which
+    # would freeze such a proxy and send the value back (ever-executor:
+    # credit_first is !bounce).
     local TOPUP_BOC_File="${ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
     local INPL_TOPUP_BOC_File="${INPL_ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
     rm -f "${TOPUP_BOC_File}"
-    local TC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_TOPUP_BOC_File}" \
+    # Declared apart from its value: inside "local X=$(...)" bash 3.2 brace-expands
+    # the JSON below.
+    local TC_OUTPUT
+    TC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_TOPUP_BOC_File}" \
     --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
     --abi "${INPL_SafeC_Wallet_ABI}" \
     "${Validator_addr}" submitTransaction \
-    "{\"dest\":\"${Account_Addr}\",\"value\":$((TopUpSum)),\"bounce\":true,\"allBalance\":false,\"payload\":\"\"}" \
+    "{\"dest\":\"${Account_Addr}\",\"value\":$((Amount)),\"bounce\":false,\"allBalance\":false,\"payload\":\"\"}" \
     --lifetime "$MSG_LIFETIME")"
     if echo "$TC_OUTPUT" | grep -iq 'error';then
         log_error_stack "Error while make topup message boc : ${TC_OUTPUT}"
@@ -1301,19 +1315,18 @@ function top_app_account () {
     local Empty_Body="te6ccgEBAQEAAgAAAA=="     # how the wallet records a transfer without a body
     local Trans_ID=""
     if [[ $Required_Signs -gt 1 ]];then
-        Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Account_Addr" "$TopUpSum" \
-            "$Empty_Body" "$Key_File") || return 1
+        Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Account_Addr" "$Amount" \
+            "$Empty_Body" "$Key_File" "" false) || return 1
     fi
     if [[ -z $Trans_ID ]];then
         Trans_ID=$(Submit_And_Identify "$Validator_addr" "$Account_Addr" "$INPL_TOPUP_BOC_File" \
-            "$TopUpSum" "$Empty_Body" "$Key_File") || return 1
+            "$Amount" "$Empty_Body" "$Key_File" false) || return 1
     fi
-    # Signed through, then confirmed by the account's own balance. The storage it
-    # owes is taken from the transfer first, and the token of slack covers what
-    # it pays to receive it.
+    # Signed through, then confirmed by the account's own balance: the gain, less
+    # a token of slack for what the proxy pays to receive it. It is above the
+    # balance shown now, so a transfer that never arrived cannot pass.
     Complete_And_Await "$Trans_ID" "$Validator_addr" "$VALIDATOR_NAME" "The top-up of ${Account_Addr}" \
-        Effect_Account_Balance_At_Least "$Account_Addr" \
-        "$(( Acc_Balance - $(Proxy_Storage_Owed "$Acc_Paid") + TopUpSum - 1000000000 ))"
+        Effect_Account_Balance_At_Least "$Account_Addr" "$(( Acc_Balance + TopUpSum - 1000000000 ))"
 } # top_app_account
 #=================================================
 # Send message to Telegram bot

@@ -38,6 +38,7 @@ def operational_node(stage="ready-for-elections", name="validator01"):
 
 
 DEPOOL = "0:" + "b" * 64  # operational_node's DePool
+PROXIES = ["0:" + "c" * 64, "0:" + "d" * 64]  # what the_safe_holds reads as its proxies
 
 
 def pending_entry(id_, dest=DEPOOL, value="5000000000"):
@@ -45,10 +46,10 @@ def pending_entry(id_, dest=DEPOOL, value="5000000000"):
 
 
 @contextlib.contextmanager
-def the_safe_holds(pending=None, depool=None):
-    """What a confirmation reads before it asks: the Safe's pending list, the
-    elector and config contract, and the DePool's proxies (DEPOOL: what reading
-    the DePool raises instead)."""
+def the_safe_holds(pending=None, depool=None, frozen=()):
+    """What a command reads from the chain: the Safe's pending list, the
+    elector and config contract, the DePool's proxies (DEPOOL: what reading
+    the DePool raises instead) and each proxy's state (FROZEN: those frozen)."""
     if pending is None:
         pending = [pending_entry("7701911356660055489"), pending_entry("42")]
     with (
@@ -56,14 +57,15 @@ def the_safe_holds(pending=None, depool=None):
               return_value={"pending_transactions": pending}),
         patch("evernode.setup_actions.nodes.fetch_special_address",
               side_effect=lambda _, number: "-1:" + ("3" if number == 1 else "5") * 64),
-        patch("evernode.setup_actions.scripts.read_depool_state",
-              return_value={"proxies": ["0:" + "c" * 64, "0:" + "d" * 64]},
-              side_effect=depool),
+        patch("evernode.scripts.read_depool_state",
+              return_value={"proxies": PROXIES}, side_effect=depool),
+        patch("evernode.scripts.read_account_status",
+              side_effect=lambda _store, _config, address: "Frozen" if address in frozen else "Active"),
     ):
         yield
 
 class WithdrawalCommandTests(unittest.TestCase):
-    def run_command(self, *argv, stage="ready-for-elections", pending=None, depool=None):
+    def run_command(self, *argv, stage="ready-for-elections", pending=None, depool=None, frozen=()):
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
@@ -72,7 +74,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                                 "timediff": 1, "shards_timediff": 1}),
             patch("evernode.scripts.execute_validator_script") as script,
             patch("evernode.setup_actions.elections.hold_election_lock"),
-            the_safe_holds(pending, depool),
+            the_safe_holds(pending, depool, frozen),
             contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
@@ -203,6 +205,55 @@ class WithdrawalCommandTests(unittest.TestCase):
                 self.assertEqual(code, expected)
                 self.assertEqual(script.called, expected == 0)
 
+    def test_with_force_an_unreadable_depool_is_shown_as_unchecked(self):
+        questions = []
+        with patch("evernode.setup_actions.ui.confirm_operation",
+                   side_effect=lambda _, question: questions.append(question)):
+            self.run_command("depool", "confirm", "-n", "validator01", "--transaction-id", "42",
+                             "--force", depool=process.OperationError("the DePool did not answer"))
+        self.assertIn("(could not be checked)", questions[0])
+
+    def test_a_frozen_proxy_refuses_the_depools_stake_operations_with_an_alarm(self):
+        """No stake goes through a frozen proxy until its state is restored; a
+        replenishment moves no stake and still goes ahead."""
+        for argv, stage in (
+            (("depool", "stake", "--amount", "10"), "ready-for-elections"),
+            (("depool", "withdraw", "--all"), "ready-for-elections"),
+            (("depool", "stake-initial"), "depool-deployed"),
+        ):
+            with self.subTest(command=" ".join(argv)):
+                code, script, text = self.run_command(
+                    *argv, "-n", "validator01", "--yes", stage=stage, frozen=PROXIES[1:]
+                )
+                self.assertEqual(code, 1)
+                script.assert_not_called()
+                self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
+                self.assertIn("can be lost", text)
+                self.assertIn(f"Proxy 1 of validator01's DePool ({PROXIES[1]}) is frozen", text)
+        code, script, _ = self.run_command(
+            "depool", "replenish", "-n", "validator01", "--amount", "10", "--yes", frozen=PROXIES
+        )
+        self.assertEqual(code, 0)
+        script.assert_called_once()
+
+    def test_a_frozen_proxy_refuses_the_election_schedule_with_an_alarm(self):
+        with (
+            patch("evernode.cli.require_root_privileges"),
+            patch("evernode.cli.storage.NodeStateStore") as store,
+            patch("evernode.cli.nodes.fetch_node_statistics",
+                  return_value={"sync_status": "synchronization_finished",
+                                "timediff": 1, "shards_timediff": 1}),
+            patch("evernode.cli.elections.enable_node_election_schedule") as enable,
+            the_safe_holds(frozen=PROXIES[:1]),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            store.return_value.load_node_config.return_value = operational_node()
+            code = cli.main(["election", "start", "-n", "validator01", "--yes"])
+        self.assertEqual(code, 1)
+        enable.assert_not_called()
+        self.assertIn("PROXY 0 OF THE DEPOOL IS FROZEN", errors.getvalue())
+
     def test_a_transaction_the_safe_does_not_hold_is_refused(self):
         code, script, text = self.run_command(
             "depool", "confirm", "-n", "validator01", "--transaction-id", "99", "--yes"
@@ -263,6 +314,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                     patch("evernode.setup_actions.elections.hold_election_lock"),
                     patch("evernode.setup_actions.ui.confirm_operation",
                           side_effect=lambda _, question: questions.append(question)),
+                    the_safe_holds(),
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     store.return_value.load_node_config.return_value = operational_node()

@@ -964,6 +964,9 @@ class FocusedFeatureTests(unittest.TestCase):
             # Checking a deployed Safe's custodians is covered separately.
             "evernode.wallets.require_own_safe"
         ), patch(
+            # Checking the DePool's proxies is covered separately (ELECT-8).
+            "evernode.wallets.require_live_proxies"
+        ), patch(
             # Waiting for a deployed contract to appear is covered separately.
             "evernode.wallets.scripts.wait_for_active_account"
         ) as awaited, patch(

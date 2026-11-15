@@ -26,6 +26,7 @@ from . import (
     storage,
     ui,
     voting,
+    wallets,
 )
 
 
@@ -360,6 +361,8 @@ def main(argv=None):
                     )
                 if behind:
                     print(f"Warning: {nodes.late_clock(behind)}", file=sys.stderr)
+                if configuration.validator_type(config) == "depool":
+                    wallets.require_live_proxies(store, config)
                 if args.dry_run:
                     ui.print_json_result({"enable_managed_schedule": name})
                 else:

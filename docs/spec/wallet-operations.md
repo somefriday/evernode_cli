@@ -127,7 +127,7 @@ true.
 | Withdraw all                           | The DePool's reinvest flag for the Safe is off.                        |
 | Cancel a withdrawal                    | No withdrawal is recorded and the reinvest flag is on.                 |
 | Replenish the DePool                   | The DePool's own balance is at least the old one plus the amount, less the fee. |
-| Top up a proxy                         | The proxy's balance is at least the old one, less its storage owed, plus the top-up, less 1 token. |
+| Top up a proxy                         | The proxy's balance is at least the old one plus 4 tokens ([ELECT-7](properties.md#elect-7)). |
 | Recover a stake                        | The staking account's balance is at least the old one plus the stake, less the value sent and 1 token. |
 | Fund the nominator deployer            | The deployer's balance is at least the deploy value.                   |
 | Tick the DePool                        | One of the DePool's rounds carries the election's id.                  |

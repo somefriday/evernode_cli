@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import configuration, process, scripts, storage
+from . import configuration, process, scripts, storage, ui
 
 ADDRESS_PATTERN = re.compile(r"^-?[0-9]+:[0-9a-fA-F]{64}$")
 
@@ -626,9 +626,34 @@ def require_constructed_depool(store, config, profile):
         )
 
 
+def require_live_proxies(store, config):
+    """Refuse, with an alarm, while one of the DePool's proxies is frozen: the
+    DePool sends each round's stake to the elector, and recovers it, through
+    them. Checked before a stake moves in or out, and before elections (ELECT-8)."""
+    profile = node_wallet_profile(config)
+    state = scripts.read_depool_state(
+        store, config, profile["depool_address"], profile["wallet_address"]
+    )
+    for index, proxy in enumerate(state.get("proxies") or []):
+        if scripts.read_account_status(store, config, proxy) == "Frozen":
+            ui.alarm([
+                f"PROXY {index} OF THE DEPOOL IS FROZEN:",
+                proxy,
+                "The DePool can neither send a stake through it nor recover one.",
+                "Restore it now: send the proxy its original state (StateInit) with",
+                "tokens to pay its storage debt. While it stays frozen, the stake",
+                "that goes through it is stuck and can be lost.",
+                "evernode refuses elections and DePool stake operations until then.",
+            ])
+            raise process.OperationError(
+                f"Proxy {index} of {config['name']}'s DePool ({proxy}) is frozen; restore it first"
+            )
+
+
 def depool_stake_initial(store, config):
     require_validator_type(config, "depool", "stake")
     _require_stage(config, "new", "depool-deployed")
+    require_live_proxies(store, config)
     assurance = str(config.get("settings", {}).get("ValidatorAssuranceT", 50000))
     scripts.execute_validator_script(
         store,
@@ -694,6 +719,7 @@ def depool_stake(store, config, *, amount):
     profile = _require_operational_depool(config)
     if amount < 1:
         raise process.OperationError("Stake amount must be at least one token")
+    require_live_proxies(store, config)
     scripts.execute_validator_script(
         store,
         config,
@@ -783,6 +809,7 @@ def depool_withdraw(store, config, *, amount=None, withdraw_all=False, cancel=Fa
         raise process.OperationError("Choose exactly one of --amount, --all, --cancel")
     if amount is not None and amount < 1:
         raise process.OperationError("Withdrawal amount must be at least one token")
+    require_live_proxies(store, config)
     if withdraw_all:
         operation, extra = "WD-all", ()
     elif cancel:

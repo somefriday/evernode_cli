@@ -434,18 +434,30 @@ fi
 
 #=================================================
 # Keep both proxies funded. Each carries a stake to the elector and brings it
-# back, and a frozen one can do neither: the stake stays at the elector until
-# the proxy is unfrozen. A balance is as of the proxy's last transaction, and
-# the storage owed since is taken at its next one, so that is subtracted first.
+# back, and a frozen one can do neither, so it stops the run. A balance is as of
+# the proxy's last transaction, and the storage owed since is taken at its next
+# one, so that is subtracted first.
 for Proxy_Index in 0 1; do
     Proxy_Var="dp_proxy${Proxy_Index}"
     Proxy_Addr="${!Proxy_Var}"
     read -r Proxy_Status Proxy_Bal Proxy_Paid <<< "$(Get_Account_Info "$Proxy_Addr")"
+    # A frozen proxy stops the run here, before the tick and so before the bid
+    # (ELECT-8): no stake goes through it until its state is restored.
     if [[ $Proxy_Status == "Frozen" ]];then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen, so the DePool can neither send nor recover a stake through it until it is unfrozen." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        printf "%b\n" "${BoldText}${RedBack}"
+        printf '!!! %s\n' \
+            "PROXY ${Proxy_Index} OF THE DEPOOL IS FROZEN:" \
+            "${Proxy_Addr}" \
+            "The DePool can neither send a stake through it nor recover one." \
+            "Restore it now: send the proxy its original state (StateInit) with" \
+            "tokens to pay its storage debt. While it stays frozen, the stake" \
+            "that goes through it is stuck and can be lost." \
+            "Elections for this node stop until then."
+        printf "%b\n" "${NormText}"
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen; restore it before elections continue." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_SOS_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen." > /dev/null 2>&1
-        continue
+            "${Tg_SOS_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen; elections stopped until it is restored." > /dev/null 2>&1
+        exit 1
     fi
     # Only a proxy that reads as Active is topped up: one that could not be read
     # shows a balance of 0, which says nothing about what it holds.
@@ -456,14 +468,12 @@ for Proxy_Index in 0 1; do
     Proxy_Bal=$(( Proxy_Bal - $(Proxy_Storage_Owed "$Proxy_Paid") ))
     echo "---INFO(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} holds $(awk '{print $1/1000000000}' <<< "$Proxy_Bal") tokens once it pays the storage it owes"
     [[ $Proxy_Bal -lt $TOPUP_THRESHOLD ]] || continue
-    # Five tokens, and whatever it owes beyond its balance: a transfer that left
-    # it owing over 0.1 token would freeze it.
-    Proxy_Topup=$(( 5 * 1000000000 + (Proxy_Bal < 0 ? -Proxy_Bal : 0) ))
-    Proxy_Note="Proxy${Proxy_Index} holds less than $(awk '{print $1/1000000000}' <<< "$TOPUP_THRESHOLD") tokens; topping it up with $(awk '{print $1/1000000000}' <<< "$Proxy_Topup") tokens from ${VALIDATOR_NAME} account"
+    # top_app_account adds the storage it owes to the five tokens it gains.
+    Proxy_Note="Proxy${Proxy_Index} holds less than $(awk '{print $1/1000000000}' <<< "$TOPUP_THRESHOLD") tokens; topping it up with 5 tokens plus the storage it owes from ${VALIDATOR_NAME} account"
     echo "+++-WARNING(${SelfScriptName} line $LINENO): ${Proxy_Note}" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
         "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): ${Proxy_Note}" > /dev/null 2>&1
-    top_app_account "$Proxy_Addr" "$Proxy_Topup" "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy${Proxy_Index}_topup.log"
+    top_app_account "$Proxy_Addr" $((5 * 1000000000)) "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy${Proxy_Index}_topup.log"
     if [[ ${PIPESTATUS[0]} -ne 0 ]];then
         echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \

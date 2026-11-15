@@ -10,6 +10,17 @@ def print_json_result(value):
     print(json.dumps(value, indent=2))
 
 
+def alarm(lines):
+    """A problem the operator must not miss: a framed block on stderr, in bold
+    white on red when stderr is a terminal."""
+    width = max(len(line) for line in lines)
+    bar = "!" * (width + 4)
+    block = "\n".join([bar, *(f"! {line.ljust(width)} !" for line in lines), bar])
+    if sys.stderr.isatty():
+        block = f"\033[1;97;41m{block}\033[0m"
+    print(f"\n{block}\n", file=sys.stderr)
+
+
 def prompt_for_value(value, label, default=None):
     if value is not None:
         return value

@@ -253,11 +253,12 @@ Command: [`depool stake-initial`](../depool/stake-initial.md). Code:
 **Requires**
 
 - Stage `depool-deployed`.
+- No frozen proxy ([ELECT-8](properties.md#elect-8)).
 - The Safe holds at least the validator assurance plus 1 token.
 
 **Logic**
 
-1. Take the election lock.
+1. Take the election lock and check the proxies.
 2. Run the ordinary-stake operation for the validator assurance
    ([staking.md](staking.md#depool-operations)), marked as the initial stake.
 3. Marked so, the operation transfers nothing if the Safe's stake in the DePool is already at

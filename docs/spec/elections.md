@@ -26,6 +26,7 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
 - A role, and setup stage `imported` or `ready-for-elections`.
 - For a solo or nominator validator, a recorded stake.
 - A synchronized node. A server clock that is late but within 10 s is a warning.
+- For a DePool validator, no frozen proxy ([ELECT-8](properties.md#elect-8)).
 - No schedule installed yet.
 
 **Logic** of `election start`:
@@ -128,10 +129,12 @@ validator.
 ### Preparation, DePool
 
 8. For each proxy ([ELECT-7](properties.md#elect-7)):
-   - Frozen: log it and raise an alert. No top-up.
+   - Frozen: show the alarm, raise an alert and end with status 1, before the tick
+     ([ELECT-8](properties.md#elect-8)).
    - Not active, or not readable: log it. No top-up.
    - Active: subtract its storage owed from its balance. Under 1.92 tokens: send it 5 tokens plus
-     any debt beyond the balance from the Safe, and wait for its balance to show them.
+     the storage owed in whole tokens from the Safe, in a transfer that does not bounce, and wait
+     for its balance to show the old one plus 4 tokens.
 
    A top-up that fails is logged, and preparation goes on.
 9. Read the DePool's own balance (`getDePoolBalance`). If it is below the DePool's balance
