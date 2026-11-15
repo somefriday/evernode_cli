@@ -640,8 +640,9 @@ def proxy_alarm(index, proxy, status):
             "evernode refuses elections and stakes into the DePool until then.",
         ])
     else:
+        header = "IS UNINIT" if status == "Uninit" else "DOES NOT EXIST"
         ui.alarm([
-            f"PROXY {index} OF THE DEPOOL DOES NOT EXIST:",
+            f"PROXY {index} OF THE DEPOOL {header}:",
             proxy,
             "The chain deleted it, or it was never deployed. It cannot be rebuilt:",
             "only the DePool deploys its proxies, and only while it is deployed.",
@@ -672,7 +673,9 @@ def require_live_proxies(store, config):
             proxy_alarm(index, proxy, status)
             lost.append(
                 f"Proxy {index} of {config['name']}'s DePool ({proxy}) "
-                + ("is frozen; restore it first" if status == "Frozen" else "does not exist and cannot be rebuilt")
+                + ("is frozen; restore it first" if status == "Frozen"
+                   else "is uninit and cannot be rebuilt" if status == "Uninit"
+                   else "does not exist and cannot be rebuilt")
             )
     if lost:
         raise process.OperationError("; ".join(lost))

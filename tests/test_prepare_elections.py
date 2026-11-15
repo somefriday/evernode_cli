@@ -143,6 +143,14 @@ Send_msg_toTelBot() {{ echo "alert $2" >> {directory}/alerts; }}
         self.assertEqual(len(alerts), 1)
         self.assertIn("does not exist", alerts[0])
 
+    def test_an_uninit_proxy_is_named_by_its_state(self):
+        """It has no code either, but it is an account: not "does not exist"."""
+        now = int(__import__("time").time())
+        result, top_ups, alerts = self.proxies(f"Active 3000000000 {now}", "Uninit 1000000000 0")
+        self.assertEqual((result.returncode, top_ups), (1, []))
+        self.assertIn("PROXY 1 OF THE DEPOOL IS UNINIT:\n!!! -1:p1", result.stdout)
+        self.assertIn("is uninit and cannot be rebuilt", alerts[0])
+
     def test_a_frozen_proxy_gets_its_alarm_whatever_the_other_reads(self):
         now = int(__import__("time").time())
         result, top_ups, alerts = self.proxies("unread", f"Frozen 0 {now}")

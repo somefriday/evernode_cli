@@ -676,6 +676,14 @@ Submit_And_Identify 0:wallet 0:dest file 5 payload key
         self.assertEqual((result.returncode, looks), (1, 4))
         self.assertGreaterEqual(self.sleeps[-1], 68)
 
+    def test_a_last_look_that_cannot_read_the_wallet_is_no_verdict(self):
+        """The console out for that look says nothing about the submission:
+        it may have landed, and an operation run again would finish it."""
+        result, sends, looks = self.submit(["0:", "0:", "0:", "1:"])
+        self.assertEqual((result.returncode, sends, looks), (1, 3, 4))
+        self.assertIn("could not be read at the last look", result.stderr)
+        self.assertNotIn("never accepted", result.stderr)
+
     def test_a_submit_that_never_appears_is_reported_after_the_last_look(self):
         result, sends, looks = self.submit(["0:", "0:", "0:", "0:"])
         self.assertEqual((result.returncode, sends, looks), (1, 3, 4))

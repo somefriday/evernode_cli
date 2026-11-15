@@ -928,7 +928,7 @@ function Submit_And_Identify() {
     local PayLoad="$5"
     local Key_File="${6:-}"
     local Bounce="${7:-true}"
-    local attempt result identified=""
+    local attempt result identified="" answered=""
     local interval="${LC_Send_MSG_Timeout:-10}"
     # Anything already in the wallet when this attempt began belongs to an
     # earlier one. Sixty seconds of slack absorbs the difference between this
@@ -954,9 +954,11 @@ function Submit_And_Identify() {
         identified=$(Find_Matching_Pending_Trans "$MSIG_ADDR" "$Dest" "$Value" "$PayLoad" \
             "$Key_File" "$window_start" "$Bounce")
         case $? in
-            0) if [[ -n $identified ]];then printf "%s\n" "$identified"; return 0; fi ;;
+            0) if [[ -n $identified ]];then printf "%s\n" "$identified"; return 0; fi
+               answered=yes ;;
             2) return 1 ;;  # more than one entry matches: refused, never guessed
-        esac                # 1, the wallet could not be read: the next look decides
+            *) answered="" ;;  # the wallet could not be read: the next look decides
+        esac
         if [[ $attempt -lt 2 ]];then
             sleep "$interval"
         elif [[ $attempt -eq 2 ]];then
@@ -964,6 +966,11 @@ function Submit_And_Identify() {
             [[ $pause -gt 0 ]] && sleep "$pause"
         fi
     done
+    # Only a wallet read at the last look says the submission is not there.
+    if [[ -z $answered ]];then
+        echoerr "###-ERROR: wallet ${MSIG_ADDR} could not be read at the last look, so whether it accepted the submission to ${Dest} is unknown. Read its pending transactions with 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, before retrying: an operation run again finishes one it finds."
+        return 1
+    fi
     echoerr "###-ERROR: the submission to ${Dest} did not appear in wallet ${MSIG_ADDR}, so it was never accepted and nothing was signed. Nothing was transferred; the operation can be made again."
     return 1
 }

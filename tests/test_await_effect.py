@@ -164,7 +164,7 @@ class AwaitEffectTests(unittest.TestCase):
             '    [[ $(wc -l < "$count") -le 1 ]] && return 1\n'
             '    return 2\n'
             '}\n'
-            'Await_Effect "the stake" $(( $(date +%s) + 1 )) 1 silenced\n'
+            'Await_Effect "the stake" $(( $(date +%s) + 3 )) 1 silenced\n'
         )
         self.assertIn("state is unknown", result.stderr)
         self.assertNotIn("did not take effect", result.stderr)
@@ -178,7 +178,7 @@ class AwaitEffectTests(unittest.TestCase):
             '    [[ $(wc -l < "$count") -ge 2 ]] && return 1\n'
             '    return 2\n'
             '}\n'
-            'Await_Effect "the stake" $(( $(date +%s) + 1 )) 1 mixed\n'
+            'Await_Effect "the stake" $(( $(date +%s) + 3 )) 1 mixed\n'
         )
         self.assertIn("did not take effect", result.stderr)
 

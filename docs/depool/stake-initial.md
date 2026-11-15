@@ -22,7 +22,7 @@ Sends an ordinary stake of the configured validator assurance, signs it with the
 ## Behaviour
 
 - Needs stage `depool-deployed`; ends at `ready-for-elections`.
-- Refused while one of the DePool's proxies does not read as Active. A frozen or missing one gets a red alarm; a frozen one needs the state it had when it froze, its code and data, sent with the tokens it owes. Right after `depool deploy` a proxy may still be on its way: run the command again a minute later.
+- Refused while one of the DePool's proxies does not read as Active. A frozen one, or one without code (uninit or gone), gets a red alarm; a frozen one needs the state it had when it froze, its code and data, sent with the tokens it owes. Right after `depool deploy` a proxy may still be on its way: run the command again a minute later.
 - Safe to run again: a stake already in the DePool is not sent twice, and a half-signed one is finished.
 - One stake funds every other round. To validate every round, add a second one with `depool stake` while the next round is collecting.
 

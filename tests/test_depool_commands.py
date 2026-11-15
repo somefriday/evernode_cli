@@ -263,6 +263,14 @@ class WithdrawalCommandTests(unittest.TestCase):
         self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
         self.assertIn(f"Proxy 0 of validator01's DePool ({PROXIES[0]}) does not exist", text)
 
+    def test_an_uninit_proxy_is_named_by_its_state(self):
+        code, _, text = self.run_command(
+            "depool", "stake", "-n", "validator01", "--amount", "10", "--yes", proxies={PROXIES[1]: "Uninit"}
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("PROXY 1 OF THE DEPOOL IS UNINIT:", text)
+        self.assertIn(f"Proxy 1 of validator01's DePool ({PROXIES[1]}) is uninit", text)
+
     def test_right_after_the_depool_deploy_a_missing_proxy_is_still_on_its_way(self):
         code, script, text = self.run_command(
             "depool", "stake-initial", "-n", "validator01", "--yes",
@@ -499,13 +507,15 @@ class ElectionStateReportTests(unittest.TestCase):
             "2026-11-15 10:15:00 UTC skipped: another run or an evernode command holds this node's election lock\n"
             "=== 2026-11-15 10:30:00 UTC election run started\n"
             "\x1b[31;1m###-ERROR(prepare_elections.sh line 455): Proxy1 -1:p1 is frozen\x1b[0m\n"
+            "!!! PROXY 0 OF THE DEPOOL IS UNINIT:\n!!! -1:p0\n!!! The chain deleted it\n"
             "!!! PROXY 1 OF THE DEPOOL IS FROZEN:\n!!! -1:p1\n!!! The DePool can neither send\n"
             "=== 2026-11-15 10:31:00 UTC election run ended with status 1\n"
         )
         run = self.describe(enabled=True)["last_run"]
         self.assertEqual((run["started"], run["status"]), ("2026-11-15 10:30:00 UTC", 1))
         self.assertEqual(run["errors"], ["###-ERROR(prepare_elections.sh line 455): Proxy1 -1:p1 is frozen"])
-        self.assertEqual(run["proxies"], [{"index": 1, "address": "-1:p1", "status": "Frozen"}])
+        self.assertEqual(run["proxies"], [{"index": 0, "address": "-1:p0", "status": "Uninit"},
+                                          {"index": 1, "address": "-1:p1", "status": "Frozen"}])
 
     def test_a_log_without_a_marked_run_reports_none(self):
         self.assertIsNone(self.describe(enabled=True)["last_run"])

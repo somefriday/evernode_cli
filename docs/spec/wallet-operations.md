@@ -66,7 +66,9 @@ The first two are set in `env.sh`. The others are in `managed_ops.shinc`.
    4. Found: return its id. Two found: refuse. Not found: wait 10 s more and send the same
       message again. It is sent three times at most.
    5. Look one last time once the message's lifetime and 10 s more have passed since the first
-      send. It cannot execute after that, so "not found" is final: nothing was submitted.
+      send. It cannot execute after that, so "not found" is final: nothing was submitted. A last
+      look that cannot read the wallet decides nothing: the state is unknown, and an operation
+      run again finishes a submission it finds ([OP-8](properties.md#op-8)).
 5. **Sign** (`Sign_To_Execution`, [OP-6](properties.md#op-6)), with more than one signature
    required. Until the deadline:
    1. Read the pending entry by its id. A read that fails is repeated.

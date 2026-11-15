@@ -553,7 +553,7 @@ DePool operation while the Safe holds 5 or more pending transactions of all cust
   `functions.shinc`; `Sign_To_Execution`, `Submit_And_Identify` in `managed_ops.shinc`; the checks
   after each read in `prepare_elections.sh` and `take_part_in_elections.sh`.
 - **Checked by.** `tests/test_account_reads.py`, `tests/test_election_verdict.py`,
-  `tests/test_prepare_elections.py`.
+  `tests/test_prepare_elections.py`, `tests/test_depool_operations.py`.
 
 ### OP-9
 

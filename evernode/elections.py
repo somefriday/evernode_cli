@@ -49,7 +49,8 @@ RUN_MARKS = (
 )
 _RUN_START = re.compile(r"^=== (.+) election run started$")
 _RUN_END = re.compile(r"^=== (.+) election run ended with status (\d+)$")
-_PROXY_BANNER = re.compile(r"^!!! PROXY (\d) OF THE DEPOOL (IS FROZEN|DOES NOT EXIST):$")
+_PROXY_BANNER = re.compile(r"^!!! PROXY (\d) OF THE DEPOOL (IS FROZEN|IS UNINIT|DOES NOT EXIST):$")
+_BANNER_STATUS = {"IS FROZEN": "Frozen", "IS UNINIT": "Uninit", "DOES NOT EXIST": "Nonexist"}
 _COLOUR = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -290,7 +291,7 @@ def last_run(log):
             run["proxies"].append({
                 "index": int(banner.group(1)),
                 "address": block[index + 1][len("!!! "):].strip(),
-                "status": "Frozen" if banner.group(2) == "IS FROZEN" else "Nonexist",
+                "status": _BANNER_STATUS[banner.group(2)],
             })
     run["errors"] = run["errors"][-5:]
     return run

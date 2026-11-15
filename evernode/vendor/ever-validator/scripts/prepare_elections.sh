@@ -468,13 +468,16 @@ for Proxy_Index in 0 1; do
             else
                 # Read without error, but without code: deleted by the chain, or
                 # never deployed. Only the DePool's constructor deploys proxies.
+                Proxy_Header="DOES NOT EXIST" Proxy_Error="does not exist and cannot be rebuilt"
+                if [[ $Proxy_Status == "Uninit" ]];then
+                    Proxy_Header="IS UNINIT" Proxy_Error="is uninit and cannot be rebuilt"
+                fi
                 Proxy_Banner=(
-                    "PROXY ${Proxy_Index} OF THE DEPOOL DOES NOT EXIST:" "${Proxy_Addr}"
+                    "PROXY ${Proxy_Index} OF THE DEPOOL ${Proxy_Header}:" "${Proxy_Addr}"
                     "The chain deleted it, or it was never deployed. It cannot be rebuilt:"
                     "only the DePool deploys its proxies, and only while it is deployed."
                     "The stake that goes through it cannot come back from the elector."
                     "Elections for this node stop.")
-                Proxy_Error="does not exist and cannot be rebuilt"
             fi
             printf "%b\n" "${BoldText}${RedBack}"
             printf '!!! %s\n' "${Proxy_Banner[@]}"
