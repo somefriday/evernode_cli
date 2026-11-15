@@ -4,8 +4,10 @@ Runs Everscale validator nodes in Docker on Ubuntu and Debian. Several nodes
 per server, each with its own database, keys, containers, ports and election
 schedule. Node data lives under `/var/lib/ever-validator`.
 
-Run as root. Full guide: [instruction.md](instruction.md). Every command, with its
-flags: [docs/](docs/README.md).
+Run as root.
+
+- Cli reference and instructions: [docs/README.md](docs/README.md).
+- Specification and properties: [docs/spec/README.md](docs/spec/README.md).
 
 ## Install
 
@@ -87,7 +89,7 @@ evernode node restart -n validator01      # after election stop; refuses while i
 Burn the config master key, set a param or upgrade code, by validator vote:
 
 ```bash
-export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/<project>/graphql
+export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/graphql
 sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # shows the price, asks, pays
 sudo -E evernode vote join -n validator01 --proposal HASH              # votes now and in every round, from cron
 sudo -E evernode vote status                                           # round end, elections, joined proposals

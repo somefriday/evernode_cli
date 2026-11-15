@@ -1,6 +1,6 @@
 # evernode command reference
 
-One page per command. Each has an example, what the command does, its flags, and how it behaves. The rules these pages follow are in [rules.md](rules.md).
+One page per command. Each has an example, what the command does, its flags, and how it behaves. The rules these pages follow are in [rules.md](rules.md). How evernode works inside is in the [specification](spec/README.md).
 
 Every command except `host check` and the offline and key-file `vote` commands needs root. `--state-dir DIR` goes before the group (default `/var/lib/ever-validator`); `evernode --version` prints the version.
 
@@ -65,6 +65,48 @@ sudo evernode election start -n validator01               # once the former node
 ```
 
 A nominator's owner funds the contract after `nominator verify`. A solo or nominator stake has to be large enough to be elected: the elector seats the set with the largest total stake.
+
+## Maintenance
+
+**Update a node to a rebuilt image.** `node update` refuses while the schedule is installed or the node is in a validator set.
+
+```bash
+sudo evernode election stop -n validator01              # no new bids; a stake already placed stays
+sudo evernode node status -n validator01                # wait until it is outside the current and next set
+sudo evernode node config -n validator01                # "image" is OLD_IMAGE
+sudo evernode image rebuild OLD_IMAGE                   # prints the new image
+sudo evernode node update -n validator01 --image NEW_IMAGE
+sudo evernode election start -n validator01
+```
+
+If the node does not synchronize on the new image, wait with `node sync --wait`, read `node logs --component stderr`, and go back with `sudo evernode node update -n validator01 --rollback`.
+
+**Seed a new node's database from another node on this host.** The source is synchronized and outside both validator sets; neither node has a schedule installed.
+
+```bash
+sudo evernode node lsync --from SOURCE_NODE --to validator01 --dry-run   # the checks, nothing changes
+sudo evernode node lsync --from SOURCE_NODE --to validator01             # stops both, copies, starts both
+sudo evernode node sync -n validator01 --wait
+```
+
+**Stop and start.** `node stop` removes the node's schedule; `node start` does not install it again.
+
+```bash
+sudo evernode node stop -n validator01                  # refuses in a validator set; --force overrides
+sudo evernode node start -n validator01
+sudo evernode election start -n validator01
+```
+
+**A node that does not bid.** Read these in order.
+
+```bash
+sudo evernode election status -n validator01            # schedule installed, cron daemon running, validator sets
+sudo evernode node logs -n validator01 --component election-cron --tail 100   # each scheduled run
+sudo evernode depool info -n validator01                # DePool: rounds, stake, pending Safe transactions
+sudo evernode stake status -n validator01               # solo, nominator: stake, balance, pending transactions
+```
+
+A pending Safe transaction stops every run until `depool confirm` or `stake confirm` finishes it, or it expires after an hour. A DePool round that holds no stake has nothing to bid with.
 
 ## Host
 

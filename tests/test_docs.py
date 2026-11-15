@@ -70,6 +70,8 @@ class CommandReferenceTests(unittest.TestCase):
         pages = {
             str(path.relative_to(DOCS))
             for path in DOCS.glob("*/*.md")
+            # docs/spec/ is the specification, not the command reference.
+            if path.parent.name != "spec"
         }
         self.assertEqual(pages - known, set())
 

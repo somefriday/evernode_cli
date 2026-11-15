@@ -7,10 +7,15 @@ questions in the same place, for an operator at a terminal and for an agent read
 
 - One page per command: `docs/<group>/<command>.md`. `evernode node create` is `docs/node/create.md`.
   A command without subcommands uses its own name twice: `docs/doctor/doctor.md`.
-- `docs/README.md` is the index. It lists every page in one line and gives the setup sequence for
-  each validator type. A new command is not documented until it is in the index.
-- Longer guides (`instruction.md`, `voting_instruction.md`) stay at the repository root and link
-  here for flags. A page never repeats a guide; it links to it.
+- `docs/README.md` is the index. It lists every page in one line and gives the command sequences
+  that span several commands: setup for each validator type, and maintenance. A sequence is
+  commands in order with one line of comment each; what a command does stays on its page. A new
+  command is not documented until it is in the index.
+- The voting guide, `voting_instruction.md`, stays at the repository root and links here for
+  flags. A page never repeats the guide; it links to it.
+- `docs/spec/` is the specification: how evernode works inside, for people who change the code.
+  It is not part of the command reference and follows its own rules, in
+  [spec/rules.md](spec/rules.md).
 
 ## The page
 
