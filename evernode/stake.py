@@ -229,19 +229,27 @@ def describe_stake(store, config):
     return observed
 
 
+def least_stake_tokens(minimum):
+    """The smallest whole-token stake the elector counts as at least MINIMUM
+    nanotokens. It keeps 1 token of every stake for the confirmation it sends
+    and compares the rest (Elector.sol and TON's elector-code.fc alike), so a
+    stake of exactly the minimum is returned."""
+    return -(-(minimum + NANO) // NANO)
+
+
 def _resolve_mode(mode, amount, spendable, facts):
     """Choose a mode, showing what each one would stake on this wallet."""
     if mode is not None or amount is not None:
         return mode
+    least = least_stake_tokens(facts["min_stake_nanotokens"])
     choices = []
     for name, (divisor, description) in STAKE_MODES.items():
         tokens = spendable // (divisor * NANO)
-        affordable = tokens * NANO >= facts["min_stake_nanotokens"]
         choices.append(
             (
                 name,
                 f"{description} - {tokens} tokens per election"
-                + ("" if affordable else ", below the elector's minimum"),
+                + ("" if tokens >= least else f", below the {least} a stake needs"),
             )
         )
     return ui.select_choice(None, "stake mode", choices, flag="--mode")
@@ -285,23 +293,24 @@ def set_stake(store, config, amount=None, mode=None):
     stake_nanotokens = tokens * NANO
     minimum = facts["min_stake_nanotokens"]
     maximum = facts["max_stake_nanotokens"]
+    least = least_stake_tokens(minimum)
+    needs = (
+        f"the {least} tokens a stake needs (the elector's minimum, "
+        f"{minimum // NANO}, plus the 1 token it keeps)"
+    )
     warnings = []
-    if stake_nanotokens < minimum:
+    if tokens < least:
         if mode == "balanced":
             raise process.OperationError(
-                f"Half of this {noun} is {tokens} tokens, below the "
-                f"{minimum // NANO} the elector accepts, so this much capital "
-                "can only validate every other round: use --mode single"
+                f"Half of this {noun} is {tokens} tokens, below {needs}, so this "
+                "much capital can only validate every other round: use --mode single"
             )
         if mode == "single":
             raise process.OperationError(
                 f"This {noun} has {spendable // NANO} tokens spendable, below "
-                f"the {minimum // NANO} the elector accepts as a stake; fund it "
-                "first"
+                f"{needs}; fund it first"
             )
-        raise process.OperationError(
-            f"The elector rejects a stake below {minimum // NANO} tokens"
-        )
+        raise process.OperationError(f"A stake of {tokens} tokens is below {needs}")
     if stake_nanotokens > maximum:
         # A named amount the chain would reject is the operator's mistake to
         # see. A mode is arithmetic, so it caps at what the chain allows and

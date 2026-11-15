@@ -384,6 +384,15 @@ class DePoolOperationTests(unittest.TestCase):
         for path in sorted((SCRIPTS / "depool_functions").glob("*.shinc")):
             with self.subTest(operation=path.name):
                 self.assertNotIn("--lifetime 3600", path.read_text())
+        # A message without --lifetime takes ever-cli's configured 600 s, far
+        # past these waits, so a step reported failed could still execute.
+        for name in ("prepare_elections.sh", "take_part_in_elections.sh", "functions.shinc"):
+            commands = (SCRIPTS / name).read_text().replace("\\\n", " ").splitlines()
+            signed = [line for line in commands if "$CALL_CLI message" in line]
+            self.assertTrue(signed, name)
+            for line in signed:
+                with self.subTest(script=name, message=line.strip()[:60]):
+                    self.assertIn('--lifetime "$MSG_LIFETIME"', line)
 
     def test_a_replenish_the_wallet_cannot_cover_sends_nothing(self):
         """A low DePool no longer stops a replenish, so the wallet is what is checked."""

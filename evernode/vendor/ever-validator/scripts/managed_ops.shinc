@@ -693,6 +693,34 @@ function Complete_And_Await() {
     Await_Effect "$Label" "$deadline" "${EFFECT_POLL_INTERVAL:-2}" "$@"
 }
 #=================================================
+# Bid attempts in one election, kept in the election's directory.
+#
+# A bid that does not register is sent again by the next scheduled run: its
+# messages are dead by then, and that run checks the elector's list and the
+# wallet before it sends anything. A bid that can never register would repeat
+# every run until the elections close, each time paying gas (and a nominator's
+# fee) and raising an alert, so an election gets BID_ATTEMPTS_MAX attempts, or
+# fewer when a failure is one no retry can change.
+#
+# Record_Bid_Attempt ELECTION_ID: a run is sending the bid.
+function Record_Bid_Attempt() {
+    date +%s >> "${CURR_ELECTIONS_DIR}/$1_bid-attempts.txt"
+}
+# Bid_Attempts ELECTION_ID: how many runs have sent the bid.
+function Bid_Attempts() {
+    local file="${CURR_ELECTIONS_DIR}/$1_bid-attempts.txt"
+    if [[ -f $file ]];then grep -c . "$file"; else echo 0; fi
+}
+# Stop_Bidding ELECTION_ID REASON: no further bid in this election.
+function Stop_Bidding() {
+    printf '%s\n' "$2" > "${CURR_ELECTIONS_DIR}/$1_bid-stopped.txt"
+}
+# Bidding_Stopped ELECTION_ID: succeeds, printing the reason, once bidding has stopped.
+function Bidding_Stopped() {
+    local file="${CURR_ELECTIONS_DIR}/$1_bid-stopped.txt"
+    [[ -f $file ]] && cat "$file"
+}
+#=================================================
 # This node's ADNL for one election, taken from the node's own key ring.
 #
 # console's election-bid generates the key it signs the request with, so the

@@ -712,6 +712,24 @@ echo "RESULT dest=$Stake_DST_Addr value=$NANOSTAKE payload=${{validator_query_pa
         )
 
 
+@unittest.skipUnless(shutil.which("bash"), "Requires bash")
+class PrepareProgramTests(unittest.TestCase):
+    def test_a_failed_address_step_stops_the_preparation(self):
+        """"export VAR=$(cmd)" took export's status, so set -e let a failed
+        step through and an empty contract address was saved."""
+        with tempfile.TemporaryDirectory() as work:
+            program = nominator.PREPARE_PROGRAM.replace("/work", work)
+            stub = (
+                'node() { case "$2" in init) return 7;; compile) echo "{}";; '
+                '*) echo "' + POOL + '";; esac; }\n'
+            )
+            result = subprocess.run(
+                ["bash", "-c", stub + program], capture_output=True, text=True, timeout=30
+            )
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertFalse((Path(work) / "manifest.json").exists())
+
+
 class ToolIsolationTests(unittest.TestCase):
     """The contract tools must never be able to sign or to reach a chain.
 

@@ -348,6 +348,9 @@ if [[ "$Engine_ADNLs" != "null" ]];then
                 exit 0
             fi
             echo "---INFO: no request on file for elections ${elections_id}; bidding."
+            # ADNL_Found still says "unreadable", which the check below would
+            # take for a bid already in the list.
+            ADNL_Found="absent"
         elif [[ $error_code -ne 4 ]] || [[ $ADNL_Found != "absent" ]]; then
             exit 1
         fi
@@ -364,6 +367,18 @@ if [[ "$Engine_ADNLs" != "null" ]];then
     fi
 else
     echo "---INFO: You have not participated in any elections yet. Keys list in node config is empty."
+fi
+
+#=================================================================
+# Bidding in this election may have stopped: after BID_ATTEMPTS_MAX bids that
+# did not register, or after a failure no retry can change. That was reported
+# when it happened, so this only says it again.
+if Stop_Reason="$(Bidding_Stopped "$elections_id")";then
+    echo "---INFO: No further bid in elections ${elections_id}: ${Stop_Reason}"
+    echo
+    echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date +'%F %T %Z')"
+    echo "================================================================================================"
+    exit 0
 fi
 
 #=================================================================
@@ -645,6 +660,7 @@ echo -e "-----------------------------------------------------------\n"
 # and five of those from one custodian fill it and stop the node bidding at
 # all. The six DePool operations have resumed like this for a while; this path
 # was the one that still did not.
+Record_Bid_Attempt "$elections_id"
 New_Elect_Trans_ID=""
 if [[ ${Required_Signs} -gt 1 ]];then
     New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Stake_DST_Addr" \
@@ -683,21 +699,16 @@ fi
 # the race with inclusion, which is how a bid that did reach the DePool came to
 # be reported as never signed.
 #
-# The deadline is when the elections close. A bid that registers after that
-# cannot be elected, so waiting the wallet's full hour would turn a clean
-# failure into a missed round, and waiting less would call a slow success a
-# failure.
+# Signing may go on until the elections close, since a bid that registers after
+# that cannot be elected, and never past the wallet's expiry of the transaction.
+# A network that has stalled keeps its election open long past this nominal
+# close - the local test network sat four hours past it with the set unfilled -
+# and the elector still accepts bids there, which is how such a network
+# recovers; so signing always gets at least two message lifetimes.
 declare -i Elections_Close=$(( elections_id - elections_end_before ))
-# Waiting is useful at least until every message this attempt sent is dead,
-# whatever the election calendar says. A network that has stalled keeps its
-# election open long past this nominal close - the local test network sat four
-# hours past it with the set unfilled - and the elector still accepts bids
-# there, which is how such a network recovers. Reporting a failure the instant
-# after submitting, because a date in the past said so, would be Fault A again
-# with a different cause: the bid in flight would land seconds later.
-declare -i Bid_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
-if [[ $Elections_Close -gt $Bid_Deadline ]];then
-    Bid_Deadline=$Elections_Close
+declare -i Sign_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+if [[ $Elections_Close -gt $Sign_Deadline ]];then
+    Sign_Deadline=$Elections_Close
 fi
 Elect_Trans_ID="$New_Elect_Trans_ID"
 if [[ $Required_Signs -gt 1 ]];then
@@ -706,7 +717,6 @@ if [[ $Required_Signs -gt 1 ]];then
     # each key taken from the wallet's own confirmation mask rather than
     # guessed from a count. Sending them all and reading the result once is
     # what reported a bid that had reached the chain as unsigned.
-    declare -i Sign_Deadline=$Bid_Deadline
     Bid_Expires_At="$(Trans_Expires_At "$Validator_addr" "$Elect_Trans_ID")"
     if [[ $Bid_Expires_At =~ ^[0-9]+$ ]] && [[ $((Bid_Expires_At - 5)) -lt $Sign_Deadline ]];then
         Sign_Deadline=$((Bid_Expires_At - 5))
@@ -725,6 +735,11 @@ if [[ $Required_Signs -gt 1 ]];then
         exit 1
     fi
 fi
+# From the last signature, the bid has two message lifetimes to register: the
+# transfer it carries arrives in a few blocks, and every message this attempt
+# sent is dead by then. A bid not listed in time cannot register later, so the
+# next scheduled run checks again and sends it once more.
+declare -i Bid_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
 # The ADNL this bid registers under is the key console generated for it, so it
 # is read now rather than reused from the participation check above, which ran
 # before the request existed.
@@ -784,6 +799,14 @@ if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
     echo "================================================================================================"
     exit 0
 fi
+# Not registered, and it cannot register later: its messages are dead. The
+# next scheduled run sends it again, until this election has had its attempts.
+declare -i Bid_Attempt=$(Bid_Attempts "$elections_id")
+Next_Step="This was attempt ${Bid_Attempt} of ${BID_ATTEMPTS_MAX:-3}; the next scheduled run sends it again in this election."
+if [[ $Bid_Attempt -ge ${BID_ATTEMPTS_MAX:-3} ]];then
+    Next_Step="This was attempt ${Bid_Attempt} of ${BID_ATTEMPTS_MAX:-3}, so no further bid is sent in this election."
+    Stop_Bidding "$elections_id" "${Bid_Attempt} bids were sent and none registered."
+fi
 # Say why, when the sending contract itself can say it. A round elected with no
 # stake cannot produce a bid however well the wallet transaction was signed, so
 # a retry cannot help; the operator needs to know where the stake actually is.
@@ -795,7 +818,7 @@ if [[ "$STAKE_MODE" == "nominator" ]];then
     if result=$(Get_Account_Info "${NOMINATOR_ADDR}" 2>/dev/null);then
         read -r _ Nominator_Balance_After_nT _ <<< "$result"
     fi
-    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector. The nominator contract ${NOMINATOR_ADDR} now holds $(( Nominator_Balance_After_nT / 1000000000 )) tokens. If that still includes the stake, the elector refused the request and returned it: compare the configured stake against the elector's minimum and the stake already frozen for an earlier round. If it does not, the stake is at the elector and only the registration failed." \
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector. The nominator contract ${NOMINATOR_ADDR} now holds $(( Nominator_Balance_After_nT / 1000000000 )) tokens. If that still includes the stake, the elector refused the request and returned it: compare the configured stake against the elector's minimum and the stake already frozen for an earlier round. If it does not, the stake is at the elector and only the registration failed. ${Next_Step}" \
         | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server" \
         "$Tg_SOS_sign ###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector." > /dev/null 2>&1
@@ -806,10 +829,11 @@ if [[ "$STAKE_MODE" == "nominator" ]];then
 fi
 Round_Stake="$(Get_DP_Round_Stake_For_Election "$Stake_DST_Addr" "$elections_id" 2>/dev/null)"
 if [[ $Round_Stake =~ ^0+$ ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector: the DePool holds no stake in the round being elected, so it had nothing to bid with. This is not a failure of this attempt and a retry cannot change it. A stake bids in the round that was collecting when it was made, and is then locked until that round completes, so the rounds collecting after it are empty until it returns. To bid in consecutive elections, add a stake to each round while it is the collecting one, at least as large as the validator assurance. Read 'evernode depool info' for which round is collecting and what each round holds; staking now does not move a locked stake into the round being elected." \
+    Stop_Bidding "$elections_id" "the DePool holds no stake in the round being elected, which no retry can change."
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector: the DePool holds no stake in the round being elected, so it had nothing to bid with. This is not a failure of this attempt and a retry cannot change it. A stake bids in the round that was collecting when it was made, and is then locked until that round completes, so the rounds collecting after it are empty until it returns. To bid in consecutive elections, add a stake to each round while it is the collecting one, at least as large as the validator assurance. Read 'evernode depool info' for which round is collecting and what each round holds; staking now does not move a locked stake into the round being elected. No further bid is sent in this election." \
         | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
 else
-    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector and the elections have closed.${Round_Stake:+ The DePool holds $Round_Stake nanotokens in that round.}" \
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The bid in elections $elections_id is not registered with the elector.${Round_Stake:+ The DePool holds $Round_Stake nanotokens in that round.} ${Next_Step}" \
         | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
 fi
 Send_msg_toTelBot "$VALIDATOR_NAME Server" \

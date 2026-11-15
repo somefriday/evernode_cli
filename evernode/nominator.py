@@ -193,8 +193,11 @@ PREPARE_PROGRAM = r"""set -e
 # options, so the inline snippets below take their addresses from the
 # environment instead of from argv.
 node tools/cells.cjs compile /work/code.boc > /work/compile.json
-export POOL=$(node tools/cells.cjs init /work/code.boc "$OWNER" "$VALIDATOR" /work/init.boc)
-export FACTORY=$(node tools/cells.cjs factory /work/init.boc "$DEPLOY_VALUE" /work/factory-deploy.boc)
+# Assigned, then exported: "export VAR=$(...)" takes export's status, so set -e
+# would let a failed step through and save an empty address.
+POOL=$(node tools/cells.cjs init /work/code.boc "$OWNER" "$VALIDATOR" /work/init.boc)
+FACTORY=$(node tools/cells.cjs factory /work/init.boc "$DEPLOY_VALUE" /work/factory-deploy.boc)
+export POOL FACTORY
 node -e '
   const fs = require("fs");
   const pinned = require("/opt/nominator/PINNED.json");

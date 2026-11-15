@@ -26,7 +26,7 @@ Checks the amount against the chain's stake limits and writes it into the node's
 
 - Spendable is the staking account's balance plus what the elector owes it, minus 50 tokens kept for fees. The staking account is the Safe (solo) or the nominator contract.
 - A stake already at the elector is not counted: on a validating node a mode sizes only what is liquid, and says so. Use `--amount` there.
-- Below the elector's minimum is refused. A mode above the maximum is capped; a named amount above it is refused.
+- A stake must be at least the elector's minimum plus 1 token, which the elector keeps; less is refused. A mode above the maximum is capped; a named amount above it is refused.
 - The first `stake set` moves setup to `ready-for-elections`.
 - To be elected the stake must also compete: the elector seats the set with the largest total stake.
 

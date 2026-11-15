@@ -615,7 +615,9 @@ function Get_Account_Info() {
         local LASTOP=$(jq -r ".last_paid" <<< "$ACCOUNT_INFO")
         local STATUS=$(jq -r ".acc_type" <<< "$ACCOUNT_INFO")
     else
-        if [[ "${NODE_WC}" == "${acc_wc}" ]] || [[ "${acc_wc}" == "-1" ]];then
+        # The console reads the masterchain and the basechain alike. NODE_WC
+        # only says where this node's Safe is; its DePool is always in 0.
+        if [[ "${acc_wc}" == "0" ]] || [[ "${acc_wc}" == "-1" ]];then
             local ACCOUNT_INFO=$($CALL_CONS -j -c "getaccount $ACCOUNT")
             if echo "${ACCOUNT_INFO}" | grep -iq 'Nonexist' || echo "${ACCOUNT_INFO}" | grep -iq 'Error';then
                 echo "None 0 0"
@@ -1241,12 +1243,14 @@ function top_app_account () {
     local TOPUP_BOC_File="${ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
     local INPL_TOPUP_BOC_File="${INPL_ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"
     rm -f "${TOPUP_BOC_File}"
+    # Signed now, and it can land until MSG_LIFETIME has passed.
+    local Signed_At=$(date +%s)
     local TC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_TOPUP_BOC_File}" \
     --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
     --abi "${INPL_SafeC_Wallet_ABI}" \
     "${Validator_addr}" submitTransaction \
     "{\"dest\":\"${Account_Addr}\",\"value\":$((TopUpSum)),\"bounce\":true,\"allBalance\":false,\"payload\":\"\"}" \
-    --lifetime 600)"
+    --lifetime "$MSG_LIFETIME")"
     if echo "$TC_OUTPUT" | grep -iq 'error';then
         log_error_stack "Error while make topup message boc : ${TC_OUTPUT}"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \
@@ -1296,6 +1300,20 @@ function top_app_account () {
             break
        fi
     done
+    # The message can still land until its lifetime has passed, and a
+    # transaction created then would hold one signature that nothing adds and
+    # stop the next bid. Wait that out and look once more, so a failure
+    # reported below is final.
+    if [[ -z $Last_Trans_ID ]] && [[ $Val_Confirm_QTY -gt 1 ]];then
+        local Remaining=$(( Signed_At + ${MSG_LIFETIME:-60} + LC_Send_MSG_Timeout - $(date +%s) ))
+        [[ $Remaining -gt 0 ]] && sleep "$Remaining"
+        Trans_List="$(Get_MSIG_Trans_List "${Validator_addr}")"
+        local Trans_QTY=$(( $(jq -r ".transactions|length" <<< "$Trans_List") ))
+        if [[ $Trans_QTY -gt $Before_Trans_QTY ]];then
+            Last_Trans_ID=$(jq -r .transactions[$((Trans_QTY - 1))].id <<< "$Trans_List")
+            echo -e "INFO: successfully created transaction # $Last_Trans_ID"
+        fi
+    fi
     if [[ -z $Last_Trans_ID ]] && [[ $Val_Confirm_QTY -gt 1 ]];then
         echo "###-ERROR(line $LINENO): Cannot create transaction for topup account. Last_Trans_ID is empty."
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool prepare:" \

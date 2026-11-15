@@ -158,18 +158,24 @@ class ElectionScriptInvariantTests(unittest.TestCase):
         to that destination and taking the newest can pick someone else's."""
         self.assertNotIn("tail -n 1", self.text)
 
-    def test_the_wait_is_bounded_by_the_elections_closing(self):
-        """A bid that registers after the close cannot be elected, so the
-        wallet's hour-long expiry is the wrong bound here."""
+    def test_signing_is_bounded_by_the_elections_closing(self):
+        """Custodians elsewhere may sign until the close. A bid that registers
+        after it cannot be elected, so the wallet's hour-long expiry is the
+        wrong bound here."""
         self.assertIn("elections_id - elections_end_before", self.code)
+        self.assertIn("Sign_Deadline=$Elections_Close", self.code)
 
-    def test_the_wait_never_ends_before_the_bid_can_land(self):
-        """A stalled network keeps its election open long past that nominal
-        close, and the elector still accepts bids there. Reporting failure the
-        instant after submitting, because a date in the past said so, would be
-        the same race with a different cause."""
-        self.assertIn("2 * ", self.code)
-        self.assertIn("Bid_Deadline=", self.code)
+    def test_the_wait_for_registration_starts_after_signing(self):
+        """Once the last signature is in, the bid lands within its messages'
+        lifetime or not at all, so waiting on to the close only delays the
+        next run's retry. Counted from the signing, the wait also never ends
+        before the bid can land: a stalled network keeps its election open
+        past the nominal close, and the elector still accepts bids there."""
+        signed = self.code.index("Sign_To_Execution ")
+        wait = self.code.index("declare -i Bid_Deadline=$(( $(date +%s) + 2 * ")
+        self.assertLess(signed, wait)
+        self.assertNotIn("Bid_Deadline=$Elections_Close", self.code)
+        self.assertNotIn("elections have closed", self.code)
 
     def test_the_keys_to_confirm_with_come_from_the_wallet_not_from_a_count(self):
         """Whichever custodian submitted has already signed, and confirming

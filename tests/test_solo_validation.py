@@ -402,6 +402,14 @@ class SetStakeTests(unittest.TestCase):
             status = stake.describe_stake(self.store, dict(self.config))
         self.assertEqual(status["funding"], "funds no bid yet")
 
+    def test_a_stake_of_exactly_the_minimum_is_refused(self):
+        """The elector keeps 1 token of a stake and counts the rest, so a stake
+        of exactly its minimum would be returned every election."""
+        with self.assertRaisesRegex(process.OperationError, "the 1001 tokens a stake needs"):
+            self.set(amount=1000)
+        config, _ = self.set(amount=1001)
+        self.assertEqual(config["settings"]["MSIG_FIX_STAKE"], 1001)
+
     def test_a_recorded_stake_reaches_the_reference_environment(self):
         config, result = self.set(amount=100000)
         self.assertEqual(config["settings"]["MSIG_FIX_STAKE"], 100000)

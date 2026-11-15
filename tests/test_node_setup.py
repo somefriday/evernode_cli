@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from evernode import configuration, elections, process, role, stake, storage, wallets
+from evernode import configuration, creation, elections, process, role, stake, storage, wallets
 from evernode.arguments import build_argument_parser
 from evernode.cli import main
 
@@ -171,6 +171,15 @@ class NodeSetupTests(unittest.TestCase):
         self.assertIn('"plan": "set the validator role"', out)
         self.assertFalse(configuration.has_role(self.saved()))
         self.assertEqual(self.env(), before)
+
+    def test_node_create_refuses_the_names_the_election_scripts_use(self):
+        """keys/NAME.addr would be keys/depool.addr or keys/proxy0.addr; refused
+        before any other question (no --memory here, so it must come first)."""
+        for name in creation.RESERVED_NAMES:
+            with self.subTest(name=name):
+                args = build_argument_parser().parse_args(["node", "create", "-n", name])
+                with self.assertRaisesRegex(process.OperationError, "election scripts"):
+                    creation.handle_node_creation(self.store, args)
 
     def test_node_create_takes_no_role_flags(self):
         parser = build_argument_parser()

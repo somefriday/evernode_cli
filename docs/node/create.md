@@ -37,6 +37,7 @@ Asks for the network, image and node settings (or takes them from flags), prepar
 - Needs root. Without a terminal, pass `-n`, `--memory`, `--ip` and `--image` or `--build-new`.
 - An image chosen in the menu starts the creation at once; with `--image` or `--build-new` the plan is confirmed first.
 - Without a source flag the node gets the kit installed with evernode; a kit that is missing is refused before any question.
+- Refuses the names `depool`, `proxy0` and `proxy1`: the election scripts keep files of those names beside the node's own.
 - Asks nothing about the validator role, so several nodes can be created and synchronized before any of them is set up.
 - If preparation fails, everything this run created is removed. A directory that existed before is left alone.
 - A create that was killed leaves the node in place: `--resume`, then `node start`.

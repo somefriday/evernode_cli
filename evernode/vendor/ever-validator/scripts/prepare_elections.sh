@@ -80,6 +80,12 @@ if [[ $elections_id -gt 0 ]];then
     CURR_ELECTIONS_DIR="${ELECTIONS_WORK_DIR}/${elections_id}"
     INPL_CURR_ELECTIONS_DIR="${INPL_ELECTIONS_WORK_DIR}/${elections_id}"
     [[ ! -d "${CURR_ELECTIONS_DIR}" ]] && mkdir -p "${CURR_ELECTIONS_DIR}" && chmod ugo+rw "${CURR_ELECTIONS_DIR}"
+else
+    # With no election open, the DePool and proxy top-ups below still write
+    # their logs and messages: keep them in the node's elections directory,
+    # which the host and the node's container both see, not in /.
+    CURR_ELECTIONS_DIR="${ELECTIONS_WORK_DIR}"
+    INPL_CURR_ELECTIONS_DIR="${INPL_ELECTIONS_WORK_DIR}"
 fi
 if [[ -f "${CURR_ELECTIONS_DIR}/${elections_id}_elector-confirmed-bid.txt" ]];then
     echo "---INFO: We have already participated in these elections: ($elections_id)"
@@ -175,7 +181,7 @@ fi
 if result=$(Get_Current_Elector_Type);then
     read -r elector_addr ELECTOR_TYPE <<< "$result"
 else
-    echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Cannot get Elector type!"
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): Cannot get Elector type!"
     echo "$result"
     exit 1
 fi
@@ -313,6 +319,7 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
 
         LC_OUTPUT="$($CALL_CLI message --raw --output ${INPL_CURR_ELECTIONS_DIR}/recover-msg.boc \
         --sign "${INPL_KEYS_DIR}/${MSIG_KEY_FILES_ARRAY[0]##*/}" ${SIG_ID_OPTION} \
+        --lifetime "$MSG_LIFETIME" \
         --abi "$INPL_SafeC_Wallet_ABI" \
         "$Validator_addr" submitTransaction \
         "{\"dest\":\"$Recover_Dest\",\"value\":$Recover_Value,\"bounce\":true,\"allBalance\":false,\"payload\":\"$recover_query_payload\"}" 2>&1)"
@@ -502,6 +509,7 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
     # Make message for replenish DePool
     TC_OUTPUT="$($CALL_CLI message --raw --output "${INPL_ReplenishFile}" \
     --sign "${INPL_KEYS_DIR}/${MSIG_KEY_FILES_ARRAY[0]##*/}" ${SIG_ID_OPTION} \
+    --lifetime "$MSG_LIFETIME" \
     --abi "$INPL_SafeC_Wallet_ABI" \
     "$Validator_addr" submitTransaction \
     "{\"dest\":\"$Depool_addr\",\"value\":$Replenish_Amount,\"bounce\":true,\"allBalance\":false,\"payload\":\"$DePoolReplenish_Payload\"}")"
@@ -558,8 +566,9 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
     # the DePool can still refuse. Wait for its balance to show the transfer,
     # less the forward fee, and refuse to continue without it -- running an
     # election on a DePool below its threshold is what this block exists to
-    # prevent.
-    if ! Complete_And_Await "" "$Validator_addr" "$VALIDATOR_NAME" \
+    # prevent. A multi-signature wallet's transaction is confirmed by its id;
+    # a one-signature wallet has none, and DP_Trans_ID is empty for it.
+    if ! Complete_And_Await "$DP_Trans_ID" "$Validator_addr" "$VALIDATOR_NAME" \
             "The DePool top-up of $((Replenish_Amount / 1000000000)) tokens" \
             Effect_Self_Balance_At_Least "$Depool_addr" \
             "$(( Depool_Bal + Replenish_Amount - 1000000000 ))";then
@@ -614,8 +623,8 @@ echo "$LC_OUTPUT"
 echo -e "--------------------------------------------------------------------------\n"
 # Check that the message is saved
 if ! echo "${LC_OUTPUT}" | grep -iq 'Message saved to file'; then
-    echoerr "###-ERROR(${FUNCNAME[0]} line $LINENO): Failed to create boc file!!! Can't continue."
-    return 1
+    echoerr "###-ERROR(${SelfScriptName} line $LINENO): Failed to create boc file!!! Can't continue."
+    exit 1
 fi
 Tik_Message_ID="$(echo "${LC_OUTPUT}" | grep 'MessageId' | awk '{print $2}')"
 echo "+++-INFO(${SelfScriptName} line $LINENO): Tik message was created with ID: $Tik_Message_ID"

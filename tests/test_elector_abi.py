@@ -185,9 +185,12 @@ class UnreadableElectorTests(unittest.TestCase):
     def setUpClass(cls):
         text = (KIT / "take_part_in_elections.sh").read_text()
         start = text.index("        if [[ $error_code -eq 6 ]];then")
-        # The real branch continues into an elif; cut before it and close the
-        # if, so what runs here is the branch's own text unchanged.
-        cls.branch = text[start: text.index("        elif [[ $error_code", start)] + "fi\n"
+        # The branch, and the "already participated" check right after the
+        # if that holds it: what the branch leaves in ADNL_Found decides that
+        # check. The surrounding if is stood in for, so the text runs unchanged.
+        check = text.index('    if [[ "$ADNL_Found" != "absent" ]];then', start)
+        end = text.index("\n    fi\n", check) + len("\n    fi\n")
+        cls.branch = "if false; then :; else\n" + text[start:end]
 
     def decide(self, *, request_on_file):
         with tempfile.TemporaryDirectory() as temporary:
@@ -197,6 +200,9 @@ class UnreadableElectorTests(unittest.TestCase):
             program = f"""set -uo pipefail
 SelfScriptName=take_part_in_elections.sh
 error_code=6
+ADNL_Found=unreadable
+Next_ADNL_Key=key ADNL_Stake=0 You_PubKey=key
+TD_unix2human() {{ echo date; }}
 elections_id=1793451980
 CURR_ELECTIONS_DIR={str(directory)!r}
 Elector_Readable=true
@@ -204,11 +210,13 @@ Elector_Readable=true
 echo "REACHED_BID readable=$Elector_Readable"
 """
             (directory / "case.sh").write_text(program)
-            return subprocess.run(
+            result = subprocess.run(
                 ["bash", str(directory / "case.sh")],
                 capture_output=True, text=True,
                 stdin=subprocess.DEVNULL, timeout=60,
             )
+            result.marked = (directory / "1793451980_elector-confirmed-bid.txt").exists()
+            return result
 
     def test_a_request_already_on_file_is_not_sent_twice(self):
         result = self.decide(request_on_file=True)
@@ -222,6 +230,9 @@ echo "REACHED_BID readable=$Elector_Readable"
         self.assertEqual(result.returncode, 0)
         self.assertIn("no request on file", result.stdout)
         self.assertIn("REACHED_BID readable=false", result.stdout)
+        # Not recorded as a bid it never made, which would stop every later run.
+        self.assertNotIn("You participate already", result.stdout)
+        self.assertFalse(result.marked)
 
     def test_the_verdict_falls_back_to_what_the_money_did(self):
         source = (KIT / "take_part_in_elections.sh").read_text()

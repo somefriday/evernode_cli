@@ -7,6 +7,11 @@ import urllib.request
 
 from . import configuration, docker, images, nodes, process, provisioning, ui
 
+# The election scripts keep keys/depool.addr, keys/proxy0.addr and
+# keys/proxy1.addr beside a node's own keys/NAME.addr: a node with one of these
+# names would have its Safe's address file read as, or overwritten by, theirs.
+RESERVED_NAMES = ("depool", "proxy0", "proxy1")
+
 
 def choose_node_image(store, args):
     """Return (managed record, source ref, selected in menu)."""
@@ -155,6 +160,12 @@ def handle_node_creation(store, args):
     name = configuration.validate_node_name(
         ui.prompt_for_value(args.name, "Validator name")
     )
+    if name in RESERVED_NAMES:
+        raise process.OperationError(
+            f"{name} is a name the election scripts give their own files in the "
+            "node's keys/, where its Safe's address file would collide with them; "
+            "choose another name"
+        )
     if name in existing:
         raise process.OperationError(
             "Node already exists; use --resume for unfinished preparation"
