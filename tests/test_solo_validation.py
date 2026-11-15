@@ -643,6 +643,24 @@ class ElectionSequenceTests(unittest.TestCase):
         self.assertNotIn("run-election-sequence.sh", runner)
         self.assertIn(str(directory / "run-elections.sh"), self.cron.read_text())
 
+    def test_a_rewrite_never_changes_a_file_a_run_is_reading(self):
+        """node sync-scripts writes them again while cron may be running one;
+        bash reads a script as it goes, from the file it opened."""
+        config, directory, sequence = self.install("solo")
+        files = (directory / "run-elections.sh", sequence)
+        inodes = [path.stat().st_ino for path in files]
+        old = sequence.read_text()
+        with (
+            sequence.open() as running,
+            patch("evernode.elections._solo_sequence_program", return_value="new\n"),
+        ):
+            elections.write_election_programs(self.store, config)
+            self.assertEqual(running.read(), old)
+        self.assertEqual(sequence.read_text(), "new\n")
+        for path, inode in zip(files, inodes):
+            self.assertNotEqual(path.stat().st_ino, inode)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+
     def test_a_run_skipped_for_the_lock_says_so(self):
         _, directory, _ = self.install("solo")
         fake = directory / "bin"

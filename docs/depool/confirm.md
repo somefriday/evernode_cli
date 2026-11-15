@@ -25,6 +25,7 @@ Adds the signatures of the custodian keys held on this node to one named pending
 
 - Signing executes the transfer the transaction carries: read its destination and value first.
 - An id the Safe does not hold is refused; a pending transaction expires an hour after it was made.
+- A signature the Safe has not recorded within a minute was lost and is sent again, three times at most.
 - While one is pending, scheduled election runs stop before bidding.
 
 ## See also

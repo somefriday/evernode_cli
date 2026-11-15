@@ -94,7 +94,7 @@ $B burn-key                                # the burn key and why it is unusable
 $B status   --net NET [--keys]             # dictator, voting rules, p34 (and who holds which key), proposals by round
 $B param    --net NET 17                   # a param as ever-node's JSON, its hash, mandatory/critical, rounds needed
 $B simulate --net NET CHANGE               # the proposal's whole life offline, on the live contract state
-$B propose  --net NET CHANGE [--dry-run]   # check, dry-run and register
+$B propose  --net NET CHANGE [--dry-run] [--lock FILE]   # check, dry-run and register
 $B cast     --net NET CHANGE|--proposal H [--watch]   # vote with every current key the listed nodes hold
 $B run      --net NET CHANGE [--yes]       # vote every round until it takes effect; registers it first if nobody has
 $B burn     --net NET                      # run --burn
@@ -136,7 +136,8 @@ exits 1 if the config would not register the proposal.
 
 **A payment is made once.** The dry run checks that the config would keep exactly the price shown, and
 `propose` asks before it pays, in the same run (`--yes` pays without asking; with no terminal and no
-`--yes` it refuses), so the value confirmed is the value sent. A payment sent again because its message
+`--yes` it refuses), so the value confirmed is the value sent. `--lock FILE` locks that file (flock) after
+the answer and before the payment, until the run ends; while someone else holds it, nothing is paid. A payment sent again because its message
 expired unexecuted is not asked about again while the value is the one confirmed. A proposal already registered is not paid
 for: `propose` says so and points to `--proposal`. A wallet message that may have reached the network,
 because something failed after it was handed to the endpoint, is looked up before anything new is sent. It
@@ -313,8 +314,9 @@ option passes through unchanged; `--net` and `--secret` are refused.
   election and keeps its mode, so it is always current. The control server listens on `127.0.0.1:5888`
   inside the node's container and is not published, so `control` cannot reach evernode nodes.
 - **`--pay-from-safe`** (`propose`, with `-n`): the node's Safe, its address in `keys/<node>.addr` and
-  every custodian's `<node>_<i>.keys.json`. It holds the node's operation and election locks, as every
-  Safe spend does, while `propose` shows the price, asks and pays. A solo or nominator validator's Safe is
+  every custodian's `<node>_<i>.keys.json`. evernode holds the node's operation lock while `propose` shows
+  the price, asks and pays, and passes the node's election lock as `--lock`: it is taken after the answer,
+  so a question left open holds up no election run, and a run holding it means nothing is paid. A solo or nominator validator's Safe is
   in the masterchain and can pay; a DePool validator's is in workchain 0 and is refused.
 - **`--pay-from ADDRESS`** (`propose`): the wallet's seed phrase, typed at a hidden prompt first, goes into
   the pipe as `phrases`; then `propose` shows the price and asks before it pays.

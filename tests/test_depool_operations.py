@@ -548,3 +548,60 @@ class StakeOperationArgumentTests(unittest.TestCase):
         self.assertIn("Insufficient parameters", result.stdout)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.marker.exists())
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class LostConfirmationTests(unittest.TestCase):
+    """A confirmation lives one message lifetime. One that was lost used to be
+    waited for until the deadline, up to an hour for a bid, with the election
+    lock held all that time."""
+
+    def sign(self, *, lost, deadline):
+        """Sign a 2-of-N transaction whose first LOST confirmations never arrive."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        program = f"""source "{SCRIPTS / 'managed_ops.shinc'}"
+DIR={directory}; echo 1 > "$DIR/mask"
+MSG_LIFETIME=1 EFFECT_MIN_WAIT=1 EFFECT_POLL_INTERVAL=1
+echoerr() {{ echo "$*" >&2; }}
+Get_Pending_Entry() {{
+    [[ -f $DIR/executed ]] && return 0
+    echo "{{\\"signsReceived\\":\\"1\\",\\"signsRequired\\":\\"2\\",\\"confirmationsMask\\":\\"$(cat "$DIR/mask")\\"}}"
+}}
+Unsigned_Local_Keys() {{ (( ($3 >> 1) & 1 )) || echo "1 validator_2.keys.json"; }}
+Send_MSIG_Trans_Confirmation() {{
+    echo sent >> "$DIR/trace"
+    [[ $(grep -c sent "$DIR/trace") -gt {lost} ]] && echo 3 > "$DIR/mask" && touch "$DIR/executed"
+    return 0
+}}
+Sign_To_Execution 0:wallet validator 77 $(( $(date +%s) + {deadline} )) "The test"
+"""
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=60)
+        sends = (directory / "trace").read_text().count("sent") if (directory / "trace").exists() else 0
+        return result, sends
+
+    def test_a_lost_confirmation_is_sent_again(self):
+        result, sends = self.sign(lost=1, deadline=12)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sends, 2)
+        self.assertIn("sending it again", result.stderr)
+
+    def test_one_the_wallet_keeps_refusing_ends_after_three_sends(self):
+        result, sends = self.sign(lost=99, deadline=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(sends, 3)
+        self.assertIn("never recorded the signature", result.stderr)
+
+    def test_nothing_is_sent_that_could_outlive_the_deadline(self):
+        """What makes a failure report final: no message it sent can still execute."""
+        result, sends = self.sign(lost=99, deadline=2)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(sends, 1)
+
+    def test_a_wallet_that_needs_several_signatures_gets_room_for_a_resend(self):
+        program = f"""source "{SCRIPTS / 'managed_ops.shinc'}"
+MSG_LIFETIME=60
+echo "$(Signing_Window 1) $(Signing_Window 3) $(Required_Signs=2 Signing_Window)"
+"""
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.stdout.split(), ["120", "240", "240"])

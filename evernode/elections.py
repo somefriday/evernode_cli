@@ -115,6 +115,65 @@ def disable_node_election_schedule(name):
         path.unlink()
 
 
+def election_lock_path(store, name):
+    """The lock a scheduled election run holds for its whole run."""
+    return store.node_directory(name) / "elections" / "evernode-election.lock"
+
+
+def write_election_programs(store, config):
+    """Write the sequence a scheduled run follows and the runner cron starts;
+    return the runner. `election start` writes them, and `node sync-scripts`
+    again, so an update reaches a node whose schedule is installed.
+
+    Each file is replaced whole, never rewritten in place: a run that is
+    reading the old one keeps it to its end.
+    """
+    workspace = store.node_directory(config["name"])
+    for directory in (
+        workspace,
+        workspace / "scripts",
+        workspace / "logs" / "validator",
+        workspace / "elections",
+    ):
+        storage.validate_private_path(directory)
+    runner = workspace / "run-elections.sh"
+    sequence = election_sequence_path(store, config)
+    lock = election_lock_path(store, config["name"])
+    # A node enabled before the sequences were separated has the other type's
+    # file sitting beside this one. Nothing references it, but leaving it there
+    # makes it unclear which script cron runs.
+    for other in (DEPOOL_SEQUENCE_FILE, SOLO_SEQUENCE_FILE):
+        stale = workspace / other
+        if stale != sequence and stale.is_file() and not stale.is_symlink():
+            stale.unlink()
+    if configuration.validator_type(config) in ("solo", "nominator"):
+        program = _solo_sequence_program(
+            workspace / "scripts", workspace / "elections" / "last-preparation.log"
+        )
+    else:
+        program = _depool_sequence_program(workspace / "scripts")
+    _replace_program(sequence, program)
+    _replace_program(
+        runner,
+        "#!/bin/bash\n"
+        f"flock -n -E 200 {shlex.quote(str(lock))} /bin/bash {shlex.quote(str(sequence))}\n"
+        "status=$?\n"
+        "# A run skipped for the lock says so: one held by a command left waiting\n"
+        "# at a prompt would otherwise stop the elections without a trace.\n"
+        "[[ $status -ne 200 ]] || echo \"$(date '+%F %T %Z') skipped: another run"
+        " or an evernode command holds this node's election lock\"\n"
+        "exit $status\n",
+    )
+    return runner
+
+
+def _replace_program(path, text):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text)
+    os.chmod(temporary, 0o700)
+    os.replace(temporary, path)
+
+
 def enable_node_election_schedule(store, config, executable="/usr/local/bin/evernode"):
     """Write an independent cron file using the upstream election sequence.
 
@@ -125,46 +184,8 @@ def enable_node_election_schedule(store, config, executable="/usr/local/bin/ever
     name = configuration.validate_node_name(config["name"])
     if node_election_cron_path(name).exists():
         raise process.OperationError("Election schedule is already enabled")
-    workspace = store.node_directory(name)
-    for directory in (
-        workspace,
-        workspace / "scripts",
-        workspace / "logs" / "validator",
-        workspace / "elections",
-    ):
-        storage.validate_private_path(directory)
-    runner = workspace / "run-elections.sh"
-    sequence = election_sequence_path(store, config)
-    lock = workspace / "elections" / "evernode-election.lock"
-    log = workspace / "logs" / "validator" / "election-cron.log"
-    # A node enabled before the sequences were separated has the other type's
-    # file sitting beside this one. Nothing references it, but leaving it there
-    # makes it unclear which script cron runs.
-    for other in (DEPOOL_SEQUENCE_FILE, SOLO_SEQUENCE_FILE):
-        stale = workspace / other
-        if stale != sequence and stale.is_file() and not stale.is_symlink():
-            stale.unlink()
-    if configuration.validator_type(config) in ("solo", "nominator"):
-        sequence.write_text(
-            _solo_sequence_program(
-                workspace / "scripts",
-                workspace / "elections" / "last-preparation.log",
-            )
-        )
-    else:
-        sequence.write_text(_depool_sequence_program(workspace / "scripts"))
-    os.chmod(sequence, 0o700)
-    runner.write_text(
-        "#!/bin/bash\n"
-        f"flock -n -E 200 {shlex.quote(str(lock))} /bin/bash {shlex.quote(str(sequence))}\n"
-        "status=$?\n"
-        "# A run skipped for the lock says so: one held by a command left waiting\n"
-        "# at a prompt would otherwise stop the elections without a trace.\n"
-        "[[ $status -ne 200 ]] || echo \"$(date '+%F %T %Z') skipped: another run"
-        " or an evernode command holds this node's election lock\"\n"
-        "exit $status\n"
-    )
-    os.chmod(runner, 0o700)
+    runner = write_election_programs(store, config)
+    log = store.node_directory(name) / "logs" / "validator" / "election-cron.log"
     interval = configuration.build_node_environment(config)["CRONTAB_INTERVAL"]
     content = (
         "# Managed by evernode\n"
@@ -267,7 +288,7 @@ def hold_election_lock(store, name):
     """
     # A mistyped name is refused by name, not by a missing lock directory.
     store.validate_node_directory(name)
-    path = store.node_directory(name) / "elections" / "evernode-election.lock"
+    path = election_lock_path(store, name)
     # The reference runner creates this lock itself under the default umask, so
     # only its private parent directory and the absence of a symlink are checked.
     storage.validate_private_path(path.parent)

@@ -678,6 +678,18 @@ class ScriptRefreshCommandTests(unittest.TestCase):
         confirm.assert_not_called()
         self.assertEqual(self.events, [])
 
+    def test_a_scheduled_node_gets_the_runner_and_sequence_of_this_version(self):
+        for flags, rewritten in ((("--yes",), 1), (("--dry-run",), 0)):
+            with (
+                self.subTest(flags=flags),
+                patch("evernode.cli.elections.node_election_cron_path") as cron,
+                patch("evernode.cli.elections.write_election_programs") as write,
+            ):
+                cron.return_value.exists.return_value = True
+                code, _, _ = self.run_refresh(*flags)
+                self.assertEqual(code, 0)
+                self.assertEqual(write.call_count, rewritten)
+
     def test_a_held_election_lock_fails_the_node_without_stopping_the_batch(self):
         installed = []
 

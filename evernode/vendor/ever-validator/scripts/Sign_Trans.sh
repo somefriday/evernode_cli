@@ -172,7 +172,7 @@ echo "******************************"
 # expired", and it replaces a fixed attempt budget that used to give up with
 # most of the transaction's valid life still ahead of it.
 declare -i Now=$(date +%s)
-declare -i Sign_Deadline=$(( Now + 2 * ${MSG_LIFETIME:-60} ))
+declare -i Sign_Deadline=$(( Now + $(Signing_Window "$Confirms_QTY") ))
 Expires_At="$(Trans_Expires_At "${MSIG_ADDR}" "${Trans_ID}")"
 if [[ $Expires_At =~ ^[0-9]+$ ]];then
     if [[ $Expires_At -le $Now ]];then

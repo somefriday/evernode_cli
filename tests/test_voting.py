@@ -20,7 +20,7 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 if args == ["--version"]:
-    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.2"))
+    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.3"))
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 with open(os.environ["FAKE_ENGINE_LOG"], "a") as log:
@@ -125,6 +125,7 @@ class VoteGroupTests(unittest.TestCase):
         cases = [
             (["cast", "--endpoint", "u", "--keyring", "k", "--net", "n.json"], "--net:"),
             (["mint-wallet", "--name", "payer", "--secret", "00"], "never accepted"),
+            (["propose", "--endpoint", "u", "--burn", "--from", "w.json", "--lock", "/tmp/x"], "names the lock itself"),
             (["cast", "--keyring", "k", "--proposal", PROPOSAL], "EVERNODE_ENDPOINT"),
             (["cast", "--endpoint", "u", "--proposal", PROPOSAL], "signs with validator keys"),
             (["run", "--endpoint", "u", "--keyring", "k", "--burn", "--pay-from", ADDRESS], "pay only with propose"),
@@ -183,7 +184,9 @@ class VoteGroupTests(unittest.TestCase):
         self.assertEqual(missing, 1)
         self.assertIn("validator02: no key ring yet; start its node first", missing_err)
 
-    def test_the_safe_pays_under_both_locks_in_one_engine_run(self):
+    def test_the_safe_pays_in_one_engine_run_that_takes_the_election_lock_itself(self):
+        """The engine locks after the operator's answer, so a question left open
+        holds up no scheduled election run; evernode keeps the operation lock."""
         state, store = self.managed_node()
         events = []
 
@@ -197,14 +200,17 @@ class VoteGroupTests(unittest.TestCase):
         with (
             patch("evernode.voting.storage.NodeStateStore", return_value=store),
             patch("evernode.voting.storage.validate_private_path"),
-            patch("evernode.voting.elections.hold_election_lock", side_effect=lambda s, n: lock("election lock")),
+            patch("evernode.voting.elections.hold_election_lock") as election_lock,
         ):
             code, _ = self.vote("propose", "-n", "validator01", "--pay-from-safe", "--burn", "--endpoint", "u", euid=0)
         self.assertEqual(code, 0)
         # review 1, #21: one engine run shows the price, asks and pays, so what is paid is what was shown
-        self.assertEqual(events, [("operation lock", 0), ("election lock", 0), ("released", 1), ("released", 1)])
+        self.assertEqual(events, [("operation lock", 0), ("released", 1)])
+        election_lock.assert_not_called()
         [paid] = self.calls()
         self.assertNotIn("--yes", paid["argv"])
+        lock = paid["argv"][paid["argv"].index("--lock") + 1]
+        self.assertEqual(lock, str(state / "nodes" / "validator01" / "elections" / "evernode-election.lock"))
         keys = state / "nodes" / "validator01" / "keys"
         self.assertEqual(
             paid["net"]["payer"],
@@ -216,12 +222,21 @@ class VoteGroupTests(unittest.TestCase):
             },
         )
 
+    def test_the_engine_locks_after_the_answer_and_before_it_pays(self):
+        source = (Path(__file__).resolve().parents[1] / "vote/src/campaign.rs").read_text()
+        propose = source[source.index("fn propose("):]
+        propose = propose[: propose.index("\n}\n")]
+        asked = propose.index("crate::confirm(&question)")
+        locked = propose.index("hold_lock(path)?")
+        paid = propose.index("payer.transfer(")
+        self.assertLess(asked, locked)
+        self.assertLess(locked, paid)
+
     def test_a_depool_safe_cannot_pay_and_a_failed_run_pays_nothing(self):
         _, store = self.managed_node(validator_type="depool")
         with (
             patch("evernode.voting.storage.NodeStateStore", return_value=store),
             patch("evernode.voting.storage.validate_private_path"),
-            patch("evernode.voting.elections.hold_election_lock"),
         ):
             code, err = self.vote("propose", "-n", "validator01", "--pay-from-safe", "--burn", "--endpoint", "u", euid=0)
         self.assertEqual(code, 1)
@@ -269,7 +284,7 @@ class VoteGroupTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_ENGINE_VERSION": "evernode-vote 0.0.9"}):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertEqual(code, 1)
-        self.assertIn("needs evernode-vote 0.2.2: run sudo evernode host setup", err)
+        self.assertIn("needs evernode-vote 0.2.3: run sudo evernode host setup", err)
         with patch("evernode.voting.shutil.which", return_value=None):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertIn("evernode-vote is not installed: run sudo evernode host setup", err)

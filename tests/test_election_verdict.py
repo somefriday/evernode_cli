@@ -177,6 +177,13 @@ class ElectionScriptInvariantTests(unittest.TestCase):
         self.assertNotIn("Bid_Deadline=$Elections_Close", self.code)
         self.assertNotIn("elections have closed", self.code)
 
+    def test_the_run_that_confirms_the_bid_records_it(self):
+        """No later run asks the elector again, where a failed read could look
+        like a missing bid and send it a second time."""
+        confirmed = self.text.index('Effect_Elector_Has_Our_ADNL "$Bid_ADNL";then')
+        block = self.text[confirmed: self.text.index("exit 0", confirmed)]
+        self.assertIn('"${CURR_ELECTIONS_DIR}/${elections_id}_elector-confirmed-bid.txt"', block)
+
     def test_the_keys_to_confirm_with_come_from_the_wallet_not_from_a_count(self):
         """Whichever custodian submitted has already signed, and confirming
         with that key again is rejected before tvm.accept() - leaving nothing

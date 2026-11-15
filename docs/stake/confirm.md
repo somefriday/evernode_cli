@@ -24,6 +24,7 @@ Adds the signatures of the custodian keys held on this node to one named pending
 
 - For solo and nominator validators; a DePool validator uses `depool confirm`.
 - Signing executes the transfer the transaction carries: read its destination and value first.
+- A signature the Safe has not recorded within a minute was lost and is sent again, three times at most.
 - While a request to the elector or the contract is pending, scheduled runs neither recover nor bid. It expires after an hour.
 
 ## See also

@@ -177,6 +177,9 @@ enum Cmd {
         /// pay without asking
         #[arg(long)]
         yes: bool,
+        /// lock this file (flock) after the answer and before paying, and pay nothing if it is held
+        #[arg(long, value_name = "FILE")]
+        lock: Option<PathBuf>,
     },
     /// Vote for a registered proposal with every current validator key the listed nodes hold, and wait until
     /// the config counts each vote in this round
@@ -372,7 +375,7 @@ fn main() -> Result<()> {
                 None => println!("unset"),
             }
         }
-        Cmd::Propose { net, change, wallets, dry_run, yes } => {
+        Cmd::Propose { net, change, wallets, dry_run, yes, lock } => {
             let net = Net::load(&net)?;
             let cfg = net.config()?;
             let plan = change.plan(&cfg)?;
@@ -386,7 +389,7 @@ fn main() -> Result<()> {
                 plan.hash
             );
             report::warn_round_end(&cfg)?;
-            let opts = Options { yes, ..options(wallets, LoopArgs { poll: 5, settle: 0, timeout: Some(400) }) };
+            let opts = Options { yes, lock, ..options(wallets, LoopArgs { poll: 5, settle: 0, timeout: Some(400) }) };
             if dry_run {
                 let payer = campaign::payer(&net, opts.payer.as_deref()).map(|w| w.address).unwrap_or(StdAddr::new(-1, HashBytes([0x77; 32])));
                 let r = campaign::Registration::new(&cfg, &plan, opts.ttl)?;
@@ -583,6 +586,7 @@ fn options(w: Wallets, l: LoopArgs) -> Options {
         poll: Duration::from_secs(l.poll),
         settle: l.settle,
         timeout: l.timeout.map(Duration::from_secs),
+        lock: None,
     }
 }
 

@@ -214,6 +214,10 @@ def handle_script_refresh(store, args):
                     confirm=approve,
                     bundled=args.bundled,
                 )
+                # The runner and the sequence come with evernode, not the kit:
+                # a node whose schedule is installed gets this version's.
+                if not args.dry_run and elections.node_election_cron_path(name).exists():
+                    elections.write_election_programs(store, config)
                 # A dry run, or an interactive run that found nothing to
                 # change, only shows the plan.
                 if args.dry_run or (not args.yes and not plan["changed"]):

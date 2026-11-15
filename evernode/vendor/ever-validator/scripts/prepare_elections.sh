@@ -340,7 +340,7 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         # the request is identified by its content and this node's own key,
         # each signature is evidenced before the next is sent, and the effect
         # is the recovered stake arriving in the wallet.
-        declare -i Recover_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+        declare -i Recover_Deadline=$(( $(date +%s) + $(Signing_Window) ))
         declare -i Wallet_Before=$(( $(echo "$(Get_Account_Info "${Recover_Subject}")" | awk '{print $2}') ))
         New_Elect_Trans_ID=""
         if [[ ${Required_Signs} -gt 1 ]];then
@@ -639,7 +639,7 @@ echo "+++-INFO(${SelfScriptName} line $LINENO): Tik message was created with ID:
 # the newest by position; every operation of every custodian targets that same
 # address, so the signatures below could have gone to a transaction this node
 # did not create. Identity is now the content plus our own submitting key.
-declare -i Tik_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+declare -i Tik_Deadline=$(( $(date +%s) + $(Signing_Window) ))
 New_Elect_Trans_ID=""
 if [[ ${Required_Signs} -gt 1 ]];then
     New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Depool_addr" \

@@ -425,6 +425,39 @@ class LocalSyncTests(unittest.TestCase):
             any(path.name.endswith(".backup") for path in target_dir.iterdir())
         )
 
+    def test_a_copy_that_cannot_be_deleted_does_not_hide_why_the_sync_failed(self):
+        def remove(path):
+            raise OSError("Directory not empty")
+
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            starts = self._target_fails_to_start(process.OperationError, remove)
+        self.assertEqual(starts, ["source", "target", "target"])
+        self.assertIn(".failed was not removed (Directory not empty); delete it by hand", errors.getvalue())
+
+    def test_an_old_database_that_cannot_be_deleted_does_not_fail_a_finished_sync(self):
+        def copy_database(command, **_kwargs):
+            shutil.copytree(
+                Path(str(command[-2]).rstrip("/")),
+                Path(str(command[-1]).rstrip("/")),
+                ignore=shutil.ignore_patterns("catchains"),
+            )
+
+        def remove(path):
+            if path.name.endswith(".backup"):
+                raise OSError("Directory not empty")
+
+        with (
+            patch("evernode.nodes.fetch_node_statistics", side_effect=self._statistics),
+            patch("evernode.nodes.stop_node"),
+            patch("evernode.nodes.start_node"),
+            patch("evernode.nodes.process.execute_command", side_effect=copy_database),
+            patch("evernode.nodes._remove_directory", side_effect=remove),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            result = nodes.local_sync(self.store, "source", "target")
+        self.assertEqual(result["target"], "target")
+        self.assertIn(".backup was not removed", errors.getvalue())
+
     def test_an_interrupt_while_the_failed_copy_is_deleted_keeps_the_old_database(self):
         """Deleting a whole copy takes minutes, so it comes after the restore and the restarts."""
 

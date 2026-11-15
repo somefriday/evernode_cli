@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -371,6 +372,14 @@ def _remove_directory(path):
         shutil.rmtree(path)
 
 
+def _remove_leftover(path):
+    """Cleanup never changes the result: a directory that stays is named."""
+    try:
+        _remove_directory(path)
+    except (OSError, process.OperationError) as exc:
+        print(f"Warning: {path} was not removed ({exc}); delete it by hand", file=sys.stderr)
+
+
 def _restart_after_failed_local_sync(store, config, was_stopped, errors):
     if not was_stopped:
         return
@@ -457,8 +466,8 @@ def local_sync(store, source_name, target_name, *, timeout=30):
         finally:
             # Last, once both nodes run again: each is a whole database, and
             # deleting one takes minutes.
-            _remove_directory(staging)
-            _remove_directory(failed)
+            _remove_leftover(staging)
+            _remove_leftover(failed)
         # The target runs on the copy, so the sync is done and nothing below may
         # undo it: removing the old database is cleanup, and a failure or an
         # interrupt there leaves only that directory behind.
@@ -477,7 +486,7 @@ def local_sync(store, source_name, target_name, *, timeout=30):
                 "completed_at": int(time.time()),
             },
         )
-        _remove_directory(backup)
+        _remove_leftover(backup)
         return {
             "source": source_name,
             "target": target_name,

@@ -29,7 +29,7 @@ Stops both nodes, copies the source's block database into the target with `rsync
 - Refuses while an election run that began before `election stop` is still using either node; retry when it finishes.
 - Both nodes must be running: the checks read their consoles.
 - If the copy fails or is interrupted (Ctrl+C, a closed SSH session), or the target does not start on the copied database, the target gets its previous database back and both nodes are started again.
-- Once the target runs on the copy, its previous database is deleted. An interrupt then keeps the copy and leaves the rest of the old one in `.node_db-lsync-*.backup` in the target's workspace, to delete by hand.
+- The database it no longer needs is deleted last. A deletion that fails is only warned about and never changes the result; an interrupt leaves the rest of it. What stays is a `.node_db-lsync-*` directory in the target's workspace, named in the warning, to delete by hand.
 - Needs free space for one more copy of the source database.
 
 ## See also

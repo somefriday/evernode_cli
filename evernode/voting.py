@@ -34,7 +34,7 @@ from . import arguments, configuration, elections, process, storage, wallets
 
 ENGINE = "evernode-vote"
 # The engine release this module speaks to; vote/Cargo.toml has the same version.
-ENGINE_VERSION = "0.2.2"
+ENGINE_VERSION = "0.2.3"
 # host setup builds it from the vote/ sources this package carries.
 INSTALL = "sudo evernode host setup"
 # Commands that read neither the chain nor a key, and those that sign votes.
@@ -44,6 +44,7 @@ VOTING_COMMANDS = ("cast", "run", "burn")
 REFUSED_OPTIONS = {
     "--net": "evernode describes the network itself; run evernode-vote for a net file",
     "--secret": "secrets are never accepted as command arguments",
+    "--lock": "evernode names the lock itself: the node's election lock, for --pay-from-safe",
 }
 
 
@@ -231,7 +232,9 @@ def pay_and_propose(engine, rest, net, store, options):
     """propose, paid from the wallet evernode was told to use.
 
     A node's Safe pays under the node's operation and election locks, like
-    every other spend from it. A campaign runs for days and must not hold
+    every other spend from it. The engine takes the election lock itself,
+    after the operator answered and before it pays, so a question left open
+    holds up no election run. A campaign runs for days and must not hold
     them, so join only votes.
     """
     if "--dry-run" in rest:
@@ -251,9 +254,10 @@ def pay_and_propose(engine, rest, net, store, options):
     # A DePool validator's Safe can never pay: say so before waiting for any lock.
     require_masterchain_safe(store.load_node_config(options.name))
     with store.acquire_operation_lock(options.name):
-        with elections.hold_election_lock(store, options.name):
-            safe = node_safe(store, store.load_node_config(options.name))
-            return paid_propose(engine, rest, net, options.yes, safe)
+        safe = node_safe(store, store.load_node_config(options.name))
+        lock = elections.election_lock_path(store, options.name)
+        storage.validate_private_path(lock.parent)
+        return paid_propose(engine, [*rest, "--lock", str(lock)], net, options.yes, safe)
 
 
 def paid_propose(engine, rest, net, yes, payer, *, ask_phrase=False):

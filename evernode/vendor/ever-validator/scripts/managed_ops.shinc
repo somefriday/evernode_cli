@@ -531,6 +531,9 @@ function Await_Signature_Recorded() {
 # proof that the last signature executed the transfer - provided we are still
 # inside the entry's own lifetime, which is what the caller's deadline
 # guarantees. Outside it, absence would also be what expiry looks like.
+# A confirmation the wallet has not recorded within its own lifetime was lost
+# (or refused) and is sent again, three times at most; Signing_Window gives
+# callers the room for that.
 # Input:
 #  - msig_address
 #  - msig_name
@@ -545,7 +548,7 @@ function Sign_To_Execution() {
     local Trans_ID="$3"
     local Deadline="$4"
     local Label="$5"
-    local entry status unsigned index key_file mask received required sent=0
+    local entry status unsigned index key_file mask received required sent=0 tries=0 wait_until
     while :; do
         if [[ $(date +%s) -ge $Deadline ]];then
             echoerr "###-ERROR: ${Label}: transaction ${Trans_ID} is still unsigned and its deadline has passed, so nothing further was sent."
@@ -586,15 +589,40 @@ function Sign_To_Execution() {
             echoerr "###-WARNING: ${Label}: the node did not acknowledge the confirmation from custodian ${index}; waiting to see whether it arrived."
         fi
         sent=$((sent + 1))
-        Await_Signature_Recorded "$MSIG_ADDR" "$Trans_ID" "$index" "$Deadline"
+        tries=$((tries + 1))
+        # A confirmation lives one message lifetime, so that is how long the
+        # wallet gets to record it, not the whole deadline.
+        wait_until=$(( $(date +%s) + ${MSG_LIFETIME:-60} + ${EFFECT_MIN_WAIT:-10} ))
+        [[ $wait_until -gt $Deadline ]] && wait_until=$Deadline
+        Await_Signature_Recorded "$MSIG_ADDR" "$Trans_ID" "$index" "$wait_until"
         case $? in
-            0) continue ;;
+            0) tries=0; continue ;;
             2) printf "%s\n" "+++-INFO: ${Label}: transaction ${Trans_ID} executed on the signature from custodian ${index}."
                return 0 ;;
         esac
+        # Lost, or refused, which looks the same: sent again, three times at
+        # most, and only while the deadline leaves a new message its whole
+        # lifetime, so nothing sent can still execute once this reports failure.
+        if [[ $tries -lt 3 ]] && [[ $(( $(date +%s) + ${MSG_LIFETIME:-60} )) -le $Deadline ]];then
+            echoerr "###-WARNING: ${Label}: the signature of custodian ${index} was not recorded within its lifetime; sending it again."
+            continue
+        fi
         echoerr "###-ERROR: ${Label}: the wallet never recorded the signature of custodian ${index} for transaction ${Trans_ID}. A confirmation the wallet refuses is recorded in no block, so the chain cannot say why; check 'evernode depool info', or 'evernode stake status' for a solo or nominator validator, for the signatures it does hold."
         return 1
     done
+}
+#=================================================
+# How long signing may take: two message lifetimes, or four when the wallet
+# needs more than one signature, which leaves Sign_To_Execution room to send a
+# lost confirmation again.
+# Input: the signatures the wallet requires (default: Required_Signs)
+# Output: seconds
+function Signing_Window() {
+    if [[ ${1:-${Required_Signs:-1}} -gt 1 ]];then
+        echo $(( ${MSG_LIFETIME:-60} * 4 ))
+    else
+        echo $(( ${MSG_LIFETIME:-60} * 2 ))
+    fi
 }
 #=================================================
 # The moment a pending transaction stops being signable.
@@ -628,8 +656,8 @@ function Trans_Expires_At() {
 #     transaction is dead and no further signature can revive it, and
 #   - this command's own patience, so an operator is not left waiting for an
 #     hour on a transfer that normally lands in seconds.
-# That patience is twice MSG_LIFETIME, so it always outlasts every message
-# this operation signed: by the time a failure is reported, nothing we sent
+# That patience is Signing_Window, at least twice MSG_LIFETIME, so it always
+# outlasts every message this operation signed: by the time a failure is reported, nothing we sent
 # can still execute, which is what makes the report final rather than a guess.
 # When a resumed transaction is already close to expiry the first bound wins,
 # which is the case where waiting longer could not have helped anyway.
@@ -670,7 +698,7 @@ function Complete_And_Await() {
         expired=true
     else
         deadline=$(Min_Deadline "$contract_deadline" \
-            "$((now + ${EFFECT_WAIT_MAX:-$(( ${MSG_LIFETIME:-60} * 2 ))}))") || return 1
+            "$((now + ${EFFECT_WAIT_MAX:-$(Signing_Window)}))") || return 1
     fi
     # shellcheck disable=SC2154
     if [[ ${Required_Signs:-1} -gt 1 ]] && ! $expired;then

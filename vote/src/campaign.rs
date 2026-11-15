@@ -64,6 +64,9 @@ pub struct Options {
     pub settle: u32,
     /// give up after this long (`None`: until the outcome; a critical change takes 4+ rounds of ~18 h on mainnet)
     pub timeout: Option<Duration>,
+    /// a file to lock (flock) once the payment is agreed, before anything is sent, until the process ends:
+    /// whoever holds it is using the payer
+    pub lock: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -604,6 +607,38 @@ impl std::fmt::Display for Stop {
 
 impl std::error::Error for Stop {}
 
+/// Holds the lock at `path` until the process ends, taken once.
+fn hold_lock(path: &Path) -> Result<()> {
+    static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    if HELD.get().is_none() {
+        let _ = HELD.set(take_lock(path)?);
+    }
+    Ok(())
+}
+
+/// The lock at `path`, or a `Stop` if someone holds it: evernode passes the node's election lock, which a
+/// scheduled election run holds while it uses the same Safe.
+fn take_lock(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("lock {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Stop(format!(
+            "nothing paid: {} is locked, so an election run is using the payer; propose again when it finishes",
+            path.display()
+        ))
+        .into()),
+        Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("lock {}", path.display())),
+    }
+}
+
 /// Pays for `plan` with registration `r` once its dry run passed and the operator confirmed the value (once:
 /// `confirmed` remembers it).
 fn propose(chain: &Graphql, cfg: &ConfigAccount, plan: &Plan, r: &Registration, payer: &Wallet, opts: &Options, confirmed: &mut Option<u128>) -> Result<Transfer> {
@@ -631,6 +666,10 @@ fn propose(chain: &Graphql, cfg: &ConfigAccount, plan: &Plan, r: &Registration, 
             return Err(Stop("nothing paid: the payment was declined".into()).into());
         }
         *confirmed = Some(r.value);
+    }
+    // after the answer, so a question left open holds nobody up, and before the payment
+    if let Some(path) = &opts.lock {
+        hold_lock(path)?;
     }
     let transfer = payer.transfer(chain, cfg, &cfg.address, r.value, r.body.clone())?;
     if let Transfer::Sent(_) = transfer {
@@ -798,6 +837,33 @@ pub(crate) fn effect(after: &ConfigAccount, b: &Ballot, accepts: bool, at: u32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lock_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("evernode-vote-{name}-{}.lock", std::process::id()))
+    }
+
+    #[test]
+    fn a_held_lock_stops_the_payment_before_anything_is_sent() {
+        let path = lock_file("held");
+        let election_run = std::fs::File::create(&path).unwrap();
+        election_run.try_lock().unwrap();
+        let e = take_lock(&path).unwrap_err();
+        assert!(e.downcast_ref::<Stop>().is_some(), "a Stop ends the run: no pass pays later");
+        assert!(e.to_string().starts_with("nothing paid: "), "{e}");
+        drop(election_run);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_free_lock_is_taken_and_kept_from_an_election_run() {
+        let path = lock_file("free");
+        let held = take_lock(&path).unwrap();
+        let election_run = std::fs::File::open(&path).unwrap();
+        assert!(matches!(election_run.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        drop(held);
+        assert!(election_run.try_lock().is_ok());
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn the_elector_wait_returns_once_the_code_is_there_and_gives_up_after_the_delay() {

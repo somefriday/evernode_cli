@@ -103,6 +103,8 @@ elif "getDePoolInfo" in args:
     print(json.dumps({"validatorWallet": "0:" + "a" * 64}))
 elif "get" in args:
     print(os.environ["TEST_ELECTOR_RESPONSE"])
+elif "runget" in args:
+    print(os.environ.get("TEST_RUNGET_RESPONSE", ""))
 else:
     raise RuntimeError((tool, args))
 """
@@ -317,6 +319,19 @@ else:
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
+
+    def test_a_participant_list_that_could_not_be_read_is_not_absent(self):
+        """FunC elector: an empty read was taken for "absent", the saved request
+        was sent again, and a solo or nominator stake was added a second time."""
+        program = ('source ./env.sh; source ./functions.shinc; '
+                   'Get_Current_Elector_Type() { echo "elector fift"; }; '
+                   'Elector_ADNL_Search ' + 'a' * 64)
+        for response, code in (("", 2), ('Result: ["1793451980", "1793458000"]', 4)):
+            with self.subTest(response=response):
+                result = subprocess.run(['bash', '-c', program], cwd=self.script_dir,
+                                        env=dict(os.environ, TEST_RUNGET_RESPONSE=response),
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
 
     def test_an_elector_no_description_decodes_is_its_own_outcome(self):
         """Unreadable is not the same as "wrong elector type", and not fatal.

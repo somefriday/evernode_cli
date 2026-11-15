@@ -660,6 +660,12 @@ function Get_Account_Custodians_Info() {
     local ACC_BOC="${INPL_ELECTIONS_WORK_DIR}/${ACCOUNT##*:}.boc"
     Custod_QTY=$($CALL_CLI   -j run --boc "${ACC_BOC}" getCustodians '{}' --abi "${INPL_SafeC_Wallet_ABI}" | jq -r '.custodians|length')
     Confirms_QTY=$($CALL_CLI -j run --boc "${ACC_BOC}" getParameters '{}' --abi "${INPL_SafeC_Wallet_ABI}" | jq -r '.requiredTxnConfirms')
+    # A getter that failed gives "null" or nothing, which every "-gt 1" test
+    # would take for a wallet that needs one signature.
+    if [[ ! $Custod_QTY =~ ^[1-9][0-9]*$ ]] || [[ ! $Confirms_QTY =~ ^[1-9][0-9]*$ ]];then
+        log_error_stack "Cannot read the custodians of $ACCOUNT (got '${Custod_QTY}' and '${Confirms_QTY}')"
+        return 1
+    fi
     echo "${Custod_QTY} ${Confirms_QTY}"
 }
 #=================================================
@@ -870,6 +876,13 @@ function Elector_ADNL_Search() {
     case "${ELECTOR_TYPE}" in
         fift)
             local Elector_Parts_List="$($CALL_CLI runget --boc "${NET_ELECTOR_BOC}" participant_list_extended | grep -i 'result:' | tr "]]" "\n" | tr '[' '\n' | awk 'NF > 0'| tr '","' ' ')"
+            # A read that failed returns nothing, which is not "absent": taken
+            # for it, the run would send a bid the elector may already hold, and
+            # a solo or nominator stake would then be added a second time.
+            if [[ -z $Elector_Parts_List ]];then
+                log_error_stack "Cannot read the elector's participant list"
+                return $ERR_ELECTOR_TYPE
+            fi
             local Elections_Open=$(echo "$Elector_Parts_List" | grep -F '0 0 0 0 null 0 0')
             if [[ -n $Elections_Open ]];then
                 echo "null"
@@ -1242,7 +1255,9 @@ function top_app_account () {
         [[ "$Acc_Status" == "None" ]] && log_error_stack "Account does not exist! (no tokens, no code, nothing" && return 1
     [[ "$Acc_Status" == "Uninit" ]] && log_error_stack "Account Uninited" && return 1
     # Submit_And_Identify and Complete_And_Await read it as well.
-    local Required_Signs=$(Get_Account_Custodians_Info "$Validator_addr" | awk '{print $2}')
+    local Custodians Required_Signs
+    Custodians=$(Get_Account_Custodians_Info "$Validator_addr") || return 1
+    read -r _ Required_Signs <<< "$Custodians"
     # -------------------------------------------
     # Make BOC file to send
     local TOPUP_BOC_File="${ELECTIONS_WORK_DIR}/${Account_Addr##*:}_topup.boc"

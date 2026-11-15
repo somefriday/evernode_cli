@@ -712,9 +712,9 @@ fi
 # A network that has stalled keeps its election open long past this nominal
 # close - the local test network sat four hours past it with the set unfilled -
 # and the elector still accepts bids there, which is how such a network
-# recovers; so signing always gets at least two message lifetimes.
+# recovers; so signing always gets at least its Signing_Window.
 declare -i Elections_Close=$(( elections_id - elections_end_before ))
-declare -i Sign_Deadline=$(( $(date +%s) + 2 * ${MSG_LIFETIME:-60} ))
+declare -i Sign_Deadline=$(( $(date +%s) + $(Signing_Window) ))
 if [[ $Elections_Close -gt $Sign_Deadline ]];then
     Sign_Deadline=$Elections_Close
 fi
@@ -799,8 +799,10 @@ if ! $Elector_Readable;then
 fi
 if Await_Effect "The bid in elections $elections_id" "$Bid_Deadline" \
         "$LC_Send_MSG_Timeout" Effect_Elector_Has_Our_ADNL "$Bid_ADNL";then
+    # Recorded now, so no later run asks the elector again: a read that failed
+    # there must not get the chance to look like a missing bid.
     echo "+++-INFO: The elector lists this node as a participant of elections $elections_id." \
-        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log" "${CURR_ELECTIONS_DIR}/${elections_id}_elector-confirmed-bid.txt"
     echo
     echo "+++INFO: $SelfScriptName FINISHED $(date +%s) / $(date  +'%F %T %Z')"
     echo "================================================================================================"

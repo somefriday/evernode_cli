@@ -45,7 +45,7 @@ Checks the change against the contract's rules, shows it and its price, dry-runs
 - The payer needs the price plus 3 tokens; the config keeps the price and returns the rest.
 - A proposal already registered is not paid for again; a change already in effect is refused.
 - Warns when the elections for the next round have closed: an unwon round costs one allowed loss.
-- `--pay-from-safe` holds the node's election lock until it ends, so answer the prompt promptly.
+- `--pay-from-safe` takes the node's election lock only after you answer, for the payment. While a scheduled election run holds it, nothing is paid: propose again when the run finishes.
 - A wallet file, and the key files it names, must be readable by their owner only.
 
 ## See also
