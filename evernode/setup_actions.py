@@ -57,12 +57,6 @@ def _confirmation_question(args, config):
             f"Withdraw {target} from {name}'s DePool? The stake is released when its "
             "round completes, which can end this node's validation."
         )
-    if (args.group, args.action) == ("depool", "confirm"):
-        return (
-            f"Add {name}'s remaining signatures to transaction "
-            f"{args.transaction_id}? Review it in depool info first; signing "
-            "executes the transfer it carries."
-        )
     if (args.group, args.action) == ("depool", "stake"):
         return f"Stake {args.amount} tokens from {name}'s Safe into its DePool?"
     if (args.group, args.action) == ("depool", "replenish"):
@@ -99,13 +93,68 @@ def _confirmation_question(args, config):
         )
     if (args.group, args.action) == ("stake", "recover"):
         return f"Ask the elector to return {name}'s finished-round stake to its {account}?"
-    if (args.group, args.action) == ("stake", "confirm"):
-        return (
-            f"Add {name}'s remaining signatures to transaction "
-            f"{args.transaction_id}? Review it in stake status first; signing "
-            "executes the transfer it carries."
-        )
     return f"Run {args.group} {args.action} for {name}?"
+
+
+# Signing one named Safe transaction executes the transfer it carries.
+CONFIRM_ACTIONS = (("depool", "confirm"), ("stake", "confirm"))
+
+
+def _own_contracts(store, config):
+    """The accounts this node's own operations pay from its Safe, by address."""
+    contracts = {
+        nodes.fetch_special_address(config, 1): "the elector",
+        nodes.fetch_special_address(config, 0): "the config contract",
+    }
+    kind = configuration.validator_type(config)
+    if kind == "depool":
+        profile = wallets.node_wallet_profile(config)
+        contracts[profile["depool_address"]] = "this node's DePool"
+        state = scripts.read_depool_state(
+            store, config, profile["depool_address"], profile["wallet_address"]
+        )
+        for proxy in state.get("proxies") or []:
+            contracts[proxy] = "a proxy of this node's DePool"
+    elif kind == "nominator":
+        address = (config.get("settings") or {}).get("NOMINATOR_ADDR")
+        if address:
+            contracts[address] = "this node's nominator contract"
+    return {address.lower(): whose for address, whose in contracts.items()}
+
+
+def _review_transaction(store, config, args):
+    """The question before signing a Safe transaction: what it sends, and to
+    whom. One that pays none of this node's own contracts is refused unless
+    --force, since signing it sends the money there."""
+    wallets.require_confirmable(config, args.group, args.transaction_id)
+    name, wanted = config["name"], str(args.transaction_id)
+    wallet = wallets.node_wallet_profile(config)["wallet_address"]
+    pending = scripts.read_wallet_pending(store, config, wallet).get("pending_transactions") or []
+    entry = next((item for item in pending if str(item.get("id")) == wanted), None)
+    if entry is None:
+        raise process.OperationError(f"{name}'s Safe holds no pending transaction {wanted}")
+    dest = str(entry.get("dest", "")).lower()
+    try:
+        whose = _own_contracts(store, config).get(dest)
+    except process.OperationError:
+        # A DePool that cannot be read is one more reason --force exists.
+        if not args.force:
+            raise
+        whose = None
+    if whose is None and not args.force:
+        raise process.OperationError(
+            f"Transaction {wanted} sends to {dest}, which is not one of {name}'s own "
+            "contracts. Check where it came from; --force signs it anyway"
+        )
+    whole, part = divmod(int(entry.get("value", 0)), 10**9)
+    tokens = f"{whole}.{part:09d}".rstrip("0").rstrip(".")
+    whose = whose or "not one of this node's contracts"
+    return (
+        f"Sign transaction {wanted}? It sends {tokens} tokens to {dest} "
+        f"({whose}) and holds "
+        f"{entry.get('signsReceived')} of {entry.get('signsRequired')} signatures; "
+        "signing executes it."
+    )
 
 
 # These submit multisig transactions from the node's Safe, so they must not run
@@ -151,7 +200,12 @@ def handle_setup_action(store, args):
         # Every question comes before the election lock: while one waits for
         # an answer with the lock held, each scheduled election run is skipped.
         if mutating:
-            ui.confirm_operation(args.yes, _confirmation_question(args, config))
+            question = (
+                _review_transaction(store, config, args)
+                if action in CONFIRM_ACTIONS
+                else _confirmation_question(args, config)
+            )
+            ui.confirm_operation(args.yes, question)
         if action == ("stake", "set") and args.amount is None and args.mode is None and not args.all_balance:
             args.mode = stake.ask_mode(store, config)
         if action in ELECTION_LOCKED_ACTIONS:

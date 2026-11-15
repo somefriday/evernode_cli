@@ -286,7 +286,7 @@ class ElectionPreparationTests(unittest.TestCase):
         )
         # The top-up block, bounded so the tik section below it is not read.
         span = cls.text[
-            cls.text.index("Send_File_To_BC") : cls.text.index("Send TIK query")
+            cls.text.index("# topup DePool if needed") : cls.text.index("Send TIK query")
         ]
         cls.block = "\n".join(
             line for line in span.splitlines() if not line.lstrip().startswith("#")
@@ -299,9 +299,15 @@ class ElectionPreparationTests(unittest.TestCase):
         self.assertNotIn("New_DP_Trans_Qty", self.code)
         self.assertNotIn("Exist_DP_Trans_Qty -gt $", self.code)
 
-    def test_the_top_up_is_identified_by_content_not_by_counting(self):
-        self.assertIn("Find_Matching_Pending_Trans", self.block)
+    def test_the_top_up_is_identified_by_content_and_this_nodes_own_key(self):
+        """Never by counting, and never an identical transfer another custodian
+        submitted; Complete_And_Await then signs it through."""
+        self.assertIn(
+            'Submit_And_Identify "$Validator_addr" "$Depool_addr" "${INPL_ReplenishFile}"', self.block
+        )
+        self.assertIn('"$DePoolReplenish_Payload" "${MSIG_KEY_FILES_ARRAY[0]}"', self.block)
         self.assertNotIn("tail -n 1", self.block)
+        self.assertNotIn("Sign_Trans.sh", self.block)
 
     def test_the_top_up_waits_for_the_depools_own_balance(self):
         self.assertIn("Effect_Self_Balance_At_Least", self.block)
@@ -323,11 +329,6 @@ class ElectionPreparationTests(unittest.TestCase):
         what this block exists to prevent."""
         self.assertIn("nothing was transferred", self.text)
         self.assertIn("exit 1", self.block)
-
-    def test_a_single_signature_wallet_does_not_look_for_a_pending_entry(self):
-        lookup = self.block.index("Find_Matching_Pending_Trans")
-        guard = self.block.index("${Required_Signs} -gt 1")
-        self.assertLess(guard, lookup)
 
     def test_the_sync_guard_replaced_the_hand_rolled_check(self):
         self.assertIn('Require_Node_Console "$TIMEDIFF_MAX"', self.code)

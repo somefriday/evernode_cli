@@ -18,12 +18,14 @@ Adds the signatures of the custodian keys held on this node to one named pending
 | ------------------ | ----- | -------- | ---------------------------------------------------------------- |
 | `-n`, `--name`     | NAME  | required | The managed node.                                                |
 | `--transaction-id` | ID    | required | Exact id from `stake status` (`nominator info` for a nominator). |
+| `--force`          |       | off      | Sign one that pays none of this node's contracts.                |
 | `--yes`            |       | ask      | Skip the confirmation prompt.                                    |
 
 ## Behaviour
 
 - For solo and nominator validators; a DePool validator uses `depool confirm`.
-- Signing executes the transfer the transaction carries: read its destination and value first.
+- Signing executes the transfer the transaction carries. The question shows its value, destination and signatures first.
+- Refuses a transaction that pays none of this node's contracts (the elector, the config contract, its nominator contract) unless `--force`.
 - A signature the Safe has not recorded within a minute was lost and is sent again, three times at most.
 - While a request to the elector or the contract is pending, scheduled runs neither recover nor bid. It expires after an hour.
 

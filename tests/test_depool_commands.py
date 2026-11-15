@@ -37,8 +37,33 @@ def operational_node(stage="ready-for-elections", name="validator01"):
     )
 
 
+DEPOOL = "0:" + "b" * 64  # operational_node's DePool
+
+
+def pending_entry(id_, dest=DEPOOL, value="5000000000"):
+    return {"id": id_, "dest": dest, "value": value, "signsReceived": "1", "signsRequired": "2"}
+
+
+@contextlib.contextmanager
+def the_safe_holds(pending=None, depool=None):
+    """What a confirmation reads before it asks: the Safe's pending list, the
+    elector and config contract, and the DePool's proxies (DEPOOL: what reading
+    the DePool raises instead)."""
+    if pending is None:
+        pending = [pending_entry("7701911356660055489"), pending_entry("42")]
+    with (
+        patch("evernode.setup_actions.scripts.read_wallet_pending",
+              return_value={"pending_transactions": pending}),
+        patch("evernode.setup_actions.nodes.fetch_special_address",
+              side_effect=lambda _, number: "-1:" + ("3" if number == 1 else "5") * 64),
+        patch("evernode.setup_actions.scripts.read_depool_state",
+              return_value={"proxies": ["0:" + "c" * 64, "0:" + "d" * 64]},
+              side_effect=depool),
+    ):
+        yield
+
 class WithdrawalCommandTests(unittest.TestCase):
-    def run_command(self, *argv, stage="ready-for-elections"):
+    def run_command(self, *argv, stage="ready-for-elections", pending=None, depool=None):
         with (
             patch("evernode.cli.require_root_privileges"),
             patch("evernode.cli.storage.NodeStateStore") as store,
@@ -47,6 +72,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                                 "timediff": 1, "shards_timediff": 1}),
             patch("evernode.scripts.execute_validator_script") as script,
             patch("evernode.setup_actions.elections.hold_election_lock"),
+            the_safe_holds(pending, depool),
             contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
@@ -121,14 +147,16 @@ class WithdrawalCommandTests(unittest.TestCase):
     def test_a_transaction_id_that_is_not_a_number_is_refused(self):
         for value in ("abc", "1; rm -rf /", "-1", ""):
             with self.subTest(value=value):
-                code, script, _ = self.run_command(
+                code, script, text = self.run_command(
                     "depool", "confirm", "-n", "validator01",
                     "--transaction-id", value, "--yes",
                 )
                 self.assertEqual(code, 1)
                 script.assert_not_called()
+                # refused before the Safe is read or anything is asked
+                self.assertIn("decimal number", text)
 
-    def test_the_confirmation_question_names_the_transaction(self):
+    def test_the_confirmation_question_says_what_the_transaction_sends_and_to_whom(self):
         questions = []
         with (
             patch("evernode.cli.require_root_privileges"),
@@ -138,6 +166,7 @@ class WithdrawalCommandTests(unittest.TestCase):
                                 "timediff": 1, "shards_timediff": 1}),
             patch("evernode.scripts.execute_validator_script"),
             patch("evernode.setup_actions.elections.hold_election_lock"),
+            the_safe_holds([pending_entry("42", value="5500000000")]),
             patch("evernode.setup_actions.ui.confirm_operation",
                   side_effect=lambda _, question: questions.append(question)),
             contextlib.redirect_stdout(io.StringIO()),
@@ -145,8 +174,42 @@ class WithdrawalCommandTests(unittest.TestCase):
             store.return_value.load_node_config.return_value = operational_node()
             cli.main(["depool", "confirm", "-n", "validator01",
                       "--transaction-id", "42"])
-        self.assertIn("42", questions[0])
-        self.assertIn("executes the transfer", questions[0])
+        self.assertEqual(
+            questions,
+            [f"Sign transaction 42? It sends 5.5 tokens to {DEPOOL} (this node's DePool) "
+             "and holds 1 of 2 signatures; signing executes it."],
+        )
+
+    def test_a_transaction_that_pays_none_of_the_nodes_contracts_needs_force(self):
+        """Every custodian key is on the server, so one wrong id would send
+        that transfer wherever it points."""
+        stranger = [pending_entry("42", dest="0:" + "e" * 64, value="50000000000000")]
+        argv = ("depool", "confirm", "-n", "validator01", "--transaction-id", "42", "--yes")
+        code, script, text = self.run_command(*argv, pending=stranger)
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("not one of validator01's own contracts", text)
+        code, script, _ = self.run_command(*argv, "--force", pending=stranger)
+        self.assertEqual(code, 0)
+        script.assert_called_once()
+
+    def test_force_signs_even_when_the_depool_cannot_be_read(self):
+        """A broken DePool is one of the cases --force is for."""
+        argv = ("depool", "confirm", "-n", "validator01", "--transaction-id", "42", "--yes")
+        broken = process.OperationError("the DePool did not answer")
+        for flags, expected in (((), 1), (("--force",), 0)):
+            with self.subTest(flags=flags):
+                code, script, _ = self.run_command(*argv, *flags, depool=broken)
+                self.assertEqual(code, expected)
+                self.assertEqual(script.called, expected == 0)
+
+    def test_a_transaction_the_safe_does_not_hold_is_refused(self):
+        code, script, text = self.run_command(
+            "depool", "confirm", "-n", "validator01", "--transaction-id", "99", "--yes"
+        )
+        self.assertEqual(code, 1)
+        script.assert_not_called()
+        self.assertIn("holds no pending transaction 99", text)
 
     def test_withdrawal_before_setup_is_complete_sends_nothing(self):
         for stage in ("node-started", "depool-deployed", "wallet-deployed"):

@@ -17,6 +17,7 @@ defined in [state.md](state.md).
 | election id           | The Unix time at which the elected validator set starts. Names an election.             |
 | election lock         | A node's lock that every user of its Safe holds.                                        |
 | elector               | The masterchain contract that takes bids, holds stakes and names the next validator set. |
+| frozen                | An account that owes more storage than the network allows; in the masterchain, over 0.1 token. It runs no code until it is unfrozen. |
 | hot wallet            | A nominator validator's Safe: it may tell the contract to bid and to recover.            |
 | joined proposal       | A config proposal this host votes for in every round until it is decided.               |
 | key ring              | The validator keys in a node's `node_cfg/config.json`, one per election.                 |
@@ -45,6 +46,7 @@ defined in [state.md](state.md).
 | stake fee             | The value a DePool asks with each instruction and partly returns.                        |
 | staking account       | The account whose balance a solo or nominator validator stakes: the Safe, or the contract. |
 | state directory       | Where evernode keeps everything it owns. `/var/lib/ever-validator` by default.           |
+| storage owed          | What an account owes for storage since its last transaction. Its balance does not show it; the next transaction takes it. |
 | synchronized          | A node at the head of the chain: both lags within the limit.                             |
 | tick                  | The message that makes a DePool move its rounds and enter the open election. `vote tick` is something else: cron's start of the vote passes. |
 | token                 | The network's coin, EVER on mainnet.                                                     |

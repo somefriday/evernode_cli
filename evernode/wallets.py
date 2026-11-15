@@ -713,6 +713,24 @@ def depool_stake(store, config, *, amount):
     }
 
 
+def require_confirmable(config, group, transaction_id):
+    """What signing one named Safe transaction needs, checked before anything
+    is read or asked: the validator type the command is for, a finished
+    setup, and an id of digits only."""
+    if group == "depool":
+        require_validator_type(config, "depool", "stake")
+        _require_operational_depool(config, DEPLOYED_STAGES)
+    else:
+        require_validator_type(config, ("solo", "nominator"), "depool")
+    if config.get("setup_stage") not in DEPLOYED_STAGES:
+        raise process.OperationError(
+            "This action needs a finished setup; run: "
+            + (next_setup_command(config) or "evernode node status")
+        )
+    if not re.fullmatch(r"[0-9]{1,30}", str(transaction_id)):
+        raise process.OperationError("Transaction id must be a decimal number")
+
+
 def confirm_wallet_transaction(store, config, transaction_id, check):
     """Add the remaining signatures to one explicitly named Safe transaction.
 
@@ -724,13 +742,6 @@ def confirm_wallet_transaction(store, config, transaction_id, check):
     the operator names the transaction they reviewed.
     """
     profile = node_wallet_profile(config)
-    if config.get("setup_stage") not in DEPLOYED_STAGES:
-        raise process.OperationError(
-            "This action needs a finished setup; run: "
-            + (next_setup_command(config) or "evernode node status")
-        )
-    if not re.fullmatch(r"[0-9]{1,30}", str(transaction_id)):
-        raise process.OperationError("Transaction id must be a decimal number")
     scripts.execute_validator_script(
         store,
         config,
@@ -749,15 +760,14 @@ def confirm_wallet_transaction(store, config, transaction_id, check):
 
 
 def depool_confirm(store, config, *, transaction_id):
-    require_validator_type(config, "depool", "stake")
-    _require_operational_depool(config, DEPLOYED_STAGES)
+    require_confirmable(config, "depool", transaction_id)
     return confirm_wallet_transaction(store, config, transaction_id, "depool info")
 
 
 def stake_confirm(store, config, *, transaction_id):
     """A solo or nominator validator's Safe can hold a half-signed transaction too."""
-    actual = require_validator_type(config, ("solo", "nominator"), "depool")
-    check = "nominator info" if actual == "nominator" else "stake status"
+    require_confirmable(config, "stake", transaction_id)
+    check = "nominator info" if configuration.validator_type(config) == "nominator" else "stake status"
     return confirm_wallet_transaction(store, config, transaction_id, check)
 
 

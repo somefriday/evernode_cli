@@ -433,45 +433,43 @@ else
 fi
 
 #=================================================
-# Check both proxies has enough balance to operate, and replenish if no
-
-Proxy0_Info="$(Get_Account_Info $dp_proxy0)"
-Proxy1_Info="$(Get_Account_Info $dp_proxy1)"
-
-Proxy0_Bal=$(( $(echo "$Proxy0_Info" |awk '{print $2}') ))      # nanotokens
-Proxy1_Bal=$(( $(echo "$Proxy1_Info" |awk '{print $2}') ))      # nanotokens
-# Only a proxy that reads as Active is topped up: one that could not be read
-# shows a balance of 0, which says nothing about what it holds.
-
-# topup Proxy0 if needed
-echo "---INFO(${SelfScriptName} line $LINENO): Proxy0 (${Proxy0_Info%% *}) balance is $( echo $Proxy0_Bal | awk '{print $1/1000000000}') tokens"
-if [[ ${Proxy0_Info%% *} == "Active" && $Proxy0_Bal -lt $TOPUP_THRESHOLD ]];then
-    echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy0 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-    Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-        "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): Proxy0 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
-    
-    top_app_account "${dp_proxy0}" $((5 * 1000000000)) "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy0_topup.log"
-    if [[ ${PIPESTATUS[0]} -ne 0 ]];then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot topup Proxy0 account with 5 tokens from ${VALIDATOR_NAME} account"
+# Keep both proxies funded. Each carries a stake to the elector and brings it
+# back, and a frozen one can do neither: the stake stays at the elector until
+# the proxy is unfrozen. A balance is as of the proxy's last transaction, and
+# the storage owed since is taken at its next one, so that is subtracted first.
+for Proxy_Index in 0 1; do
+    Proxy_Var="dp_proxy${Proxy_Index}"
+    Proxy_Addr="${!Proxy_Var}"
+    read -r Proxy_Status Proxy_Bal Proxy_Paid <<< "$(Get_Account_Info "$Proxy_Addr")"
+    if [[ $Proxy_Status == "Frozen" ]];then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen, so the DePool can neither send nor recover a stake through it until it is unfrozen." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot topup Proxy0 account with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
+            "${Tg_SOS_sign} ERROR(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} is frozen." > /dev/null 2>&1
+        continue
     fi
-fi
-
-# topup Proxy1 if needed
-echo "---INFO(${SelfScriptName} line $LINENO): Proxy1 (${Proxy1_Info%% *}) balance is $( echo $Proxy1_Bal | awk '{print $1/1000000000}') tokens"
-if [[ ${Proxy1_Info%% *} == "Active" && $Proxy1_Bal -lt $TOPUP_THRESHOLD ]];then
-    echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy1 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+    # Only a proxy that reads as Active is topped up: one that could not be read
+    # shows a balance of 0, which says nothing about what it holds.
+    if [[ $Proxy_Status != "Active" ]];then
+        echo "+++-WARNING(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} ${Proxy_Addr} reads as ${Proxy_Status:-nothing}, so it is not topped up."
+        continue
+    fi
+    Proxy_Bal=$(( Proxy_Bal - $(Proxy_Storage_Owed "$Proxy_Paid") ))
+    echo "---INFO(${SelfScriptName} line $LINENO): Proxy${Proxy_Index} holds $(awk '{print $1/1000000000}' <<< "$Proxy_Bal") tokens once it pays the storage it owes"
+    [[ $Proxy_Bal -lt $TOPUP_THRESHOLD ]] || continue
+    # Five tokens, and whatever it owes beyond its balance: a transfer that left
+    # it owing over 0.1 token would freeze it.
+    Proxy_Topup=$(( 5 * 1000000000 + (Proxy_Bal < 0 ? -Proxy_Bal : 0) ))
+    Proxy_Note="Proxy${Proxy_Index} holds less than $(awk '{print $1/1000000000}' <<< "$TOPUP_THRESHOLD") tokens; topping it up with $(awk '{print $1/1000000000}' <<< "$Proxy_Topup") tokens from ${VALIDATOR_NAME} account"
+    echo "+++-WARNING(${SelfScriptName} line $LINENO): ${Proxy_Note}" | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
     Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-        "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): Proxy1 has balance less 2 tokens!! I will topup it with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
-    
-    top_app_account "${dp_proxy1}" $((5 * 1000000000)) "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy1_topup.log"
+        "${Tg_Warn_sign} WARNING(${SelfScriptName} line $LINENO): ${Proxy_Note}" > /dev/null 2>&1
+    top_app_account "$Proxy_Addr" "$Proxy_Topup" "${Validator_addr}" | tee -a "${CURR_ELECTIONS_DIR}/proxy${Proxy_Index}_topup.log"
     if [[ ${PIPESTATUS[0]} -ne 0 ]];then
-        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot topup Proxy1 account with 5 tokens from ${VALIDATOR_NAME} account"
+        echo "###-ERROR(${SelfScriptName} line $LINENO): Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot topup Proxy1 account with 5 tokens from ${VALIDATOR_NAME} account" > /dev/null 2>&1
+            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot top up Proxy${Proxy_Index} from ${VALIDATOR_NAME} account" > /dev/null 2>&1
     fi
-fi
+done
 
 #=================================================
 # Check DePool has enough balance to operate, and replenish if no
@@ -531,6 +529,7 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
         echo "TC_OUTPUT: $TC_OUTPUT"
         Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
             "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): Cannot create file ${ReplenishFile}" > /dev/null 2>&1
+        exit 1
     fi
 
     # A sixth live transaction from this custodian would be rejected with 113
@@ -539,10 +538,9 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
         Require_Queue_Space "$Validator_addr" "${MSIG_KEY_FILES_ARRAY[0]}" || exit 1
     fi
 
-    # Send replenish transaction
-    Send_File_To_BC "${INPL_ReplenishFile}"
-
-    # Find the transaction this submit created, by matching its content.
+    # Send the top-up and find the transaction it created by its content and
+    # this node's own key, as every other wallet operation here does: never by
+    # counting, and never a transfer another custodian submitted.
     #
     # The reference code counted pending transactions to the DePool and asked
     # whether the count had *fallen* -- `Exist_DP_Trans_Qty -gt
@@ -553,32 +551,20 @@ if [[ $Depool_Bal -lt $DP_balanceThreshold ]];then
     # the wallet. That transfer then made every later run exit at the unsigned-
     # transaction check above, so a DePool that dipped below its threshold
     # stopped the node bidding until someone cleared the wallet by hand.
-    #
-    # Matching on destination, value and payload identifies our own submission
-    # without counting anything, and so cannot pick up a concurrent one.
-    DP_Trans_ID=""
-    if [[ ${Required_Signs} -gt 1 ]];then
-        for (( i=0; i < 6; i++ )); do
-            sleep $LC_Send_MSG_Timeout
-            DP_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Depool_addr" \
-                "$Replenish_Amount" "$DePoolReplenish_Payload") || DP_Trans_ID=""
-            [[ -n $DP_Trans_ID ]] && break
-        done
-        if [[ -z $DP_Trans_ID ]];then
-            echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet, so nothing was signed and nothing was transferred." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-            Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
-                "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet." > /dev/null 2>&1
-            exit 1
-        fi
-        # Sign replenish transaction
-        "${SCRIPT_DIR}/Sign_Trans.sh" "${VALIDATOR_NAME}" "$DP_Trans_ID"
+    if ! DP_Trans_ID=$(Submit_And_Identify "$Validator_addr" "$Depool_addr" "${INPL_ReplenishFile}" \
+            "$Replenish_Amount" "$DePoolReplenish_Payload" "${MSIG_KEY_FILES_ARRAY[0]}");then
+        echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet, so nothing was signed and nothing was transferred." | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+        Send_msg_toTelBot "$VALIDATOR_NAME Server: DePool Tik:" \
+            "${Tg_Error_sign} ERROR(${SelfScriptName} line $LINENO): The DePool top-up was not accepted by the wallet." > /dev/null 2>&1
+        exit 1
     fi
-    # Signing is not the top-up: the confirmation ends in an internal message
-    # the DePool can still refuse. Wait for its balance to show the transfer,
-    # less the forward fee, and refuse to continue without it -- running an
-    # election on a DePool below its threshold is what this block exists to
-    # prevent. A multi-signature wallet's transaction is confirmed by its id;
-    # a one-signature wallet has none, and DP_Trans_ID is empty for it.
+    # Complete_And_Await signs it through. Signing is not the top-up: the
+    # confirmation ends in an internal message the DePool can still refuse. Wait
+    # for its balance to show the transfer, less the forward fee, and refuse to
+    # continue without it -- running an election on a DePool below its threshold
+    # is what this block exists to prevent. A multi-signature wallet's
+    # transaction is confirmed by its id; a one-signature wallet has none, and
+    # DP_Trans_ID is empty for it.
     if ! Complete_And_Await "$DP_Trans_ID" "$Validator_addr" "$VALIDATOR_NAME" \
             "The DePool top-up of $((Replenish_Amount / 1000000000)) tokens" \
             Effect_Self_Balance_At_Least "$Depool_addr" \

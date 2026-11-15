@@ -306,6 +306,11 @@ def build_argument_parser():
         required=True,
         help="Exact pending transaction id from depool info; bulk signing is refused",
     )
+    q.add_argument(
+        "--force",
+        action="store_true",
+        help="Sign even a transaction that pays none of this node's contracts",
+    )
     q.add_argument("--yes", action="store_true")
     q = depool.add_parser(
         "stake", help="Add an ordinary stake to this node's DePool from its Safe"
@@ -356,6 +361,11 @@ def build_argument_parser():
         required=True,
         help="Exact id from stake status (nominator info for a nominator "
         "validator); bulk signing is refused",
+    )
+    q.add_argument(
+        "--force",
+        action="store_true",
+        help="Sign even a transaction that pays none of this node's contracts",
     )
     q.add_argument("--yes", action="store_true")
     q = stake.add_parser(

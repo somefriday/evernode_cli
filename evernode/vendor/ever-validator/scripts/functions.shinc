@@ -1237,6 +1237,19 @@ function Send_File_To_BC() {
     echo "${Result}"
 }
 #=================================================
+# What a DePool proxy owes for storage since its last transaction. The balance
+# it shows does not include it: storage is taken at the next transaction, and in
+# the masterchain an account that then owes over 0.1 token is frozen. A proxy's
+# state (37 cells, 11262 bits) costs about 0.042 tokens a day at mainnet's
+# prices (p18); 0.1 a day is assumed.
+# Input: the proxy's last_paid (unix time). Output: nanotokens
+function Proxy_Storage_Owed() {
+    [[ $1 =~ ^[0-9]+$ ]] || { echo 0; return; }
+    local since=$(( $(date +%s) - $1 ))
+    [[ $since -gt 0 ]] || since=0
+    echo $(( since * 100000000 / 86400 ))
+}
+#=================================================
 # top_app_account - send tokens to account. Mostly for use in prepare_elcetions.sh to topup Tik and proxy accounts
 # Input: account address, amount to topup, validator address
 # Output: 0 once the account's balance shows the top-up
@@ -1249,6 +1262,7 @@ function top_app_account () {
     local Acc_Info="$(Get_Account_Info "$Account_Addr")"
     local Acc_Status="$(echo "$Acc_Info" | awk '{print $1}')"
     local Acc_Balance=$(echo "$Acc_Info" | awk '{print $2}')
+    local Acc_Paid=$(echo "$Acc_Info" | awk '{print $3}')
         [[ "$Acc_Status" == "None" ]] && log_error_stack "Account does not exist! (no tokens, no code, nothing" && return 1
     [[ "$Acc_Status" == "Uninit" ]] && log_error_stack "Account Uninited" && return 1
     # Submit_And_Identify and Complete_And_Await read it as well.
@@ -1294,10 +1308,12 @@ function top_app_account () {
         Trans_ID=$(Submit_And_Identify "$Validator_addr" "$Account_Addr" "$INPL_TOPUP_BOC_File" \
             "$TopUpSum" "$Empty_Body" "$Key_File") || return 1
     fi
-    # Signed through, then confirmed by the account's own balance. The token of
-    # slack covers what the account pays to receive it.
+    # Signed through, then confirmed by the account's own balance. The storage it
+    # owes is taken from the transfer first, and the token of slack covers what
+    # it pays to receive it.
     Complete_And_Await "$Trans_ID" "$Validator_addr" "$VALIDATOR_NAME" "The top-up of ${Account_Addr}" \
-        Effect_Account_Balance_At_Least "$Account_Addr" "$(( Acc_Balance + TopUpSum - 1000000000 ))"
+        Effect_Account_Balance_At_Least "$Account_Addr" \
+        "$(( Acc_Balance - $(Proxy_Storage_Owed "$Acc_Paid") + TopUpSum - 1000000000 ))"
 } # top_app_account
 #=================================================
 # Send message to Telegram bot

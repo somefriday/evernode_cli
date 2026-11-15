@@ -127,7 +127,7 @@ true.
 | Withdraw all                           | The DePool's reinvest flag for the Safe is off.                        |
 | Cancel a withdrawal                    | No withdrawal is recorded and the reinvest flag is on.                 |
 | Replenish the DePool                   | The DePool's own balance is at least the old one plus the amount, less the fee. |
-| Top up a proxy                         | The proxy's balance is at least the old one plus 5 tokens, less 1.     |
+| Top up a proxy                         | The proxy's balance is at least the old one, less its storage owed, plus the top-up, less 1 token. |
 | Recover a stake                        | The staking account's balance is at least the old one plus the stake, less the value sent and 1 token. |
 | Fund the nominator deployer            | The deployer's balance is at least the deploy value.                   |
 | Tick the DePool                        | One of the DePool's rounds carries the election's id.                  |
@@ -151,27 +151,36 @@ Every caller builds, submits, signs and awaits the effect in the same way. Two s
 - The last three stop earlier if a transaction to their destination is already pending
   ([ELECT-6](properties.md#elect-6)). Their resume step meets only a transaction that arrived
   during the run.
-- The scheduled DePool replenishment sends its message once and looks for the transaction six
-  times, 10 s apart. It signs through `Sign_Trans.sh`.
 
 ## Confirm by hand
 
 Commands: [`depool confirm`](../depool/confirm.md), [`stake confirm`](../stake/confirm.md). Code:
+`setup_actions._review_transaction`, `wallets.require_confirmable`,
 `wallets.confirm_wallet_transaction`, `Sign_Trans.sh`.
 
 **Requires**
 
+- A DePool validator for `depool confirm`; a solo or nominator validator for `stake confirm`.
 - A setup stage of `depool-deployed`, `imported` or `ready-for-elections`.
 - A transaction id of digits only.
 
+These are checked before anything is read.
+
 **Logic**
 
-1. Take the election lock.
-2. Read the Safe's pending list. If it cannot be read, or holds no transaction with that id,
-   stop. Nothing is sent ([OP-9](properties.md#op-9)).
-3. Set the deadline: now plus `Signing_Window` for the transaction's own number of signatures,
+1. Read the Safe's pending list. If it holds no transaction with that id, stop. Nothing is sent
+   ([OP-9](properties.md#op-9)).
+2. Name the node's own contracts: the elector and the config contract, then the DePool and its
+   proxies, or the nominator contract.
+3. If the transaction pays none of them, stop unless `--force`. With `--force`, a DePool that
+   cannot be read does not stop it either.
+4. Ask, showing the value, the destination and whose contract it is, and the signatures it holds.
+   `--yes` skips the question but not step 3.
+5. Take the election lock.
+6. Read the pending list again. If it cannot be read, or the transaction is gone, stop.
+7. Set the deadline: now plus `Signing_Window` for the transaction's own number of signatures,
    and at most 5 s before the transaction expires. An expired transaction is refused.
-4. Sign as in step 5 above.
+8. Sign as in step 5 above.
 
 **Result**
 

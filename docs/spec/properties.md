@@ -48,6 +48,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 | [ELECT-4](#elect-4)   | Retries are bounded.                                                  |
 | [ELECT-5](#elect-5)   | A failed preparation stops a DePool run, not a solo run.              |
 | [ELECT-6](#elect-6)   | No bid beside a pending transaction.                                  |
+| [ELECT-7](#elect-7)   | A proxy is funded before it can freeze.                               |
 | [VOTE-1](#vote-1)     | Managed nodes vote only through `vote join`.                          |
 | [VOTE-2](#vote-2)     | A payment is asked about first.                                       |
 | [VOTE-3](#vote-3)     | One vote pass at a time.                                              |
@@ -487,10 +488,8 @@ The protocol these rules belong to is in [wallet-operations.md](wallet-operation
 - **Why.** Every operation of every custodian targets the same few addresses, so the newest entry
   may be someone else's.
 - **Enforced by.** `Find_Matching_Pending_Trans`, `Submit_And_Identify`.
-- **Checked by.** `tests/test_depool_operations.py`, `tests/test_nominator.py`.
-
-One caller is looser: the DePool replenishment inside `prepare_elections.sh` looks for its
-transaction by content alone, without the creator and without the time.
+- **Checked by.** `tests/test_depool_operations.py`, `tests/test_nominator.py`,
+  `tests/test_election_verdict.py`.
 
 ### OP-5
 
@@ -559,10 +558,15 @@ DePool operation while the Safe holds 5 or more pending transactions of all cust
 **Only a named transaction is confirmed by hand.**
 
 - **Rule.** `depool confirm` and `stake confirm` sign exactly the transaction id the operator
-  names. An id the Safe does not hold is refused, and nothing is sent.
-- **Why.** Signing executes the transfer the transaction carries.
-- **Enforced by.** `wallets.confirm_wallet_transaction`, `Sign_Trans.sh`.
-- **Checked by.** `tests/test_signature_handshake.py`.
+  names. An id the Safe does not hold is refused, and nothing is sent. Before asking, the command
+  shows what the transaction sends, to whom and with how many signatures. A transaction that pays
+  none of the node's own contracts (the elector, the config contract, its DePool and the DePool's
+  proxies, its nominator contract) is refused unless `--force`.
+- **Why.** Signing executes the transfer the transaction carries. Every custodian key is on the
+  server, so one wrong id would send that transfer wherever it points.
+- **Enforced by.** `setup_actions._review_transaction`, `wallets.require_confirmable`,
+  `wallets.confirm_wallet_transaction`, `Sign_Trans.sh`.
+- **Checked by.** `tests/test_depool_commands.py`, `tests/test_signature_handshake.py`.
 
 ## Elections
 
@@ -645,6 +649,24 @@ The run these rules belong to is in [elections.md](elections.md).
 - **Why.** A second transfer beside a half-signed one would send both once the first is signed.
 - **Enforced by.** `take_part_in_elections.sh`, `prepare_elections.sh`.
 - **Checked by.** `tests/test_election_verdict.py`, `tests/test_nominator.py`.
+
+### ELECT-7
+
+**A proxy is funded before it can freeze.**
+
+- **Rule.** DePool preparation tops up a proxy whose balance, less its storage owed, is under
+  1.92 tokens. Storage owed is counted at 0.1 token a day since the proxy's last transaction. The
+  top-up is 5 tokens plus any debt beyond the balance. A frozen proxy raises an alert and is not
+  topped up.
+- **Why.** A frozen proxy can neither carry a stake to the elector nor bring one back. Its balance
+  is as of its last transaction, so a proxy idle for weeks can owe more than it shows, and the
+  next small message then freezes it.
+- **Enforced by.** The proxy loop in `prepare_elections.sh`; `Proxy_Storage_Owed` and
+  `top_app_account` in `functions.shinc`.
+- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`.
+
+On mainnet a proxy's storage costs about 0.042 token a day. A proxy that is already frozen is
+not unfrozen: that needs its state sent again by hand.
 
 ## Votes
 

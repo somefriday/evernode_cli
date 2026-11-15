@@ -127,11 +127,16 @@ validator.
 
 ### Preparation, DePool
 
-8. For each proxy that is active and holds less than 1.92 tokens: send it 5 tokens from the
-   Safe and wait for its balance to show them. A top-up that fails is logged, and preparation goes
-   on.
+8. For each proxy ([ELECT-7](properties.md#elect-7)):
+   - Frozen: log it and raise an alert. No top-up.
+   - Not active, or not readable: log it. No top-up.
+   - Active: subtract its storage owed from its balance. Under 1.92 tokens: send it 5 tokens plus
+     any debt beyond the balance from the Safe, and wait for its balance to show them.
+
+   A top-up that fails is logged, and preparation goes on.
 9. Read the DePool's own balance (`getDePoolBalance`). If it is below the DePool's balance
-   threshold less 3 tokens, send the difference plus 10 tokens and wait for the balance to show
+   threshold less 3 tokens, send the difference plus 10 tokens from the Safe. Follow the protocol
+   ([wallet-operations.md](wallet-operations.md#one-operation)) and wait for the balance to show
    them. A failure ends preparation.
 10. With no election open, end with status 1. Steps 8 and 9 have still run.
 11. If the DePool's round already carries this election's id, end with status 0.

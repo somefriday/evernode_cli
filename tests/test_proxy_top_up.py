@@ -28,8 +28,10 @@ class ProxyTopUpTests(unittest.TestCase):
         start = text.index("function top_app_account () {")
         cls.function = text[start: text.index("} # top_app_account", start)] + "}"
 
-    def top_up(self, *, before=(), after_send=(), required=2):
-        """Top up the proxy; the wallet lists BEFORE, and AFTER_SEND once the message is sent."""
+    def top_up(self, *, before=(), after_send=(), required=2, idle_days=0, landed=7000000000):
+        """Top up the proxy; the wallet lists BEFORE, and AFTER_SEND once the
+        message is sent. IDLE_DAYS: how long the proxy has had no transaction;
+        LANDED: its balance once the top-up arrived."""
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
         (directory / "pending.json").write_text(json.dumps({"transactions": list(before)}))
@@ -45,7 +47,9 @@ Get_Account_Custodians_Info() {{ echo "3 {required}"; }}
 Custodian_Key_Decimal() {{ echo {OURS}; }}
 Get_MSIG_Expiration_Time() {{ echo 3600; }}
 Get_MSIG_Trans_List() {{ cat "$DIR/pending.json"; }}
-Get_Account_Info() {{ [[ -f $DIR/executed ]] && echo "Active 7000000000 9" || echo "Active 2000000000 5"; }}
+Get_Account_Info() {{
+    [[ -f $DIR/executed ]] && echo "Active {landed} $(date +%s)" || echo "Active 2000000000 $(( $(date +%s) - {idle_days} * 86400 ))"
+}}
 cli() {{ while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && : > "$2"; [[ $1 == --lifetime ]] && echo "$2" > "$DIR/lifetime"; shift; done; }}
 CALL_CLI=cli
 Send_File_To_BC() {{ echo sent >> "$DIR/trace"; cp "$DIR/landed.json" "$DIR/pending.json"; [[ {required} -le 1 ]] && touch "$DIR/executed"; echo success; }}
@@ -86,6 +90,13 @@ top_app_account {PROXY} 5000000000 {WALLET}
         result, trace, _ = self.top_up(before=[pending(earlier, OURS)])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(trace, [f"signed {earlier}"])
+
+    def test_a_top_up_that_first_paid_the_storage_owed_is_confirmed(self):
+        """A proxy idle for 30 days pays the storage it owes out of the top-up:
+        2 tokens, plus 5, less about 1.3 owed, is not the 6 the top-up alone
+        would show, and must not be reported as a top-up that failed."""
+        result, trace, _ = self.top_up(after_send=[], required=1, idle_days=30, landed=5700000000)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_single_signature_wallet_is_confirmed_by_the_proxys_balance(self):
         result, trace, _ = self.top_up(required=1)

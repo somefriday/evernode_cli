@@ -95,6 +95,17 @@ def fetch_chain_parameter(config, number):
     return parameter
 
 
+def fetch_special_address(config, number):
+    """The masterchain account a configuration parameter names: 0 is the config
+    contract, 1 the elector. The console reports it as bare hex."""
+    value = _run_console(config, f"getconfig {number}").get(f"p{number}")
+    if not isinstance(value, str) or len(value) != 64 or not all(c in "0123456789abcdefABCDEF" for c in value):
+        raise process.OperationError(
+            f"The chain did not report configuration parameter {number}"
+        )
+    return "-1:" + value.lower()
+
+
 def is_node_synchronized(value):
     """At the head of the chain: both lags within the tolerance, either way.
 
