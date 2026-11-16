@@ -1237,18 +1237,62 @@ function Send_File_To_BC() {
     echo "${Result}"
 }
 #=================================================
+# The masterchain storage prices in force now: the bit and cell prices of the
+# latest config param 18 entry that has begun, as "BIT CELL" (nanotokens per
+# 65536 seconds). Fails, printing nothing, when they cannot be read.
+function Current_MC_Storage_Prices() {
+    local prices
+    [[ ${FORCE_USE_DAPP:-false} == true ]] && return 1
+    prices="$($CALL_CONS -jc 'getconfig 18' 2>/dev/null | jq -r --argjson now "$(date +%s)" \
+        '[.p18[] | select(.utime_since <= $now)] | last | "\(.mc_bit_price_ps_dec) \(.mc_cell_price_ps_dec)"' 2>/dev/null)"
+    [[ $prices =~ ^[0-9]+\ [0-9]+$ ]] || return 1
+    echo "$prices"
+}
+#=================================================
 # What a DePool proxy owes for storage since its last transaction. The balance
 # it shows does not include it: storage is taken at the next transaction, and in
-# the masterchain an account that then owes over 0.1 token is frozen. A proxy's
-# state (37 cells, 11262 bits) costs about 0.042 tokens a day at mainnet's
-# prices (p18); 0.1 a day is assumed.
+# the masterchain an account that then owes over 0.1 token is frozen. It is
+# counted at the prices in force now for a proxy's state (37 cells and 11262
+# bits on mainnet, 36 and 11960 on the test network; 40 and 13000 are counted),
+# and never as less than 0.1 token a day: at mainnet's prices a proxy costs about
+# 0.044 token a day, so that floor decides there, and higher prices raise it.
 # Input: the proxy's last_paid (unix time). Output: nanotokens; 0 when last_paid
 # is unknown, and 0 is what a failed read reports ("None 0 0").
+PROXY_STORAGE_BITS=13000
+PROXY_STORAGE_CELLS=40
 function Proxy_Storage_Owed() {
     [[ $1 =~ ^[1-9][0-9]*$ ]] || { echo 0; return; }
-    local since=$(( $(date +%s) - $1 ))
+    local since=$(( $(date +%s) - $1 )) floor prices bit cell owed
     [[ $since -gt 0 ]] || since=0
-    echo $(( since * 100000000 / 86400 ))
+    floor=$(( since * 100000000 / 86400 ))
+    if prices="$(Current_MC_Storage_Prices)";then
+        read -r bit cell <<< "$prices"
+        owed=$(echo "($since * ($PROXY_STORAGE_BITS * $bit + $PROXY_STORAGE_CELLS * $cell) + 65535) / 65536" | ${CALL_BC:-bc})
+        if [[ $owed =~ ^[0-9]+$ ]];then
+            # Past what bash arithmetic holds: far over any top-up, which then refuses.
+            [[ ${#owed} -lt 19 ]] || owed=999999999999999999
+            if [[ $owed -gt $floor ]];then
+                echo "$owed"
+                return
+            fi
+        fi
+    fi
+    echo "$floor"
+}
+#=================================================
+# The balance a staking account (a solo validator's Safe or a nominator
+# contract) reaches once a recovered stake has arrived: its balance now plus
+# half the stake. The elector returns the stake in one message, and what the
+# account pays meanwhile (the value sent with the request, fees, the storage
+# it owes) never comes near half of it, whatever the prices and however long
+# the account was idle.
+# Input: account, recovered amount (nanotokens)
+# Output: nanotokens
+function Recovery_Target() {
+    local balance
+    balance=$(Get_Account_Info "$1" | awk '{print $2}')
+    [[ $balance =~ ^[0-9]+$ ]] || balance=0
+    echo $(( balance + $2 / 2 ))
 }
 #=================================================
 # top_app_account - top up one of the DePool's proxies from the validator's Safe.

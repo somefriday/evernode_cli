@@ -64,7 +64,7 @@ sudo evernode nominator prepare -n validator01            # nominator; then nomi
 sudo evernode election start -n validator01               # once the former node is fenced
 ```
 
-A nominator's owner funds the contract after `nominator verify`. A bid the former node already made in the open election stays with its key, and a solo or nominator node would stake again under its own: start elections on it after that election closes. A solo or nominator stake has to be large enough to be elected: the elector seats the set with the largest total stake.
+A nominator's owner funds the contract after `nominator verify`. A bid the former node already made in the open election stays with its key, and a solo or nominator node would stake again under its own: start elections on it after that election closes. A solo or nominator stake has to be large enough to be elected: the elector seats the set with the largest total stake. While the former node's stake is still at the elector, `stake set --mode` counts only what is here now and refuses: name the stake with `stake set --amount N`.
 
 ## Maintenance
 

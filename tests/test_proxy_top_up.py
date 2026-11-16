@@ -151,5 +151,116 @@ top_app_account {PROXY} 5000000000 {WALLET}
         self.assertEqual(trace, ["sent"])
 
 
+
+def p18(*entries):
+    """The node console's `getconfig 18` answer: (utime_since, mc bit price, mc cell price)."""
+    return json.dumps({"p18": [
+        {"utime_since": since, "bit_price_ps_dec": "1", "cell_price_ps_dec": "500",
+         "mc_bit_price_ps_dec": str(bit), "mc_cell_price_ps_dec": str(cell)}
+        for since, bit, cell in entries]})
+
+
+MAINNET = (0, 1000, 500000)
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq") and shutil.which("bc"), "Requires bash, jq and bc")
+class ProxyStorageOwedTests(unittest.TestCase):
+    """A proxy's storage debt is counted at the masterchain prices in force now,
+    never as less than the 0.1 token a day assumed before the prices were read.
+    A proxy that owes more than it holds is frozen by the DePool's next message."""
+
+    @classmethod
+    def setUpClass(cls):
+        text = (SCRIPTS / "functions.shinc").read_text()
+        start = text.index("function Current_MC_Storage_Prices() {")
+        cls.functions = text[start: text.index("\n}\n", text.index("function Proxy_Storage_Owed() {")) + 3]
+
+    def owed(self, answer, idle=86400, dapp="false"):
+        with tempfile.TemporaryDirectory() as directory:
+            reply = Path(directory) / "p18.json"
+            reply.write_text(answer)
+            program = (
+                f'console() {{ [[ "$*" == "-jc getconfig 18" ]] && cat "{reply}"; }}\n'
+                f"CALL_CONS=console CALL_BC=bc FORCE_USE_DAPP={dapp}\n"
+                + self.functions
+                + f'\nProxy_Storage_Owed $(( $(date +%s) - {idle} ))\n'
+            )
+            result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return int(result.stdout)
+
+    def test_at_mainnet_prices_the_floor_decides(self):
+        # A proxy costs about 0.044 token a day there; 0.1 a day is counted.
+        self.assertAlmostEqual(self.owed(p18(MAINNET)), 100_000_000, delta=10_000)
+
+    def test_higher_prices_raise_the_debt(self):
+        # A hundred times mainnet's prices: 13000 bits and 40 cells for a day.
+        expected = -(-86400 * (13000 * 100_000 + 40 * 50_000_000) // 65536)
+        self.assertAlmostEqual(self.owed(p18((0, 100_000, 50_000_000))), expected, delta=expected // 1000)
+
+    def test_only_prices_in_force_count(self):
+        """An entry dated in the future is not in force yet."""
+        future = (int(time.time()) + 86400, 45_000_000, 22_500_000_000)
+        self.assertAlmostEqual(self.owed(p18(MAINNET, future)), 100_000_000, delta=10_000)
+        started = (int(time.time()) - 3600, 100_000, 50_000_000)
+        self.assertGreater(self.owed(p18(MAINNET, started)), 4 * 10**9)
+
+    def test_prices_that_cannot_be_read_leave_the_floor(self):
+        self.assertAlmostEqual(self.owed(""), 100_000_000, delta=10_000)
+        self.assertAlmostEqual(self.owed(p18((0, 100_000, 50_000_000)), dapp="true"), 100_000_000, delta=10_000)
+
+    def test_a_debt_past_bash_arithmetic_is_capped_far_over_any_top_up(self):
+        self.assertEqual(self.owed(p18((0, 10**15, 10**15)), idle=10**8), 999999999999999999)
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class TopUpBeforeUseTests(unittest.TestCase):
+    """evernode tops the DePool's proxies up before election start, depool stake
+    and stake-initial, with the rule each run's preparation applies before the
+    tick: under 1.92 tokens once the storage owed is paid, 5 tokens more."""
+
+    def run_top_up(self, accounts, owed=0, fails=False):
+        from unittest.mock import patch
+        from evernode import scripts
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "env.sh").write_text("")
+        lines = "\n".join(f'    {address}) echo "{reply}";;' for address, reply in accounts.items())
+        (directory / "functions.shinc").write_text(
+            f"function Get_Account_Info() {{\n  case $1 in\n{lines}\n    *) echo 'None 0 0'; return 1;;\n  esac\n}}\n"
+            f"function Proxy_Storage_Owed() {{ echo {owed}; }}\n"
+            f'function top_app_account() {{ echo "$1 $2 $3" >> "{directory}/sent"; '
+            + ('echo "###-ERROR: the Safe holds too little"; return 1; }\n' if fails else "}\n")
+        )
+        with patch("evernode.scripts._import_verification_context", return_value=directory):
+            entries = scripts.top_up_proxies(None, {"name": "dp"}, list(accounts), WALLET)
+        sent = (directory / "sent").read_text().splitlines() if (directory / "sent").exists() else []
+        return entries, sent
+
+    def test_a_proxy_short_of_the_threshold_gets_five_tokens(self):
+        low, high = "-1:" + "1" * 64, "-1:" + "2" * 64
+        entries, sent = self.run_top_up({low: "Active 1919999999 1", high: "Active 1920000000 1"})
+        self.assertEqual([e["top_up"] for e in entries], ["done", "none"])
+        self.assertEqual(sent, [f"{low} 5000000000 {WALLET}"])
+
+    def test_the_storage_owed_is_paid_first(self):
+        proxy, other = "-1:" + "1" * 64, "-1:" + "2" * 64
+        entries, sent = self.run_top_up({proxy: "Active 3000000000 1", other: "Active 9000000000 1"},
+                                        owed=1500000000)
+        self.assertEqual([e["top_up"] for e in entries], ["done", "none"])
+
+    def test_nothing_is_sent_to_a_proxy_that_is_not_active(self):
+        frozen, active = "-1:" + "1" * 64, "-1:" + "2" * 64
+        entries, sent = self.run_top_up({frozen: "Frozen 0 1", active: "Active 5000000000 1"})
+        self.assertEqual(([e["top_up"] for e in entries], sent), (["none", "none"], []))
+
+    def test_a_failed_top_up_comes_back_with_the_kits_reason(self):
+        proxy, other = "-1:" + "1" * 64, "-1:" + "2" * 64
+        entries, _ = self.run_top_up({proxy: "Active 1000000000 1", other: "Active 9000000000 1"}, fails=True)
+        self.assertEqual(entries[0]["top_up"], "failed")
+        self.assertIn("###-ERROR: the Safe holds too little", entries[0]["errors"])
+        self.assertEqual(entries[1]["top_up"], "none")
+
+
 if __name__ == "__main__":
     unittest.main()

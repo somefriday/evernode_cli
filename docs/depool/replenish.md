@@ -27,6 +27,7 @@ Sends tokens from the Safe to the DePool's balance, which pays for its own messa
 - When the own balance is 2 tokens under the balance threshold, stake commands refuse; this one still runs.
 - When the own balance is 3 tokens under the threshold, the scheduled election run tops it up from the Safe to about 7 tokens above it.
 - Refuses if the Safe holds less than the amount plus 1 token for fees.
+- Each run adds again. Interrupted after its transfer was sent, it can still take effect within about a minute: check `depool info` before running it again.
 
 ## See also
 

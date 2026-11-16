@@ -336,11 +336,12 @@ if [[ ${Required_Signs} -gt 1 ]]; then
     declare -i Exist_Proxy0_Trans_Qty=0
     declare -i Exist_Proxy1_Trans_Qty=0
     if [[ ${Trans_QTY} -gt 0 ]]; then
-        Exist_El_Trans_Qty=$(echo "${Trans_List}" | jq -r ".transactions[] | select(.dest == \"${elector_addr}\") | length")
+        # Counted as arrays: "select(...) | length" gave each entry's number of fields.
+        Exist_El_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[] | select(.dest == \"${elector_addr}\")] | length")
         if [[ "$STAKE_MODE" == "depool" ]]; then
-            Exist_DP_Trans_Qty=$(echo "${Trans_List}"     | jq -r ".transactions[] | select(.dest == \"${Depool_addr}\") | length")
-            Exist_Proxy0_Trans_Qty=$(echo "${Trans_List}" | jq -r ".transactions[] | select(.dest == \"${dp_proxy0}\") | length")
-            Exist_Proxy1_Trans_Qty=$(echo "${Trans_List}" | jq -r ".transactions[] | select(.dest == \"${dp_proxy1}\") | length")
+            Exist_DP_Trans_Qty=$(echo "${Trans_List}"     | jq -r "[.transactions[] | select(.dest == \"${Depool_addr}\")] | length")
+            Exist_Proxy0_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[] | select(.dest == \"${dp_proxy0}\")] | length")
+            Exist_Proxy1_Trans_Qty=$(echo "${Trans_List}" | jq -r "[.transactions[] | select(.dest == \"${dp_proxy1}\")] | length")
         fi
         echo -e "${BoldText}+++-WARNING(${SelfScriptName} line $LINENO): You have unsigned transactions on the MSIG account!${NormText}"
         echo "  Transactions to Elector: $Exist_El_Trans_Qty"
@@ -358,12 +359,9 @@ if [[ ${Required_Signs} -gt 1 ]]; then
         echo
     } | tee -a "${ELECTIONS_WORK_DIR}/unsent_transactions.log"
 fi
-
-if [[ $Trans_QTY -ge 5 ]]; then
-    echo -e "${RedBack}${BoldText}+++-ALARM: You have reached the maximum number of unsigned transactions on the MSIG account."
-    echo -e "  You should sign and send them before staking to depool.${NormText}"
-    exit 1
-fi
+# A full queue is left to each operation: it first finishes its own entry if
+# one is waiting, and only then refuses a new one, counting this custodian's
+# entries as the wallet does (Require_Queue_Space).
 
 #===========================================================
 # TODO: Check the depool stake in the network and compare with other stakes in the network
@@ -379,7 +377,7 @@ case $STAKE_OP in
         STAKE_AMOUNT="$1"
         source "${SCRIPT_DIR}/depool_functions/ordinary_stake.shinc"
         if ! make_ordinary_stake "${Depool_addr}" "${MSIG_NAME}" "${STAKE_AMOUNT}"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error making ordinary stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): The ordinary stake stopped."
             exit 1
         fi
         ;;
@@ -392,7 +390,7 @@ case $STAKE_OP in
         STAKE_AMOUNT="$1"
         source "${SCRIPT_DIR}/depool_functions/replenish_depool.shinc"
         if ! replenish_depool "${Depool_addr}" "${MSIG_NAME}" "${STAKE_AMOUNT}"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error replenishing depool self balance."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Replenishing the DePool's own balance stopped."
             exit 1
         fi
         ;;
@@ -405,7 +403,7 @@ case $STAKE_OP in
         DONOR_NAME="$1"
         source "${SCRIPT_DIR}/depool_functions/set_lock_donor.shinc"
         if ! set_msig_lock_donor "${Depool_addr}" "${MSIG_NAME}" "${DONOR_NAME}"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error setting donor for lock stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Setting the donor for a lock stake stopped."
             exit 1
         fi
         ;;
@@ -418,7 +416,7 @@ case $STAKE_OP in
         DONOR_NAME="$1"
         source "${SCRIPT_DIR}/depool_functions/set_vesting_donor.shinc"
         if ! set_msig_vesting_donor "${Depool_addr}" "${MSIG_NAME}" "${DONOR_NAME}"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error setting donor for vesting stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Setting the donor for a vesting stake stopped."
             exit 1
         fi
         ;;
@@ -434,7 +432,7 @@ case $STAKE_OP in
         STAKE_BENEFICIARY="$4"
         source "${SCRIPT_DIR}/depool_functions/vesting_stake.shinc"
         if ! make_vesting_stake "$Depool_addr" "$MSIG_NAME" "$STAKE_AMOUNT" "$STAKE_TOTAL_TIME" "$STAKE_WITHDRAWAL_TIME" "$STAKE_BENEFICIARY"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error making vesting stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): The vesting stake stopped."
             exit 1
         fi
         ;;
@@ -450,7 +448,7 @@ case $STAKE_OP in
         STAKE_BENEFICIARY="$4"
         source "${SCRIPT_DIR}/depool_functions/lock_stake.shinc"
         if ! make_lock_stake "$Depool_addr" "$MSIG_NAME" "$STAKE_AMOUNT" "$STAKE_TOTAL_TIME" "$STAKE_WITHDRAWAL_TIME" "$STAKE_BENEFICIARY"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error making lock stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): The lock stake stopped."
             exit 1
         fi
         ;;
@@ -462,7 +460,7 @@ case $STAKE_OP in
         fi
         source "${SCRIPT_DIR}/depool_functions/withdraw_entire_stake.shinc"
         if ! withdraw_entire_stake "$Depool_addr" "$MSIG_NAME"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error withdrawing all stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Withdrawing the whole stake stopped."
             exit 1
         fi
         ;;
@@ -475,7 +473,7 @@ case $STAKE_OP in
         STAKE_AMOUNT="$1"
         source "${SCRIPT_DIR}/depool_functions/withdraw_part_stake.shinc"
         if ! withdraw_part_stake "$Depool_addr" "$MSIG_NAME" "$STAKE_AMOUNT"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error withdrawing part of the stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Withdrawing part of the stake stopped."
             exit 1
         fi
         ;;
@@ -487,7 +485,7 @@ case $STAKE_OP in
         fi
         source "${SCRIPT_DIR}/depool_functions/cancel_withdrawal.shinc"
         if ! cancel_withdrawal "$Depool_addr" "$MSIG_NAME"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error cancelling withdrawal stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Cancelling the withdrawal stopped."
             exit 1
         fi
         ;;
@@ -500,7 +498,7 @@ case $STAKE_OP in
         STAKE_AMOUNT="$1"
         source "${SCRIPT_DIR}/depool_functions/remove_stake.shinc"
         if ! remove_stake "$Depool_addr" "$MSIG_NAME" "$STAKE_AMOUNT"; then
-            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Error removing stake."
+            echoerr "###-ERROR(${SelfScriptName} line $LINENO): Removing the stake stopped."
             exit 1
         fi
         ;;

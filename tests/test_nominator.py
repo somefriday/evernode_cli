@@ -434,51 +434,101 @@ class ContractToolTests(unittest.TestCase):
 
 class ContractAddressGuardTests(unittest.TestCase):
     """prepare derives the address from the code; a node whose contract is
-    deployed must not be pointed at another one without being asked to."""
+    deployed must not be pointed at another one without being asked to, and a
+    refused prepare must leave the deployed contract's files as they were."""
 
-    def prepare(self, *, derived, new_contract=False):
+    ARTIFACTS = ("code.boc", "compile.json", "init.boc", "factory-deploy.boc", "manifest.json")
+
+    def prepare(self, *, derived, new_contract=False, mode="new", stage="ready-for-elections"):
         deployed = "-1:" + "1" * 64
         config = nominator_config(
-            wallet={"mode": "new", "custodians": 1, "required_signatures": 1,
+            wallet={"mode": mode, "custodians": 1, "required_signatures": 1,
                     "wallet_address": "-1:" + "a" * 64, "depool_address": None},
-            setup_stage="ready-for-elections", nominator={"address": deployed},
+            setup_stage=stage, nominator={"address": deployed},
         )
         manifest = {"address": derived, "factory": FACTORY, "validator": "-1:" + "a" * 64,
                     "owner": OWNER, "codeHash": CODE_HASH, "upstreamCommit": "x"}
-        with tempfile.TemporaryDirectory() as temporary:
-            work = Path(temporary)
-            for name in ("code.boc", "init.boc", "factory-deploy.boc"):
-                (work / name).write_bytes(b"x")
-            with patch("evernode.nominator.resolve_contract_source", return_value=VENDOR), \
-                    patch("evernode.nominator.build_tools_image", return_value=("local/tools:x", False)), \
-                    patch("evernode.nominator.work_directory", return_value=work), \
-                    patch("evernode.nominator.process.execute_command",
-                          return_value=unittest.mock.Mock(stdout=json.dumps(manifest))), \
-                    patch("evernode.nominator.configuration.write_node_environment") as written:
-                try:
-                    nominator.prepare(unittest.mock.MagicMock(), config, source=None, recipe=None,
-                                      new_contract=new_contract)
-                    error = None
-                except process.OperationError as caught:
-                    error = caught
-        return config, written, error
+
+        def tools(arguments, **_):
+            # The container writes its results into whatever directory is mounted at /work.
+            mounted = Path(arguments[arguments.index("-v") + 1].split(":", 1)[0])
+            for name in self.ARTIFACTS:
+                (mounted / name).write_text(json.dumps(manifest) if name == "manifest.json"
+                                            else "built for " + derived)
+            return unittest.mock.Mock(stdout=json.dumps(manifest))
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        work = Path(temporary.name)
+        for name in self.ARTIFACTS:
+            (work / name).write_text("deployed contract's " + name)
+        with patch("evernode.nominator.resolve_contract_source", return_value=VENDOR), \
+                patch("evernode.nominator.build_tools_image", return_value=("local/tools:x", False)), \
+                patch("evernode.nominator.work_directory", return_value=work), \
+                patch("evernode.nominator.process.execute_command", side_effect=tools), \
+                patch("evernode.nominator.configuration.write_node_environment") as written:
+            try:
+                _, self.result = nominator.prepare(unittest.mock.MagicMock(), config, source=None,
+                                                   recipe=None, new_contract=new_contract)
+                error = None
+            except process.OperationError as caught:
+                error = caught
+        files = {name: (work / name).read_text() for name in self.ARTIFACTS}
+        return config, written, error, files, sorted(item.name for item in work.iterdir())
 
     def test_another_address_is_refused_for_a_deployed_contract(self):
-        config, written, error = self.prepare(derived="-1:" + "2" * 64)
+        config, written, error, files, listing = self.prepare(derived="-1:" + "2" * 64)
         self.assertIn("--new-contract", str(error))
         written.assert_not_called()
         self.assertNotEqual(config["settings"].get("NOMINATOR_ADDR"), "-1:" + "2" * 64)
+        # What the test network showed: info, verify, withdraw and deploy read these files.
+        self.assertEqual(files, {name: "deployed contract's " + name for name in self.ARTIFACTS})
+        self.assertEqual(listing, sorted(self.ARTIFACTS))
 
     def test_the_same_address_prepares_again(self):
         """What rebuilding a pruned tools image needs."""
-        config, written, error = self.prepare(derived="-1:" + "1" * 64)
+        config, written, error, files, listing = self.prepare(derived="-1:" + "1" * 64)
         self.assertIsNone(error)
         written.assert_called_once()
+        self.assertEqual(files["code.boc"], "built for -1:" + "1" * 64)
+        self.assertEqual(listing, sorted(self.ARTIFACTS))
 
     def test_new_contract_moves_the_node_to_the_new_address(self):
-        config, _, error = self.prepare(derived="-1:" + "2" * 64, new_contract=True)
+        config, _, error, files, _ = self.prepare(derived="-1:" + "2" * 64, new_contract=True)
         self.assertIsNone(error)
         self.assertEqual(config["settings"]["NOMINATOR_ADDR"], "-1:" + "2" * 64)
+        self.assertEqual(files["manifest.json"].count("-1:" + "2" * 64), 1)
+
+    def test_a_contract_already_on_chain_is_verified_next_not_deployed(self):
+        """An imported node's contract exists; so does a deployed node's."""
+        for mode, stage in (("import", "imported"), ("new", "ready-for-elections")):
+            with self.subTest(mode=mode, stage=stage):
+                self.prepare(derived="-1:" + "1" * 64, mode=mode, stage=stage)
+                self.assertEqual(self.result["next"], "evernode nominator verify -n validator01")
+                self.assertNotIn("does not exist yet", self.result["note"])
+
+    def test_a_new_contract_is_deployed_next(self):
+        self.prepare(derived="-1:" + "1" * 64, stage="wallet-deployed")
+        self.assertEqual(self.result["next"], "evernode nominator deploy -n validator01")
+
+    def test_a_contract_source_that_does_not_exist_is_named_as_such(self):
+        with self.assertRaises(process.OperationError) as caught:
+            nominator.resolve_contract_source(nominator_config(), "/nonexistent/single-nominator")
+        self.assertIn("/nonexistent/single-nominator does not exist", str(caught.exception))
+
+    def test_files_prepared_for_another_contract_are_refused(self):
+        """A node whose files were overwritten before this was fixed: every
+        command that reads them refuses instead of acting on the wrong account."""
+        config = nominator_config(nominator={"address": "-1:" + "1" * 64})
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            (work / "manifest.json").write_text(json.dumps({"address": "-1:" + "2" * 64}))
+            with patch("evernode.nominator.work_directory", return_value=work):
+                with self.assertRaises(process.OperationError) as caught:
+                    nominator._manifest(None, config)
+        self.assertIn("nominator prepare", str(caught.exception))
+        self.assertIn("-1:" + "1" * 64, str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -535,7 +585,7 @@ class SafeTransportTests(unittest.TestCase):
         block = source[start:end]
         for required in (
             'compute_returned_stake "0x${Recover_Subject_HEX}"',          # whose credit
-            'Get_Account_Info "${Recover_Subject}"',                      # whose balance before
+            'Recovery_Target "${Recover_Subject}"',                       # whose balance before
             'Find_Matching_Pending_Trans "$Validator_addr" "$Recover_Dest"',
             'Submit_And_Identify "$Validator_addr" "$Recover_Dest"',      # where it is sent
             'Effect_Account_Balance_At_Least "$Recover_Subject"',         # whose balance rises
@@ -1114,6 +1164,52 @@ class DeployPaymentMessageTests(unittest.TestCase):
 
     def test_a_single_key_payment_says_nothing_extra(self):
         self.assertEqual(self.deploy(1, {"transaction_id": ""}), "")
+
+
+class DeployTriggerResendTests(unittest.TestCase):
+    """The deployer runs on one external message. One the network drops used to
+    fail the deploy after 180 s; it is sent again while the contract is absent.
+    A second copy is harmless: the deployer forwards its one message, then
+    deletes itself, and a later copy finds no deployer."""
+
+    def deploy(self, contract_appears_after_sends):
+        config = nominator_config(wallet={
+            "mode": "new", "custodians": 1, "required_signatures": 1,
+            "wallet_address": HOT, "depool_address": None,
+        })
+        manifest = {"address": POOL, "factory": FACTORY, "validator": HOT}
+        sends = []
+
+        def account(_config, address):
+            if address == POOL:
+                if contract_appears_after_sends and len(sends) >= contract_appears_after_sends:
+                    return {"acc_type": "Active", "balance": "10835749906"}
+                return {"acc_type": "Nonexist"}
+            return {"acc_type": "Uninit", "balance": "11000000000"}
+
+        with (
+            patch("evernode.nominator._manifest", return_value=manifest),
+            patch("evernode.nominator._account", side_effect=account),
+            patch("evernode.scripts.fund_nominator_deployer", return_value={"transaction_id": ""}),
+            patch("evernode.nominator._broadcast", side_effect=lambda *_: sends.append(1)),
+            patch("time.sleep"),
+        ):
+            try:
+                _, result = nominator.deploy(None, config)
+                return result, None, len(sends)
+            except process.OperationError as caught:
+                return None, caught, len(sends)
+
+    def test_a_lost_trigger_is_sent_again(self):
+        result, error, sends = self.deploy(contract_appears_after_sends=2)
+        self.assertIsNone(error)
+        self.assertEqual((result["result"], sends), ("deployed", 2))
+
+    def test_a_trigger_that_never_takes_ends_with_what_to_do(self):
+        _, error, sends = self.deploy(contract_appears_after_sends=None)
+        self.assertEqual(sends, 3)
+        self.assertIn("paid and still waiting", str(error))
+        self.assertIn("evernode nominator deploy -n validator01", str(error))
 
 
 # Three custodians and two signatures: the first key proposes, the second approves.

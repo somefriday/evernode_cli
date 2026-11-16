@@ -372,6 +372,12 @@ def main(argv=None):
                         args.yes, "Install this node's election schedule?"
                     )
                     with store.acquire_operation_lock(name):
+                        if configuration.validator_type(config) == "depool":
+                            # The first run then finds proxies that can carry the
+                            # next bid; it would top them up as well, but in the
+                            # election window.
+                            with elections.hold_election_lock(store, name):
+                                wallets.fund_proxies(store, config)
                         elections.enable_node_election_schedule(store, config)
                         ui.print_json_result(
                             {
@@ -475,8 +481,13 @@ def main(argv=None):
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        # A message already handed to the network cannot be recalled.
         print(
-            "Interrupted. Completed changes remain; inspect node status before retrying. Interrupting logs/sync does not stop the node.",
+            "Interrupted. Completed changes remain, and a transaction already sent "
+            "can still take effect within about a minute: check depool info (or "
+            "stake status) after that before running the command again; depool "
+            "stake and depool replenish add funds each time they run. Interrupting "
+            "logs/sync does not stop the node.",
             file=sys.stderr,
         )
         return 130

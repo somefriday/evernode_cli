@@ -317,8 +317,9 @@ def run_due_pass(store, engine, data, entry, *, log=True):
     """One engine pass for `entry`; its report is saved, or only the failure.
 
     Each vote is saved the moment the engine reports it counted, so a vote
-    survives evernode itself being killed. `log`: print the pass's result line
-    (the cron log); a failure is always printed.
+    survives evernode itself being killed. The engine prints the pass's result;
+    `log` (the cron log) adds a line only for a key ring evernode could not
+    read. A failure is always printed.
     """
     now = int(time.time())
     nodes, missing = [], []
@@ -344,7 +345,7 @@ def run_due_pass(store, engine, data, entry, *, log=True):
             merge_votes(entry, getattr(exc, "votes", ()))
             entry["last_pass"] = {"at": now, "error": str(exc)}
             store.save(data)
-            print(f"[{utc(now)}] {entry['proposal'][:12]}: pass failed: {exc}; next minute tries again", flush=True)
+            print(f"{stamp(now)} {entry['proposal'][:12]}: pass failed: {exc}; next minute tries again", flush=True)
             return
     # Stamped when the report arrived: a pass that closes a proposal with its own vote ends after the vote.
     now = int(time.time())
@@ -357,9 +358,21 @@ def run_due_pass(store, engine, data, entry, *, log=True):
         if entry["state"] == "open":
             entry["next_pass_at"] = min(entry["next_pass_at"], now + RETRY)
     store.save(data)
-    if log:
+    # A --keyring file is often a copy, and a node's ring gets a new key at every
+    # election: a copy made before it votes no more, beside nodes that do.
+    for source in entry.get("keyrings", []):
+        if source in (report.get("keyless") or []):
+            print(
+                f"{stamp(now)} {entry['proposal'][:12]}: {source} holds no key of this round's "
+                "validator set: the node was not elected, or this is a copy made before the "
+                "last election; export validator_key_ring from the node again",
+                flush=True,
+            )
+    # The engine has printed the pass's result. What it cannot know is a key
+    # ring evernode could not read, and the sooner pass that brings.
+    if log and missing:
         following = f"; next pass {utc(entry['next_pass_at'])}" if entry["state"] == "open" else ""
-        print(f"[{utc(now)}] {entry['proposal'][:12]}: {report['result']}{following}", flush=True)
+        print(f"{stamp(now)} {entry['proposal'][:12]}: {'; '.join(missing)}{following}", flush=True)
 
 
 def run_pass(engine, net, proposal, *, dry_run, on_vote=None):
@@ -645,3 +658,9 @@ def progress_line(entry):
 
 def utc(t):
     return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(t)) if t is not None else "never"
+
+
+def stamp(t):
+    """The time stamp a line of the vote cron log starts with: the engine's own
+    format, so every line of that log reads and filters alike."""
+    return time.strftime("[%H:%M:%SZ]", time.gmtime(t))

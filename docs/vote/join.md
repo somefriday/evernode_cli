@@ -30,7 +30,7 @@ Reads the proposal from the chain, shows what it changes, asks, votes with every
 - Under `sudo`, pass the endpoint with `sudo -E` or `--endpoint`: plain `sudo` drops the variable.
 - The endpoint is stored with the proposal (root-only) while it is open, so cron needs no environment.
 - Cron runs `evernode vote tick` every minute. A pass is due 40 s after a new validator set starts, and a minute later while a vote is missing.
-- Every pass reads each key ring again: after an election it votes with the node's new key.
+- Every pass reads each key ring again: after an election it votes with the node's new key. A `--keyring` file that holds no key of the round is named in each pass: the node was not elected, or the file is a copy made before the last election (export `validator_key_ring` again).
 - When a `--keyring` file is readable by other users, join refuses it: `chmod 600` it, or `docker exec CONTAINER chmod 600 /PATH` for one in a container; ever-node keeps that mode. Join only reads the mode, and passes do not check it again.
 - Joining again replaces the nodes, key rings and endpoint. `--all` means the nodes that exist now, except removed ones; `-n` still takes a removed node. A proposal joined for managed nodes on one network is refused for nodes on another (one schedule per proposal): `vote leave` it first.
 - When the proposal is accepted, expires or loses too many rounds, the entry closes as `applied` or `not applied` and the cron line is removed.

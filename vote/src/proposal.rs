@@ -509,6 +509,20 @@ mod tests {
         assert!(check_registered(&plan.proposal).unwrap().iter().any(|w| w.contains("system contracts")));
     }
 
+    /// A p18 entry dated in the future is an ordinary change (decided 2026-11-16): the tool works from the
+    /// config as it is and leaves the timing of a price change to the validators who vote for it.
+    #[test]
+    fn storage_prices_dated_in_the_future_are_an_ordinary_change() {
+        let cfg = crate::emulate::tests::config_account();
+        let entry = |since: u64, mc_bit: &str| {
+            format!(r#"{{"utime_since":{since},"bit_price_ps_dec":"1","cell_price_ps_dec":"500","mc_bit_price_ps_dec":"{mc_bit}","mc_cell_price_ps_dec":"500000"}}"#)
+        };
+        let future = param_from_json(18, &format!("[{},{}]", entry(0, "1000"), entry(crate::now() + 86400, "2000"))).unwrap();
+        let plan = Change::Param { id: 18, value: future }.plan(&cfg, IfHash::Auto, Allow::default()).unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        assert!(check_registered(&plan.proposal).unwrap().is_empty());
+    }
+
     /// Review 1, #26: a field of the wrong type names the field, not the Rust source line that noticed it.
     #[test]
     fn a_json_error_names_no_source_file() {

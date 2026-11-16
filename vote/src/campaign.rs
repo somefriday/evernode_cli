@@ -377,7 +377,16 @@ fn one_round_done(keys: &Keys, counted: usize) -> Result<Step> {
         Step::Fail(anyhow::anyhow!("{counted} vote(s) counted, but these could not be asked for their keys: {}", keys.unreadable.join("; ")))
     } else if keys.ours.is_empty() {
         let unvotable = if keys.unvotable.is_empty() { String::new() } else { format!(" that can vote ({})", keys.unvotable.join("; ")) };
-        Step::Fail(anyhow::anyhow!("none of the listed nodes holds a key of the current validator set{unvotable}"))
+        let copies = if keys.keyless.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ". {} hold(s) no key of it: a key ring copied from a node goes stale at each election, so export \
+                 validator_key_ring from the node again (or name the node's own config.json)",
+                keys.keyless.join(", ")
+            )
+        };
+        Step::Fail(anyhow::anyhow!("none of the listed nodes holds a key of the current validator set{unvotable}{copies}"))
     } else {
         Step::Done(Outcome::Voted(counted))
     })
@@ -501,6 +510,9 @@ pub(crate) struct Keys {
     pub unreadable: Vec<String>,
     /// keys held here whose p34 entry the config contract cannot read: their votes would fail (exit 41)
     pub unvotable: Vec<String>,
+    /// listed key-ring files that hold no key of this round's set: the node was not elected, or the file is a
+    /// copy made before the last election (a node's ring gets a new key at every election)
+    pub keyless: Vec<String>,
 }
 
 /// Which listed node holds which current key. Key-ring files are read at every pass: the operator may copy a
@@ -521,6 +533,8 @@ pub(crate) fn held_keys(net: &Net, vset: &ValidatorSet, known: &mut HashMap<usiz
         };
         if node.keyring.is_none() {
             known.insert(i, held.clone());
+        } else if held.is_empty() {
+            keys.keyless.push(node.name.clone());
         }
         for (idx, key) in held {
             // one vote per validator, even if two listed nodes hold its key
@@ -917,14 +931,30 @@ mod tests {
 
     #[test]
     fn a_one_shot_cast_with_an_unreadable_node_fails_after_voting() {
-        let keys = Keys { ours: vec![(0, 3, HashBytes([3; 32]))], unreadable: vec!["laptop: cannot list its keys: read keys.json".into()], unvotable: vec![] };
+        let keys = Keys { ours: vec![(0, 3, HashBytes([3; 32]))], unreadable: vec!["laptop: cannot list its keys: read keys.json".into()], ..Keys::default() };
         let Step::Fail(e) = one_round_done(&keys, 1).unwrap() else { panic!("a one-shot cast that could not ask every node succeeded") };
         assert!(format!("{e:#}").contains("1 vote(s) counted") && format!("{e:#}").contains("laptop"), "{e:#}");
         let keys = Keys { unreadable: vec![], ..keys };
         assert!(matches!(one_round_done(&keys, 1).unwrap(), Step::Done(Outcome::Voted(1))));
-        let none = Keys { ours: vec![], unreadable: vec![], unvotable: vec!["vdp4: validator #0 cannot vote".into()] };
+        let none = Keys { unvotable: vec!["vdp4: validator #0 cannot vote".into()], ..Keys::default() };
         let Step::Fail(e) = one_round_done(&none, 0).unwrap() else { panic!() };
         assert!(format!("{e:#}").contains("cannot vote"), "{e:#}");
+    }
+
+    /// bd-n, 2026-11-15: a key ring copied before an election holds no key of the next set. Joined beside other
+    /// nodes it stopped voting without a word; alone, `cast` refused without saying how to fix it.
+    #[test]
+    fn a_key_ring_with_no_key_of_the_set_is_named() {
+        let cfg = crate::emulate::tests::config_account();
+        let vset = cfg.current_vset().unwrap();
+        let path = std::env::temp_dir().join(format!("evernode-vote-stale-ring-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"validator_key_ring": {}}"#).unwrap();
+        let net: Net = serde_json::from_value(serde_json::json!({"nodes": [{"name": "copy.json", "keyring": path}]})).unwrap();
+        let keys = held_keys(&net, &vset, &mut HashMap::new());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(keys.keyless, vec!["copy.json".to_string()]);
+        let Step::Fail(e) = one_round_done(&keys, 0).unwrap() else { panic!("a cast with no key succeeded") };
+        assert!(format!("{e:#}").contains("export validator_key_ring"), "{e:#}");
     }
 
     #[test]

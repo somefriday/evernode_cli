@@ -38,7 +38,8 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
    - the *sequence*: `run-election-sequence.sh` for a DePool validator,
      `run-solo-election-sequence.sh` for a solo or nominator validator. The other type's file is
      removed if it is there. A sequence writes a mark into the cron log when a run starts, and
-     one with its exit status when it ends;
+     one with its exit status when it ends, each on a line of its own. A run killed by a signal
+     (HUP, INT, TERM) ends with 128 plus the signal; one killed outright leaves no end mark;
    - the *runner*, `run-elections.sh`.
 3. Write `/etc/cron.d/evernode-NAME`: every N minutes, as root, the runner, with its output
    appended to `logs/validator/election-cron.log`.
@@ -56,8 +57,11 @@ with `# Managed by evernode`. It does not end a run that is in progress.
 - the chain: whether the node reports itself in the current set and in the next set, and whether
   it is validating;
 - the latest run, read back between its marks (`elections.last_run`): when it started and ended,
-  its exit status, its last error lines, and each proxy alarm it raised. `election status` shows
-  such an alarm again, in red.
+  its exit status, what it came to (`no election open`, `already bid in this election`, or a stop
+  at a half-signed transaction in the Safe, whose kit line is listed with the errors), its last
+  error lines, and each proxy alarm it raised. The kit exits 1 on the first two, and prints "There
+  is no elections now" as an error on solo and nominator nodes; neither is listed as an error.
+  `election status` shows a proxy alarm again, in red.
 
 **Result**
 
@@ -129,8 +133,10 @@ validator.
     `NOMINATOR_OP_FEE` (nominator).
 12. Follow the protocol ([wallet-operations.md](wallet-operations.md#one-operation)). The
     deadline is now plus `Signing_Window`, and at most 5 s before the transaction expires.
-13. Wait for the effect: the staking account's balance grows by what was owed, less the value
-    sent and 1 token. The effect gets at least 10 s.
+13. Wait for the effect: the staking account's balance grows by at least half the amount owed
+    (`Recovery_Target`). The elector returns the stake in one message, and what the account pays
+    meanwhile (the value sent, fees, the storage it owes) never comes near half of it. The effect
+    gets at least 10 s.
 
 ### Preparation, DePool
 

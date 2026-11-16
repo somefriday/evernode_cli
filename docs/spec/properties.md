@@ -394,7 +394,7 @@ Read-only commands (`depool info`, `stake status`, `nominator info`) do not take
 **A role is fixed once wallet setup begins.**
 
 - **Rule.** `node setup` may set a role again only while the stage is `preparing` or
-  `node-started` and `keys/MSKeys_NAME/` is empty.
+  `node-started` and no seed phrase is stored yet.
 - **Why.** The Safe's keys and address follow from the role.
 - **Enforced by.** `role.require_role_can_be_set`.
 - **Checked by.** `tests/test_node_setup.py`.
@@ -535,8 +535,9 @@ request each time it runs.
 - **Enforced by.** `Require_Queue_Space` in `managed_ops.shinc`, called by each of them.
 - **Checked by.** `tests/test_queue_space.py`.
 
-The proxy top-up and `stake recover` do not make this check. `stake_to_depool.sh` also refuses any
-DePool operation while the Safe holds 5 or more pending transactions of all custodians together.
+The proxy top-up and `stake recover` do not make this check. A DePool operation finishes its own
+waiting entry, if there is one, before this check applies, so a full queue never stops it
+(`tests/test_depool_operations.py`).
 
 ### OP-8
 
@@ -656,25 +657,33 @@ The run these rules belong to is in [elections.md](elections.md).
 
 **A proxy is funded before it can freeze.**
 
-- **Rule.** DePool preparation tops up a proxy whose balance, less its storage owed, is under
-  1.92 tokens. Storage owed is counted at 0.1 token a day since the proxy's last transaction, and
-  as none when that time is not known. The top-up is 5 tokens plus the storage owed in whole
-  tokens, in a transfer that does not bounce, and only to a proxy that reads as Active; a proxy
-  that owes more than 50 tokens gets nothing. It is done when the proxy's balance is at least the
-  old one plus 4 tokens. A top-up that fails ends preparation before the tick while the proxy owes
-  more storage than it holds.
+- **Rule.** A proxy whose balance, less its storage owed, is under 1.92 tokens is topped up: by
+  DePool preparation before each tick, and by evernode before `election start` installs the
+  schedule and before `depool stake` and `depool stake-initial`. Storage owed is counted at the
+  masterchain storage prices in force now (config param 18) for a proxy's state, taken as 40
+  cells and 13,000 bits, and never as less than 0.1 token a day since the proxy's last
+  transaction; as none when that time is not known. The top-up is 5 tokens plus the storage owed
+  in whole tokens, in a transfer that does not bounce, and only to a proxy that reads as Active; a
+  proxy that owes more than 50 tokens gets nothing. It is done when the proxy's balance is at
+  least the old one plus 4 tokens. A top-up that fails, while the proxy owes more storage than it
+  holds, ends preparation before the tick and refuses the command; otherwise the command goes
+  ahead with a warning.
 - **Why.** A frozen proxy can neither carry a stake to the elector nor bring one back. Its balance
   is as of its last transaction, so a proxy idle for weeks can owe more than it shows, and the
   next small message then freezes it. A transfer that bounces is credited only after the proxy
   pays its storage, so a proxy that owes more than it holds freezes before the tokens arrive.
-- **Enforced by.** The proxy loop in `prepare_elections.sh`; `Proxy_Storage_Owed` and
-  `top_app_account` in `functions.shinc`.
-- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`.
+- **Enforced by.** The proxy loop in `prepare_elections.sh`; `Proxy_Storage_Owed`,
+  `Current_MC_Storage_Prices` and `top_app_account` in `functions.shinc`; `fund_proxies` in
+  `wallets.py`, which runs `PROXY_TOP_UP` in `scripts.py`.
+- **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`,
+  `tests/test_depool_commands.py`.
 
-On mainnet a proxy's storage costs about 0.042 token a day, less than the 0.1 token counted, so a
-top-up that arrived shows the 4 tokens. A transfer shorter than the debt would be credited and
-then taken in full, freezing the proxy, so above 50 tokens (500 days at the rate counted) nothing
-is sent and the error names what the proxy needs. Whole tokens keep the amount the same from one
+On mainnet a proxy's storage costs about 0.044 token a day, less than the 0.1 token counted, so
+that floor decides there and a top-up that arrived shows the 4 tokens; higher prices in force
+raise the count. Only prices in force count: an entry of config param 18 dated in the future is
+not read. A transfer shorter than the debt would be credited and then taken in full, freezing
+the proxy, so above 50 tokens (500 days at the floor) nothing is sent and the error names what
+the proxy needs. Whole tokens keep the amount the same from one
 run to the next, which is how a run finds the top-up an earlier run left pending ([OP-5](#op-5)).
 Under 1 token (`MIN_PROXY_BALANCE` in the DePool's code) a proxy refuses the DePool's request, and
 the DePool rolls it back; only owing more than it holds freezes it, so only that stops the run. A

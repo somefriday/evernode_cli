@@ -23,7 +23,7 @@ Generates the DePool's seed phrase and key pair, derives its address, prints the
 
 - DePool validators only; needs a terminal and stage `wallet-deployed`.
 - Needs the vote engine that `host setup` installs: it derives the keys from each phrase, so no phrase is ever a process argument.
-- Next: fund the printed address, then `depool deploy`.
+- Next: fund the printed address with the amount it names (twice the balance threshold plus 5 tokens, 45 by default), then `depool deploy`.
 
 ## See also
 

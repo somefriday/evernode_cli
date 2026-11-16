@@ -306,16 +306,23 @@ def set_stake(store, config, amount=None, mode=None):
         f"{minimum // NANO}, plus the 1 token it keeps)"
     )
     warnings = []
+    # A validator moved from another node has its stake at the elector until
+    # that round is over, and a mode counts only what is here now.
+    moved = (
+        f"; or, if its stake is still at the elector (a validator moved from "
+        f"another node), name the stake with --amount"
+    )
     if tokens < least:
         if mode == "balanced":
             raise process.OperationError(
                 f"Half of this {noun} is {tokens} tokens, below {needs}, so this "
                 "much capital can only validate every other round: use --mode single"
+                + (moved if spendable // NANO < least else "")
             )
         if mode == "single":
             raise process.OperationError(
                 f"This {noun} has {spendable // NANO} tokens spendable, below "
-                f"{needs}; fund it first"
+                f"{needs}; fund it first{moved}"
             )
         raise process.OperationError(f"A stake of {tokens} tokens is below {needs}")
     if stake_nanotokens > maximum:

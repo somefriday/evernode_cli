@@ -106,11 +106,11 @@ Command: [`wallet create`](../wallet/create.md). Code: `wallets.wallet_create`,
 
 1. `Msig-prep.sh` runs for the number of custodians and the Safe's workchain
    ([SETUP-4](properties.md#setup-4)). For each custodian it:
-   1. generates a seed phrase into `keys/MSKeys_NAME/NAME_seed_I.txt`, unless the file exists;
+   1. generates a seed phrase and stores it root-only, unless one is stored already;
    2. pipes the phrase to `evernode-vote key-from-phrase` and saves the key pair.
 2. The script computes the Safe's address from the wallet code, the first key and the workchain.
    It copies the address and the key pairs into `keys/`.
-3. evernode checks that the files in `keys/` and in `keys/MSKeys_NAME/` agree, and that no other
+3. evernode checks that the key files and the stored phrases agree, and that no other
    node has the address.
 4. evernode prints the phrases and the address and waits for the word `SAVED`.
 5. The stage becomes `wallet-created` and the profile gets the address.
@@ -169,8 +169,10 @@ Command: [`wallet recover`](../wallet/recover.md). Code: `wallets.wallet_recover
 
 **Logic**
 
-1. If no phrase is stored, or with `--replace-seeds`, ask for one phrase per custodian. Each must
-   be one line of at least 12 words. Write them to `keys/MSKeys_NAME/`, mode 0600. All are checked
+1. If no phrase is stored, or with `--replace-seeds`, read the Safe's custodians and threshold
+   on chain first; where they differ from what setup recorded (without a terminal it records 3
+   and 2), use the Safe's and say so. Ask for one phrase per custodian. Each must
+   be one line of at least 12 words. Store them root-only (mode 0600). All are checked
    before any is written.
 2. `Msig-prep.sh` derives the key pairs from the stored phrases.
 3. Read the Safe at the recorded address: its custodians and its threshold
@@ -213,8 +215,8 @@ Command: [`depool prepare`](../depool/prepare.md). Code: `wallets.depool_prepare
 
 **Logic**
 
-1. `DePool-prep.sh` generates the DePool's seed phrase into `keys/DPKeys_NAME/depool_seed.txt`,
-   unless the file exists, and derives its key pair through the vote engine.
+1. `DePool-prep.sh` generates the DePool's seed phrase and stores it root-only, unless one is
+   stored already, and derives its key pair through the vote engine.
 2. The script computes the DePool's address in workchain 0 and writes `keys/depool.addr`.
 3. evernode checks that no other node has the address, prints the phrase and the address, and
    waits for the word `SAVED`.
@@ -311,17 +313,25 @@ Command: [`nominator prepare`](../nominator/prepare.md). Code: `nominator.prepar
 2. Build the tools image from the source's `contracts/`, `tools/`, `package.json`,
    `package-lock.json` and `PINNED.json`, unless an image with the same fingerprint exists. The
    build fails if the contract does not compile to the code hash in `PINNED.json`.
-3. In that image, with no network, `tools/cells.cjs`:
+3. In that image, with no network, `tools/cells.cjs` works in a staging directory beside the
+   node's contract files:
    1. compiles the contract into `code.boc` and compares its hash with the pinned one;
    2. builds the contract's initial state from the owner and the Safe, which fixes its address;
    3. builds the deployer's message, which fixes the deployer's address;
    4. writes `manifest.json`.
 4. If the node's contract is deployed (stage `nominator-deployed`, `nominator-verified` or
    `ready-for-elections`) and this address differs, stop unless `--new-contract`: the node would
-   bid from an empty contract while its stake sits in the old one.
-5. Save the address and the tools image in the settings, the record and `env.sh`.
-6. The stage becomes `nominator-prepared`, from `wallet-deployed`, `imported` or
-   `nominator-prepared`.
+   bid from an empty contract while its stake sits in the old one. The staging directory is
+   removed and the node's contract files are left as they were.
+5. Move the new files into `elections/nominator/`.
+6. Save the address and the tools image in the settings, the record and `env.sh`.
+7. The stage becomes `nominator-prepared`, from `wallet-deployed`, `imported` or
+   `nominator-prepared`. The next step named is `nominator deploy`, or `nominator verify` for an
+   imported node or a contract already deployed.
+
+Every command that reads the contract files (`deploy`, `verify`, `info` and the owner's
+requests) refuses files whose address is not the node's recorded contract
+(`nominator._manifest`).
 
 **Result**
 
@@ -349,7 +359,9 @@ Command: [`nominator deploy`](../nominator/deploy.md). Code: `nominator.deploy`,
    3. The effect is the deployer's balance reaching the deploy value, 10 tokens.
 3. Send the deployer's message through the console. It is not signed: the deployer's code can
    only create the contract and delete itself.
-4. Wait up to 180 s for the contract to become active.
+4. Wait up to a minute for the contract to become active. Until it is, send the trigger again,
+   three sends in all: a dropped external message would otherwise fail the deploy, and a later
+   copy finds no deployer once the first has run.
 5. The stage becomes `nominator-deployed`.
 
 **On failure**

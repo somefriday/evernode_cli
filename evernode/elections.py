@@ -41,14 +41,28 @@ def election_sequence_path(store, config):
 
 
 # Each run marks its start and its end in the cron log, where election status
-# reads the latest one back.
+# reads the latest one back. A mark starts on a line of its own: a run killed
+# while the kit was printing would otherwise leave it inside the cut line. A
+# run killed by a signal exits with 128 plus the signal; without the traps its
+# end mark would show the status of the last command that finished, 0 for a
+# run killed in the middle.
 RUN_MARKS = (
-    "mark() { echo \"=== $(date '+%F %T %Z') election run $*\"; }\n"
+    "mark() { printf '\\n=== %s election run %s\\n' \"$(date '+%F %T %Z')\" \"$*\"; }\n"
     "mark started\n"
+    "trap 'exit 129' HUP\ntrap 'exit 130' INT\ntrap 'exit 143' TERM\n"
     "trap 'mark \"ended with status $?\"' EXIT\n"
 )
-_RUN_START = re.compile(r"^=== (.+) election run started$")
-_RUN_END = re.compile(r"^=== (.+) election run ended with status (\d+)$")
+# Searched anywhere in a line, so marks written inside a cut line before the
+# fix above are read too.
+_RUN_START = re.compile(r"=== (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+) election run started$")
+_RUN_END = re.compile(r"=== (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+) election run ended with status (\d+)$")
+# What the kit prints when a run had nothing to do. It exits 1 all the same, and
+# on solo and nominator nodes prints the first as an error line.
+_NO_ELECTION = re.compile(r"There (is|are) no elections now", re.IGNORECASE)
+_ALREADY_BID = re.compile(r"already participated in these elections")
+# The kit's stop at a half-signed transaction in the Safe (exit 3 or 4) is a
+# warning, not an error line.
+_HALF_SIGNED = re.compile(r"Sign it first")
 _PROXY_BANNER = re.compile(r"^!!! PROXY (\d) OF THE DEPOOL (IS FROZEN|IS UNINIT|DOES NOT EXIST):$")
 _BANNER_STATUS = {"IS FROZEN": "Frozen", "IS UNINIT": "Uninit", "DOES NOT EXIST": "Nonexist"}
 _COLOUR = re.compile(r"\x1b\[[0-9;]*m")
@@ -264,8 +278,9 @@ def cron_daemon_state():
 
 def last_run(log):
     """What the latest scheduled run wrote between its marks in the cron log:
-    when it started and ended, its exit status, its last error lines, and each
-    proxy whose alarm it raised. None when the log holds no marked run."""
+    when it started and ended, its exit status, what it came to, its last error
+    lines, and each proxy whose alarm it raised. None when the log holds no
+    marked run."""
     try:
         with open(log, "rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -274,17 +289,25 @@ def last_run(log):
     except OSError:
         return None
     lines = _COLOUR.sub("", text).splitlines()
-    starts = [index for index, line in enumerate(lines) if _RUN_START.match(line)]
+    starts = [index for index, line in enumerate(lines) if _RUN_START.search(line)]
     if not starts:
         return None
     block = lines[starts[-1]:]
-    run = {"started": _RUN_START.match(block[0]).group(1), "ended": None, "status": None,
-           "errors": [], "proxies": []}
+    run = {"started": _RUN_START.search(block[0]).group(1), "ended": None, "status": None,
+           "result": None, "errors": [], "proxies": []}
+    seen = set()
     for index, line in enumerate(block):
-        end = _RUN_END.match(line)
+        end = _RUN_END.search(line)
         banner = _PROXY_BANNER.match(line)
         if end:
             run["ended"], run["status"] = end.group(1), int(end.group(2))
+        elif _HALF_SIGNED.search(line):
+            seen.add("half-signed")
+            run["errors"].append(line.strip())
+        elif _NO_ELECTION.search(line):
+            seen.add("no election")
+        elif _ALREADY_BID.search(line):
+            seen.add("already bid")
         elif "###-ERROR" in line:
             run["errors"].append(line.strip())
         elif banner and index + 1 < len(block):
@@ -293,6 +316,16 @@ def last_run(log):
                 "address": block[index + 1][len("!!! "):].strip(),
                 "status": _BANNER_STATUS[banner.group(2)],
             })
+    if "half-signed" in seen:
+        run["result"] = (
+            "stopped at a half-signed transaction in the Safe: every run stops "
+            "there until depool confirm (stake confirm on a solo or nominator "
+            "node) finishes it, or it expires an hour after it was made"
+        )
+    elif not run["errors"] and "no election" in seen:
+        run["result"] = "no election open"
+    elif not run["errors"] and "already bid" in seen:
+        run["result"] = "already bid in this election"
     run["errors"] = run["errors"][-5:]
     return run
 

@@ -20,7 +20,7 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys, time
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("evernode-vote 0.2.5")
+    print("evernode-vote 0.2.6")
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 rings = {n["name"]: open(n["keyring"]).read() for n in (net or {}).get("nodes", []) if n.get("keyring")}
@@ -250,6 +250,18 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(due["last_pass"]["error"], "the endpoint's newest block is 400 s old")
         self.assertIn("pass failed", out)
         self.assertEqual(other["next_pass_at"], now + 3600)
+
+    def test_a_tick_writes_each_pass_result_once(self):
+        """The engine prints every pass's result itself; evernode printed it a
+        second time, so each result line of the vote cron log was doubled."""
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now - 5)})
+        self.join()
+        self.reply({"stderr": f"[13:44:05Z] {PROPOSAL[:12]}: voted: 1 vote(s) counted; next pass later\n",
+                    "report": report(next_pass_at=now + 600)})
+        code, out, err = self.run_vote("tick")
+        self.assertEqual(code, 0)
+        self.assertEqual((out + err).count("voted: 1 vote(s) counted"), 1, out + err)
 
     def test_a_closed_report_ends_the_entry_and_removes_the_cron_line(self):
         now = int(time.time())
@@ -539,6 +551,21 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("-n NAME, --all for every managed node, or --keyring PATH", err)
         self.assertEqual(self.calls(), [])
+
+    def test_a_key_ring_that_holds_no_key_of_the_round_is_named(self):
+        """On the test network a copy made before an election stopped voting
+        without a word, while the managed nodes beside it voted on."""
+        path = self.keyring_file()
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)},
+                   {"report": report(next_pass_at=now + 600, keyless=[str(path)])})
+        code, out, err = self.join_keyring(path)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(f"{path} holds no key of this round's validator set", out + err)
+        self.assertIn("export validator_key_ring", out + err)
+        # The engine's stamp ([HH:MM:SSZ]), so the cron log reads and filters alike.
+        line = next(l for l in (out + err).splitlines() if "holds no key" in l)
+        self.assertRegex(line, r"^\[\d\d:\d\d:\d\dZ\] [0-9a-f]{12}: ")
 
     def test_a_key_ring_file_is_read_in_place_at_every_pass(self):
         path = self.keyring_file()

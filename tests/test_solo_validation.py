@@ -525,6 +525,22 @@ class SetStakeTests(unittest.TestCase):
             self.set(mode="single")
         self.assertIn("fund it first", str(caught.exception))
 
+    def test_a_refusal_points_a_moved_validator_to_amount(self):
+        """Moving a working validator: its stake is still at the elector and the
+        Safe or contract holds little, so the stake has to be named now. On the
+        test network the refusal said only "fund it first", for a contract
+        whose 99,960 tokens were at the elector."""
+        self.observed = {
+            "wallet_balance_nanotokens": str(600 * stake.NANO),
+            "recoverable_nanotokens": "0",
+        }
+        for mode in ("single", "balanced"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(process.OperationError) as caught:
+                    self.set(mode=mode)
+                self.assertIn("still at the elector", str(caught.exception))
+                self.assertIn("--amount", str(caught.exception))
+
     def test_a_stake_of_zero_or_less_is_refused(self):
         for amount in (0, -5):
             with self.subTest(amount=amount):
@@ -765,3 +781,48 @@ class ElectionSequenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NANO = 1_000_000_000
+
+
+@unittest.skipUnless(shutil.which("bash"), "Requires bash")
+class RecoveryTargetTests(unittest.TestCase):
+    """The recovery check counts a stake as arrived once the staking account has
+    grown by half the recovered amount. It used to expect the balance before
+    plus the stake less the value sent and a token, and the storage the
+    request's own transaction pays first made a stake that had arrived read as
+    missing, with an SOS: after a Safe was idle for weeks, or after a price rise
+    (seen on the test network)."""
+
+    SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
+
+    def target(self, balance, recovered):
+        text = (self.SCRIPTS / "functions.shinc").read_text()
+        start = text.index("function Recovery_Target() {")
+        function = text[start: text.index("\n}\n", start) + 3]
+        program = (
+            f'Get_Account_Info() {{ echo "Active {balance} $(date +%s)"; }}\n'
+            + function + f"Recovery_Target -1:{'a' * 64} {recovered}\n"
+        )
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return int(result.stdout)
+
+    def test_a_stake_that_arrived_counts_whatever_storage_took(self):
+        # Safe: 51 tokens; 110,205 come back. The request sends 1 token and pays its storage first:
+        # 2.8 after a month idle at mainnet's prices, 6 after a price rise on the test network,
+        # 5,000 for a price rise far beyond anything seen.
+        target = self.target(51 * NANO, 110205 * NANO)
+        for storage in (2820000000, 6 * NANO, 5000 * NANO):
+            with self.subTest(storage=storage):
+                arrived = 51 * NANO - storage - NANO + 110206 * NANO
+                self.assertLessEqual(target, arrived)
+
+    def test_a_recovery_that_brought_nothing_is_not_counted(self):
+        target = self.target(51 * NANO, 110205 * NANO)
+        self.assertGreater(target, 51 * NANO)  # nothing came back: only fees and storage went out
+
+    def test_the_election_run_uses_it(self):
+        script = (self.SCRIPTS / "prepare_elections.sh").read_text()
+        self.assertIn('Recovery_Target "${Recover_Subject}" "$recover_amount")', script)

@@ -402,6 +402,70 @@ class DePoolOperationTests(unittest.TestCase):
         self.assertEqual(trace, "")
 
 
+
+@unittest.skipUnless(
+    shutil.which("bash") and shutil.which("jq") and shutil.which("bc"),
+    "Requires bash, jq and bc",
+)
+class PendingTransactionCountTests(unittest.TestCase):
+    """stake_to_depool.sh with a 2-of-3 Safe holding N transactions to the DePool.
+    It counted them as each entry's number of fields (11), and from two on bash
+    failed on the count; with five, an older check of its own stopped every
+    operation, including one finishing its own entry, with a reason evernode
+    does not show. evernode's own check in each operation decides instead."""
+
+    def dispatch(self, pending, refuse=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            shutil.copyfile(SCRIPTS / "stake_to_depool.sh", directory / "stake_to_depool.sh")
+            (directory / "depool_functions").mkdir()
+            (directory / "depool_functions" / "replenish_depool.shinc").write_text(
+                'function replenish_depool() { echo "reached replenish_depool"; }\n' if refuse is None else
+                f'function replenish_depool() {{ echo "###-ERROR: {refuse}" >&2; return 1; }}\n'
+            )
+            (directory / "env.sh").write_text(
+                "export VALIDATOR_NAME=validator CALL_BC=bc CALL_CLI=fake_cli\n"
+                f'export KEYS_DIR="{directory}/keys" ELECTIONS_WORK_DIR="{directory}" STAKE_MODE=depool\n'
+            )
+            stubs = LOW_BALANCE_STUBS.replace('echo "1 1"', 'echo "3 2"') + r"""
+function Get_MSIG_Trans_List() {
+    jq -cn --argjson n "$TEST_PENDING" '{transactions: [range($n) | {id: tostring, dest: "0:depool", value: "1"}]}'
+}
+"""
+            (directory / "functions.shinc").write_text(stubs)
+            keys = directory / "keys"
+            keys.mkdir()
+            (keys / "validator.addr").write_text("0:wallet\n")
+            (keys / "validator_1.keys.json").write_text('{"public":"aa","secret":"bb"}')
+            return subprocess.run(
+                ["bash", str(directory / "stake_to_depool.sh"), "replenish", "--", "--", "20"],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30,
+                env={**os.environ, "TEST_PENDING": str(pending), "TEST_DEPOOL_BALANCE": "50000000000"},
+            )
+
+    def test_waiting_transactions_are_counted(self):
+        for pending in (1, 2):
+            with self.subTest(pending=pending):
+                result = self.dispatch(pending)
+                self.assertNotIn("syntax error", result.stderr)
+                self.assertIn(f"Transactions to DePool:  {pending}\n", result.stdout)
+                self.assertIn("reached replenish_depool", result.stdout)
+
+    def test_a_full_queue_is_left_to_the_operations_own_check(self):
+        result = self.dispatch(5)
+        self.assertNotIn("maximum number of unsigned transactions", result.stdout)
+        self.assertIn("reached replenish_depool", result.stdout)
+
+    def test_a_refused_operation_is_followed_by_a_line_that_claims_no_attempt(self):
+        """bd-o: the queue check's own reason was followed by "Error replenishing
+        depool self balance.", which reads as if a replenishment had been tried."""
+        result = self.dispatch(1, refuse="this custodian already has 5 transactions waiting")
+        self.assertEqual(result.returncode, 1)
+        errors = [l for l in (result.stdout + result.stderr).splitlines() if "###-ERROR" in l]
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("already has 5 transactions waiting", errors[0])
+        self.assertIn("Replenishing the DePool's own balance stopped.", errors[1])
+
 # A well-funded Safe, while the DePool's own balance (5 tokens against a
 # 45-token threshold) and one proxy (1 token) are below what a stake needs.
 LOW_BALANCE_STUBS = r"""
@@ -688,3 +752,63 @@ Submit_And_Identify 0:wallet 0:dest file 5 payload key
         result, sends, looks = self.submit(["0:", "0:", "0:", "0:"])
         self.assertEqual((result.returncode, sends, looks), (1, 3, 4))
         self.assertIn("never accepted", result.stderr)
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("bc"), "Requires bash and bc")
+class DePoolDeployFundingRefusalTests(unittest.TestCase):
+    """The real DePool_deploy.sh on a DePool funded too little. evernode shows
+    only a kit script's ###-ERROR lines, so the amount the DePool needs must be
+    on that line: on bd-o the terminal said only "You have not anought
+    balance", and the 45 was in the private log."""
+
+    def refusal(self, account):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            shutil.copyfile(SCRIPTS / "DePool_deploy.sh", directory / "DePool_deploy.sh")
+            keys = directory / "keys"
+            keys.mkdir()
+            depool = "0:" + "b" * 64
+            (keys / "validator.addr").write_text("0:" + "a" * 64)
+            (keys / "depool.addr").write_text(depool)
+            (keys / "depool.keys.json").write_text('{"public":"cc","secret":"dd"}')
+            (directory / "env.sh").write_text(
+                "export VALIDATOR_NAME=validator CALL_BC=bc CALL_CLI=fake_cli\n"
+                "export BalanceThresholdT=20 MinStakeT=10 ValidatorAssuranceT=1000\n"
+                f'export KEYS_DIR="{keys}" INPL_KEYS_DIR="{keys}"\n'
+                f'export ELECTIONS_WORK_DIR="{directory}" INPL_DSCs_DIR="{directory}"\n'
+            )
+            (directory / "functions.shinc").write_text(
+                "function DispEnvInfo() { :; }\n"
+                "function Determine_Current_Network() { :; }\n"
+                "function Require_Node_Console() { :; }\n"
+                "function flock() { :; }\n"
+                'function Get_Account_Info() { echo "$TEST_DEPOOL"; }\n'
+                "function fake_cli() {\n"
+                '    case "$*" in\n'
+                "        *'decode stateinit'*) echo '{\"code\":\"te6cc\"}';;\n"
+                f'        genaddr*) echo "Raw address: {depool}";;\n'
+                "    esac\n"
+                "}\n"
+            )
+            result = subprocess.run(
+                ["bash", str(directory / "DePool_deploy.sh")],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30,
+                env={**os.environ, "TEST_DEPOOL": account},
+            )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        return [line for line in result.stdout.splitlines() if "###-ERROR" in line]
+
+    def test_too_little_names_what_it_holds_and_needs(self):
+        # Two transfers adding up to 45 leave a few nanotokens less: shown, not rounded away.
+        errors = self.refusal("Uninit 44999999994 0")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("holds 44.999999994 tokens; it needs at least 45 to deploy", errors[0])
+        errors = self.refusal("Uninit 44000000000 0")
+        self.assertIn("holds 44 tokens; it needs at least 45 to deploy", errors[0])
+        errors = self.refusal("Uninit 44500000000 0")
+        self.assertIn("holds 44.5 tokens;", errors[0])
+
+    def test_an_unfunded_address_names_the_amount(self):
+        errors = self.refusal("None 0 0")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("Fund it with at least 45 tokens", errors[0])

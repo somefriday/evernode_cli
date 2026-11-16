@@ -73,6 +73,9 @@ pub struct Report {
     pub errors: Vec<String>,
     /// what `propose` would only register with a flag (`--force`, `--allow-usable-key`), and other risks
     pub warnings: Vec<String>,
+    /// listed key-ring files that hold no key of this round's set: not elected, or a copy made before the last
+    /// election
+    pub keyless: Vec<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -128,6 +131,7 @@ pub fn pass(net: &Net, phash: HashBytes, dry_run: bool) -> Result<Report> {
     let round = round_number(&view, &setup);
     let keys = campaign::held_keys(net, &vset, &mut HashMap::new());
     report.errors.extend(keys.unreadable.iter().cloned());
+    report.keyless = keys.keyless.clone();
     let ours = &keys.ours;
     let record = |node: usize, idx: u16, key: HashBytes| VoteRecord {
         round,
@@ -261,6 +265,7 @@ fn open_report(phash: HashBytes, status: &ProposalStatus, chain: &Graphql, cfg: 
         next_pass_at: None,
         result: String::new(),
         errors: Vec::new(),
+        keyless: Vec::new(),
         warnings,
     })
 }
@@ -284,6 +289,7 @@ fn gone(phash: HashBytes, known: &Known, cfg: &ConfigAccount, timeline: &Timelin
         next_pass_at: None,
         result: String::new(),
         errors: Vec::new(),
+        keyless: Vec::new(),
         warnings: Vec::new(),
     }
 }

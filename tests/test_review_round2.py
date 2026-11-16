@@ -173,7 +173,10 @@ class CreationTests(unittest.TestCase):
         self.assertFalse(wallets.import_seeds_stored(self.store, config))
         phrase = "abandon " * 11 + "about"
         for typed in (phrase, "legal " * 11 + "winner"):
-            with patch("evernode.wallets.read_import_seeds", return_value=[typed]):
+            # The Safe on chain has the shape this node was set up with.
+            with patch("evernode.wallets.read_import_seeds", return_value=[typed]), \
+                    patch("evernode.wallets.scripts.verify_imported_safe",
+                          return_value={"custodians": 1, "required_signatures": 1, "public_keys": ["1" * 64]}):
                 wallets.enter_import_seeds(self.store, config, replace=True)
             seed = wallets.seed_directory(self.store, config) / "validator01_seed_1.txt"
             self.assertEqual(seed.read_text().strip(), typed.strip())

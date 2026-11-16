@@ -622,6 +622,73 @@ def fund_nominator_deployer(
         ) from exc
 
 
+# The proxy top-up each run's preparation makes before the tick, run on its
+# own: a proxy that holds less than 1.92 tokens (TOPUP_THRESHOLD in
+# prepare_elections.sh) once it pays the storage it owes gets 5 tokens plus
+# that storage from the Safe. One JSON line per proxy on stdout; the top-up's
+# own progress goes to stderr.
+PROXY_TOP_UP = r"""set -o pipefail
+set +u
+source ./env.sh
+source ./functions.shinc
+threshold=1920000000
+for proxy in "$EVERNODE_PROXY0" "$EVERNODE_PROXY1"; do
+    if ! info="$(Get_Account_Info "$proxy")";then
+        jq -cn --arg proxy "$proxy" '{proxy: $proxy, status: null, top_up: "none"}'
+        continue
+    fi
+    read -r status balance paid <<< "$info"
+    [[ $balance =~ ^[0-9]+$ ]] || balance=0
+    owed=$(Proxy_Storage_Owed "$paid")
+    top_up=none
+    if [[ $status == "Active" ]] && (( balance - owed < threshold ));then
+        if top_app_account "$proxy" $((5 * 1000000000)) "$EVERNODE_WALLET" >&2;then
+            top_up=done
+        else
+            top_up=failed
+        fi
+    fi
+    jq -cn --arg proxy "$proxy" --arg status "$status" --argjson balance "$balance" \
+        --argjson owed "$owed" --arg top_up "$top_up" \
+        '{proxy: $proxy, status: $status, balance_nanotokens: $balance,
+          owed_nanotokens: $owed, top_up: $top_up}'
+done
+"""
+
+
+def top_up_proxies(store, config, proxies, wallet_address, timeout=1200):
+    """Top up the DePool's proxies that run low, as each run's preparation does
+    before the tick: one result per proxy, its top_up "none", "done" or
+    "failed". The kit's own lines for a top-up that failed come back as
+    `errors`."""
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "EVERNODE_WALLET": wallet_address,
+            "EVERNODE_PROXY0": proxies[0],
+            "EVERNODE_PROXY1": proxies[1],
+        }
+    )
+    result = process.execute_command(
+        ["bash", "-c", PROXY_TOP_UP],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        entries = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    except ValueError as exc:
+        raise process.OperationError("Could not read the result of the proxy top-up") from exc
+    if len(entries) != len(proxies):
+        raise process.OperationError("Could not read the result of the proxy top-up")
+    errors = [line.strip() for line in result.stderr.splitlines() if "ERROR" in line]
+    for entry in entries:
+        if entry.get("top_up") == "failed":
+            entry["errors"] = errors
+    return entries
+
+
 ELECTOR_CREDIT_STATUS = r"""
 elections_id="$(Get_Current_Elections_ID)" || elections_id=0
 jq -cn --arg elector "$elector_addr" --arg type "$elector_type" \

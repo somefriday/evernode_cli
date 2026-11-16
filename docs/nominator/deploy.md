@@ -24,6 +24,7 @@ Funds a one-shot deployer from the Safe (11 tokens), triggers it and waits until
 - The Safe needs about 12 tokens. It is signed like every other Safe transaction, with all local custodian keys.
 - A Safe that needs several signatures proposes the payment, then approves it: the command says when not to interrupt (Ctrl+C) and when the payment is done. Cut off in between, wait a minute and run the command again: it finishes the same payment instead of proposing another.
 - Refuses if the Safe is not the one the contract was prepared for.
+- The deployer's trigger is sent again, up to three times a minute apart, while the contract does not appear; a copy after the first that ran is ignored.
 - Safe to run again: an active contract is reported as already deployed, and a funded deployer is not funded twice.
 
 ## See also

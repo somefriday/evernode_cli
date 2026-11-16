@@ -137,13 +137,16 @@ def _review_transaction(store, config, args):
     if dest == str(profile.get("depool_address") or "").lower():
         # A tick or a bid left pending makes the DePool ask the elector through
         # its proxies once it executes (ELECT-8). Nothing here tells one from a
-        # withdrawal, so the refusal names the command that can finish that.
+        # withdrawal, so the refusal says what becomes of each kind.
         try:
             wallets.require_live_proxies(store, config)
         except process.OperationError as error:
             raise process.OperationError(
                 f"{error}. A withdrawal or a replenishment left pending is finished by "
-                "running the same depool withdraw or depool replenish again"
+                "running the same depool withdraw or depool replenish again. A stake, "
+                "a tick or a bid left pending waits until the proxy is restored: until "
+                "then it stops every scheduled run, and it expires an hour after it was "
+                "submitted"
             ) from error
     try:
         whose = _own_contracts(store, config).get(dest)

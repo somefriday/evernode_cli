@@ -406,7 +406,7 @@ class FocusedFeatureTests(unittest.TestCase):
     def test_a_missing_or_other_vote_engine_is_built_from_the_installed_sources(self):
         other = process.OperationError(
             "/usr/local/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.5: run sudo evernode host setup"
+            "evernode-vote 0.2.6: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             sources = Path(temporary)
@@ -425,12 +425,12 @@ class FocusedFeatureTests(unittest.TestCase):
             ["docker", "build", "--output", "/usr/local/bin", sources], timeout=3600, stream=True
         )
         self.assertEqual(find.call_count, 2)
-        self.assertIn("Building evernode-vote 0.2.5 with Docker", err.getvalue())
+        self.assertIn("Building evernode-vote 0.2.6 with Docker", err.getvalue())
 
     def test_a_build_that_leaves_another_engine_fails(self):
         other = process.OperationError(
             "/usr/bin/evernode-vote is evernode-vote 0.2.0; this evernode needs "
-            "evernode-vote 0.2.5: run sudo evernode host setup"
+            "evernode-vote 0.2.6: run sudo evernode host setup"
         )
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / "Cargo.toml").write_text("")
@@ -571,7 +571,7 @@ class FocusedFeatureTests(unittest.TestCase):
         ):
             self.assertIn("Docker's official Ubuntu repository", host.get_setup_plan())
             self.assertIn(
-                "build the vote engine evernode-vote 0.2.5 into /usr/local/bin with Docker",
+                "build the vote engine evernode-vote 0.2.6 into /usr/local/bin with Docker",
                 host.get_setup_plan(),
             )
 
@@ -964,8 +964,8 @@ class FocusedFeatureTests(unittest.TestCase):
             # Checking a deployed Safe's custodians is covered separately.
             "evernode.wallets.require_own_safe"
         ), patch(
-            # Checking the DePool's proxies is covered separately (ELECT-8).
-            "evernode.wallets.require_live_proxies"
+            # Checking and funding the DePool's proxies is covered separately (ELECT-7, ELECT-8).
+            "evernode.wallets.fund_proxies"
         ), patch(
             # Waiting for a deployed contract to appear is covered separately.
             "evernode.wallets.scripts.wait_for_active_account"
@@ -1425,3 +1425,35 @@ class FocusedFeatureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImportShapeTests(unittest.TestCase):
+    """node setup --import-wallet without a terminal records the default shape,
+    3 custodians and 2 signatures. The Safe on chain decides how many phrases
+    wallet recover asks for: on the test network a one-custodian Safe was asked
+    for three, and the operator was stuck."""
+
+    def recover(self, chain):
+        config = make_node_configuration(
+            "validator", validator_type="depool", setup_stage="node-started",
+            wallet={"mode": "import", "custodians": 3, "required_signatures": 2,
+                    "wallet_address": "0:" + "a" * 64, "depool_address": "0:" + "b" * 64})
+        with patch("evernode.wallets.scripts.verify_imported_safe", return_value=chain), \
+                patch("evernode.wallets.read_import_seeds", return_value=["phrase"]) as asked, \
+                patch("evernode.wallets.store_import_seeds"), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            wallets.enter_import_seeds(None, config, replace=False)
+        return config["wallet"], asked, said.getvalue()
+
+    def test_recover_asks_for_the_safes_own_number_of_phrases(self):
+        profile, asked, said = self.recover(
+            {"custodians": 1, "required_signatures": 1, "public_keys": ["1" * 64]})
+        asked.assert_called_once_with(1)
+        self.assertEqual((profile["custodians"], profile["required_signatures"]), (1, 1))
+        self.assertIn("The Safe has 1 custodian(s) and needs 1 signature(s)", said)
+
+    def test_a_shape_that_matches_is_used_without_a_word(self):
+        profile, asked, said = self.recover(
+            {"custodians": 3, "required_signatures": 2, "public_keys": ["1" * 64, "2" * 64, "3" * 64]})
+        asked.assert_called_once_with(3)
+        self.assertEqual(said, "")

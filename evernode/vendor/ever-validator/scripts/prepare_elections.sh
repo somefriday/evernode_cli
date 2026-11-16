@@ -350,7 +350,7 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         # each signature is evidenced before the next is sent, and the effect
         # is the recovered stake arriving in the wallet.
         declare -i Recover_Deadline=$(( $(date +%s) + $(Signing_Window) ))
-        declare -i Wallet_Before=$(( $(echo "$(Get_Account_Info "${Recover_Subject}")" | awk '{print $2}') ))
+        declare -i Recover_Target=$(Recovery_Target "${Recover_Subject}" "$recover_amount")
         New_Elect_Trans_ID=""
         if [[ ${Required_Signs} -gt 1 ]];then
             New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Recover_Dest" \
@@ -394,15 +394,15 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         #=================================================
         # A signed wallet transaction is not a recovered stake: the elector
         # returns it as a transfer, so wait for the staking account's own
-        # balance to carry it. The value sent with the request pays the fees,
-        # so the threshold allows that much again plus a token.
+        # balance to carry it (Recovery_Target: its balance now plus half of
+        # what the elector reported it would return).
         declare -i Recover_Now=$(date +%s)
         if [[ $Recover_Deadline -lt $((Recover_Now + ${EFFECT_MIN_WAIT:-10})) ]];then
             Recover_Deadline=$((Recover_Now + ${EFFECT_MIN_WAIT:-10}))
         fi
         if ! Await_Effect "The recovery of ${recover_amount} nanotokens" "$Recover_Deadline" \
                 "${EFFECT_POLL_INTERVAL:-2}" Effect_Account_Balance_At_Least "$Recover_Subject" \
-                "$(( Wallet_Before + recover_amount - Recover_Value - 1000000000 ))";then
+                "$Recover_Target";then
             echo "###-ERROR(${SelfScriptName} line $LINENO): The recovered stake has not arrived in ${Recover_Subject}." \
                 | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
             Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR: Stake recovery did not arrive!!!" > /dev/null 2>&1

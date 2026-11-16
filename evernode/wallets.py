@@ -458,6 +458,20 @@ def enter_import_seeds(store, config, *, replace):
     """Ask for the phrases at wallet recover: a create that was interrupted and
     resumed never asked for them, and a phrase typed blind can be wrong."""
     profile = _require_stage(config, "import", "node-started")
+    # An existing Safe's custodians and threshold are the chain's. node setup
+    # without a terminal records the defaults, and one phrase is asked for
+    # each custodian the Safe really has.
+    observed = scripts.verify_imported_safe(store, config, profile["wallet_address"])
+    found = (observed["custodians"], observed["required_signatures"])
+    if found != (profile["custodians"], profile["required_signatures"]):
+        print(
+            f"The Safe has {found[0]} custodian(s) and needs {found[1]} signature(s); "
+            f"setup recorded {profile['custodians']} and {profile['required_signatures']}. "
+            "Using the Safe's.",
+            file=sys.stderr,
+        )
+        profile["custodians"], profile["required_signatures"] = found
+        config["wallet"] = profile
     store_import_seeds(
         store, config, read_import_seeds(profile["custodians"]), replace=replace
     )
@@ -563,12 +577,18 @@ def depool_prepare(store, config):
     profile["depool_address"] = address
     config["wallet"] = profile
     config["setup_stage"] = "depool-prepared"
+    settings = dict(configuration.DEFAULT_ENVIRONMENT, **(config.get("settings") or {}))
+    # DePool_deploy.sh refuses a DePool holding less than this.
+    funding = 2 * int(settings["BalanceThresholdT"]) + 5
     return (
         config,
         {
             "stage": config["setup_stage"],
             "depool_address": address,
-            "next": f"Fund {address}, then run: evernode depool deploy -n {config['name']}",
+            "next": (
+                f"Fund {address} with at least {funding} tokens, then run: "
+                f"evernode depool deploy -n {config['name']}"
+            ),
         },
         _depool_seed(store, config),
     )
@@ -686,12 +706,46 @@ def require_live_proxies(store, config):
                 + ("could not be read" if status is None else f"reads as {status}, not Active")
                 + "; nothing was sent. Run the command again once it reads as Active"
             )
+    return proxies
+
+
+def fund_proxies(store, config):
+    """Before an operation that reaches the elector through the DePool's
+    proxies: refuse a proxy that is frozen, uninit or gone (require_live_proxies),
+    then top up each one that holds less than 1.92 tokens once it pays the
+    storage it owes at the current prices, from the node's Safe, as each run's
+    preparation does before the tick. A top-up that fails is refused only when
+    the proxy owes more storage than it holds, since the next message to it
+    would freeze it; otherwise the proxy still works and each scheduled run
+    tries again."""
+    proxies = require_live_proxies(store, config)
+    profile = node_wallet_profile(config)
+    results = scripts.top_up_proxies(store, config, proxies, profile["wallet_address"])
+    for index, entry in enumerate(results):
+        what = f"Proxy {index} of {config['name']}'s DePool ({entry['proxy']})"
+        if entry.get("top_up") == "done":
+            print(f"{what} held less than 1.92 tokens once its storage is paid; "
+                  "topped up with 5 tokens plus the storage it owes from the Safe.", file=sys.stderr)
+        elif entry.get("top_up") == "failed":
+            why = "; ".join(entry.get("errors") or []) or "see the node's validator log"
+            left = int(entry.get("balance_nanotokens") or 0) - int(entry.get("owed_nanotokens") or 0)
+            if left < 0:
+                raise process.OperationError(
+                    f"{what} could not be topped up ({why}), and it owes more storage than it "
+                    "holds, so the DePool's next message to it would freeze it: nothing else was "
+                    "sent. Fund the Safe, or send the proxy tokens that do not bounce, then run "
+                    "the command again"
+                )
+            print(f"Warning: {what} could not be topped up ({why}); it still covers the "
+                  "storage it owes, and each scheduled run tries again before the tick.",
+                  file=sys.stderr)
+    return results
 
 
 def depool_stake_initial(store, config):
     require_validator_type(config, "depool", "stake")
     _require_stage(config, "new", "depool-deployed")
-    require_live_proxies(store, config)
+    fund_proxies(store, config)
     assurance = str(config.get("settings", {}).get("ValidatorAssuranceT", 50000))
     scripts.execute_validator_script(
         store,
@@ -757,7 +811,7 @@ def depool_stake(store, config, *, amount):
     profile = _require_operational_depool(config)
     if amount < 1:
         raise process.OperationError("Stake amount must be at least one token")
-    require_live_proxies(store, config)
+    fund_proxies(store, config)
     scripts.execute_validator_script(
         store,
         config,

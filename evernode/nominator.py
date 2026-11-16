@@ -20,6 +20,7 @@ never ask for an owner key.
 """
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -162,9 +163,19 @@ def _manifest(store, config):
             f"prepare -n {config['name']}"
         )
     try:
-        return json.loads(path.read_text())
+        manifest = json.loads(path.read_text())
     except ValueError as exc:
         raise process.OperationError("The prepared contract manifest is unreadable") from exc
+    # Files prepared for another contract than the node's: the node bids from
+    # the recorded address, so acting on these would act on the wrong account.
+    recorded = (config.get("nominator") or {}).get("address")
+    if recorded and manifest.get("address") != recorded:
+        raise process.OperationError(
+            f"The prepared contract files are for {manifest.get('address')}, but this "
+            f"node's contract is {recorded}. Run: evernode nominator prepare -n "
+            f"{config['name']} (from the source that contract was built from)"
+        )
+    return manifest
 
 
 def owner_address(config):
@@ -306,6 +317,8 @@ def resolve_contract_source(config, requested=None):
 
     if requested:
         path = Path(requested).expanduser().absolute()
+        if not path.is_dir():
+            raise process.OperationError(f"{path} does not exist or is not a directory")
         if not (path / "PINNED.json").is_file():
             raise process.OperationError(
                 f"{path} does not look like the vendored single-nominator "
@@ -374,51 +387,62 @@ def prepare(store, config, *, source, recipe, new_contract=False):
     else:
         config["nominator_source"] = str(source)
     work = work_directory(store, config, create=True)
-    deploy_value = str(settings["NOMINATOR_DEPLOY_VALUE"])
-    result = process.execute_command(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "-v",
-            f"{work}:/work",
-            "-e",
-            f"OWNER={owner}",
-            "-e",
-            f"VALIDATOR={validator}",
-            "-e",
-            f"DEPLOY_VALUE={deploy_value}",
-            "-w",
-            "/opt/nominator",
-            tag,
-            PREPARE_PROGRAM,
-        ],
-        timeout=600,
-    )
+    # Built aside and moved in only once the address is accepted: deploy,
+    # verify, info and the owner's requests all read these files, so a refused
+    # prepare must leave the deployed contract's own in place.
+    staging = work / ".prepare"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(mode=0o700)
     try:
-        manifest = json.loads(result.stdout[result.stdout.index("{"):])
-    except (ValueError, IndexError) as exc:
-        raise process.OperationError(
-            "Contract preparation did not produce a manifest"
-        ) from exc
-    for name in ("code.boc", "init.boc", "factory-deploy.boc"):
-        (work / name).chmod(0o600)
-    # Other code gives another address. A node whose contract is deployed would
-    # then bid from an empty contract while its stake sits in the old one.
-    deployed = (config.get("nominator") or {}).get("address")
-    if (
-        deployed
-        and config.get("setup_stage") in CONTRACT_STAGES
-        and manifest["address"] != deployed
-        and not new_contract
-    ):
-        raise process.OperationError(
-            f"This node's contract is deployed at {deployed}, and this code gives "
-            f"{manifest['address']}. Prepare it from the source the deployed one was "
-            "built from, or use --new-contract to move the node to the new address"
+        deploy_value = str(settings["NOMINATOR_DEPLOY_VALUE"])
+        result = process.execute_command(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "-v",
+                f"{staging}:/work",
+                "-e",
+                f"OWNER={owner}",
+                "-e",
+                f"VALIDATOR={validator}",
+                "-e",
+                f"DEPLOY_VALUE={deploy_value}",
+                "-w",
+                "/opt/nominator",
+                tag,
+                PREPARE_PROGRAM,
+            ],
+            timeout=600,
         )
+        try:
+            manifest = json.loads(result.stdout[result.stdout.index("{"):])
+        except (ValueError, IndexError) as exc:
+            raise process.OperationError(
+                "Contract preparation did not produce a manifest"
+            ) from exc
+        for name in ("code.boc", "init.boc", "factory-deploy.boc"):
+            (staging / name).chmod(0o600)
+        # Other code gives another address. A node whose contract is deployed would
+        # then bid from an empty contract while its stake sits in the old one.
+        deployed = (config.get("nominator") or {}).get("address")
+        if (
+            deployed
+            and config.get("setup_stage") in CONTRACT_STAGES
+            and manifest["address"] != deployed
+            and not new_contract
+        ):
+            raise process.OperationError(
+                f"This node's contract is deployed at {deployed}, and this code gives "
+                f"{manifest['address']}. Prepare it from the source the deployed one was "
+                "built from, or use --new-contract to move the node to the new address"
+            )
+        for item in staging.iterdir():
+            os.replace(item, work / item.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     settings["NOMINATOR_ADDR"] = manifest["address"]
     # The election scripts splice the stake into the elector's request with
     # this image, so the node's environment has to name it.
@@ -439,6 +463,12 @@ def prepare(store, config, *, source, recipe, new_contract=False):
             "NOMINATOR_TOOLS_IMAGE": tag,
         },
     )
+    # An imported node's contract exists already, and so does a deployed one's:
+    # it is checked next, not deployed.
+    on_chain = (
+        (config.get("wallet") or {}).get("mode") == "import"
+        or config.get("setup_stage") in CONTRACT_STAGES
+    )
     if config.get("setup_stage") in (
         "wallet-deployed",
         "imported",
@@ -453,12 +483,23 @@ def prepare(store, config, *, source, recipe, new_contract=False):
         "manifest": manifest,
         "artifacts": str(work),
         "note": (
-            "The contract does not exist yet. The address above is fixed by "
+            "This is the existing contract's address: nominator verify checks the "
+            "contract on chain against this code, owner and wallet."
+            if on_chain
+            else "The contract does not exist yet. The address above is fixed by "
             "this code and this owner/wallet pair: a different pair is a "
             "different account, so changing either one means deploying again."
         ),
-        "next": f"evernode nominator deploy -n {config['name']}",
+        "next": (
+            f"evernode nominator verify -n {config['name']}"
+            if on_chain
+            else f"evernode nominator deploy -n {config['name']}"
+        ),
     }
+
+
+# How often deploy sends the deployer's trigger, waiting a minute after each.
+TRIGGER_SENDS = 3
 
 
 def _broadcast(config, name):
@@ -545,14 +586,35 @@ def deploy(store, config):
             flush=True,
         )
     # The deployer is triggered by an unsigned external message: its code can
-    # only send the message in its data, so nothing has to authorize it.
-    _broadcast(config, "factory-deploy.boc")
-    observed = _wait_for(
-        config,
-        pool,
-        lambda item: item.get("acc_type") == "Active",
-        what="nominator contract",
-    )
+    # only send the message in its data, so nothing has to authorize it. One
+    # the network drops is sent again: a later copy finds no deployer once the
+    # first has run, since the deployer deletes itself.
+    observed = None
+    for _ in range(TRIGGER_SENDS):
+        _broadcast(config, "factory-deploy.boc")
+        try:
+            observed = _wait_for(
+                config,
+                pool,
+                lambda item: item.get("acc_type") == "Active",
+                attempts=15,
+                what="nominator contract",
+            )
+            break
+        except process.OperationError:
+            continue
+    if observed is None:
+        deployer = _account(config, factory).get("acc_type")
+        raise process.OperationError(
+            f"The nominator contract did not appear after {TRIGGER_SENDS} sends of the "
+            f"deployer's trigger, a minute apart (deployer: {deployer}). "
+            + (
+                "The deployer is paid and still waiting: run evernode nominator "
+                f"deploy -n {config['name']} again later"
+                if deployer == "Uninit"
+                else f"Check: evernode nominator info -n {config['name']}"
+            )
+        )
     config["setup_stage"] = "nominator-deployed"
     return config, {
         "nominator": pool,

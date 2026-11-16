@@ -19,6 +19,7 @@ from evernode import (
     process,
     provisioning,
     storage,
+    wallets,
 )
 from support import make_node_configuration
 
@@ -63,6 +64,10 @@ def the_safe_holds(pending=None, depool=None, proxies=None):
               return_value={"proxies": PROXIES}, side_effect=depool),
         patch("evernode.scripts.read_account_status",
               side_effect=lambda _store, _config, address: proxies.get(address, "Active")),
+        # Proxies with enough to carry the next bid: topping one up is covered separately.
+        patch("evernode.scripts.top_up_proxies",
+              side_effect=lambda _store, _config, addresses, _wallet: [
+                  {"proxy": address, "status": "Active", "top_up": "none"} for address in addresses]),
     ):
         yield
 
@@ -306,6 +311,10 @@ class WithdrawalCommandTests(unittest.TestCase):
         script.assert_not_called()
         self.assertIn("PROXY 1 OF THE DEPOOL IS FROZEN:", text)
         self.assertIn("finished by running the same depool withdraw or depool replenish again", text)
+        # Seen on the test network: a stake left pending there has no way forward and
+        # stops every scheduled run until it expires.
+        self.assertIn("A stake, a tick or a bid left pending waits until the proxy is restored", text)
+        self.assertIn("expires an hour after it was submitted", text)
         code, script, _ = self.run_command(
             "depool", "confirm", "-n", "validator01", "--transaction-id", "43", "--yes",
             pending=pending, proxies={PROXIES[1]: "Frozen"},
@@ -372,6 +381,63 @@ class WithdrawalCommandTests(unittest.TestCase):
         self.assertEqual(code, 1)
         enable.assert_not_called()
         self.assertIn("PROXY 0 OF THE DEPOOL IS FROZEN", errors.getvalue())
+
+    def start_elections(self, top_up, *argv):
+        """election start on a DePool node whose proxies read as Active; TOP_UP
+        is what the proxy top-up reports for proxy 0 (proxy 1 needs none)."""
+        order = []
+
+        def topped(_store, _config, proxies, _wallet):
+            order.append("top up")
+            return [dict(top_up, proxy=proxies[0]),
+                    {"proxy": proxies[1], "status": "Active", "top_up": "none"}]
+
+        with (
+            patch("evernode.cli.require_root_privileges"),
+            patch("evernode.cli.storage.NodeStateStore") as store,
+            patch("evernode.cli.nodes.fetch_node_statistics",
+                  return_value={"sync_status": "synchronization_finished",
+                                "timediff": 1, "shards_timediff": 1}),
+            patch("evernode.cli.elections.hold_election_lock",
+                  side_effect=lambda *_: contextlib.nullcontext()),
+            patch("evernode.cli.elections.enable_node_election_schedule",
+                  side_effect=lambda *_: order.append("schedule")),
+            patch("evernode.cli.describe_election_state", return_value={}),
+            the_safe_holds(),
+            patch("evernode.scripts.top_up_proxies", side_effect=topped),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            store.return_value.load_node_config.return_value = operational_node()
+            code = cli.main(["election", "start", "-n", "validator01", "--yes", *argv])
+        return code, order, errors.getvalue()
+
+    def test_low_proxies_are_topped_up_before_the_schedule_is_installed(self):
+        """So the first run finds proxies that can carry the next bid."""
+        code, order, text = self.start_elections(
+            {"status": "Active", "balance_nanotokens": 1900000000, "owed_nanotokens": 0, "top_up": "done"})
+        self.assertEqual((code, order), (0, ["top up", "schedule"]), text)
+        self.assertIn(f"Proxy 0 of validator01's DePool ({PROXIES[0]}) held less than 1.92 tokens", text)
+
+    def test_a_failed_top_up_of_a_proxy_owing_more_than_it_holds_installs_nothing(self):
+        code, order, text = self.start_elections(
+            {"status": "Active", "balance_nanotokens": 1000000000, "owed_nanotokens": 3000000000,
+             "top_up": "failed", "errors": ["###-ERROR: the wallet holds too little"]})
+        self.assertEqual((code, order), (1, ["top up"]), text)
+        self.assertIn("owes more storage than it holds", text)
+        self.assertIn("the wallet holds too little", text)
+
+    def test_a_failed_top_up_of_a_proxy_that_still_pays_its_way_is_a_warning(self):
+        code, order, text = self.start_elections(
+            {"status": "Active", "balance_nanotokens": 1900000000, "owed_nanotokens": 100000000,
+             "top_up": "failed", "errors": []})
+        self.assertEqual((code, order), (0, ["top up", "schedule"]), text)
+        self.assertIn("Warning: Proxy 0", text)
+        self.assertIn("each scheduled run tries again before the tick", text)
+
+    def test_a_dry_run_tops_up_nothing(self):
+        code, order, _ = self.start_elections({"top_up": "done"}, "--dry-run")
+        self.assertEqual((code, order), (0, []))
 
     def test_a_transaction_the_safe_does_not_hold_is_refused(self):
         code, script, text = self.run_command(
@@ -516,6 +582,62 @@ class ElectionStateReportTests(unittest.TestCase):
         self.assertEqual(run["errors"], ["###-ERROR(prepare_elections.sh line 455): Proxy1 -1:p1 is frozen"])
         self.assertEqual(run["proxies"], [{"index": 0, "address": "-1:p0", "status": "Uninit"},
                                           {"index": 1, "address": "-1:p1", "status": "Frozen"}])
+
+    def last(self, text):
+        log = self.store.node_directory(self.config["name"]) / "logs/validator/election-cron.log"
+        log.write_text(text)
+        return self.describe(enabled=True)["last_run"]
+
+    def test_a_run_between_elections_is_idle_not_failed(self):
+        """Taken from the test network's logs: a solo run (whose kit prints the
+        idle lines as errors) and a DePool run outside the election window."""
+        solo = self.last(
+            "=== 2026-11-15 14:56:01 UTC election run started\n"
+            "###-ERROR(prepare_elections.sh line 285):There is no elections now! Nothing to do!\n"
+            "###-ERROR(take_part_in_elections.sh line 196): There are NO elections now! Wait for the next elections.\n"
+            "=== 2026-11-15 14:56:04 UTC election run ended with status 1\n")
+        depool = self.last(
+            "=== 2026-11-15 12:36:01 UTC election run started\n"
+            "+++-WARN(prepare_elections.sh line 430):There is no elections now! Just check balances and exit!\n"
+            "---INFO(prepare_elections.sh line 646): There is no elections now! Nothing to do!\n"
+            "=== 2026-11-15 12:36:02 UTC election run ended with status 1\n")
+        for run in (solo, depool):
+            self.assertEqual((run["result"], run["errors"]), ("no election open", []))
+
+    def test_a_run_after_its_bid_reports_the_bid(self):
+        run = self.last(
+            "=== 2026-11-15 13:04:01 UTC election run started\n"
+            "---INFO: We have already participated in these elections: (1794748240)\n"
+            "=== 2026-11-15 13:04:02 UTC election run ended with status 1\n")
+        self.assertEqual((run["result"], run["errors"]), ("already bid in this election", []))
+
+    def test_an_idle_run_that_found_a_problem_is_not_called_idle(self):
+        run = self.last(
+            "=== 2026-11-15 13:24:01 UTC election run started\n"
+            "+++-WARN(prepare_elections.sh line 430):There is no elections now! Just check balances and exit!\n"
+            "###-ERROR(prepare_elections.sh line 485): Proxy0 -1:p0 is frozen; restore it before elections continue.\n"
+            "=== 2026-11-15 13:24:02 UTC election run ended with status 1\n")
+        self.assertIsNone(run["result"])
+        self.assertEqual(run["errors"], ["###-ERROR(prepare_elections.sh line 485): Proxy0 -1:p0 is frozen; restore it before elections continue."])
+
+    def test_a_run_stopped_by_a_half_signed_transaction_says_so(self):
+        """Every run stops while one waits in the Safe (ELECT-6); the kit says
+        why in a warning, not an error line."""
+        run = self.last(
+            "=== 2026-11-15 12:58:01 UTC election run started\n"
+            "+++WARNING(prepare_elections.sh line 218): You have unsigned transactions on the validator address!! Transactions: to elector: 0; To DePool: 1\n"
+            "+++-WARNING(prepare_elections.sh line 247): : You have unsigned transactions to DePool on the validator address!! Sign it first before continue!\n"
+            "=== 2026-11-15 12:58:02 UTC election run ended with status 4\n")
+        self.assertEqual(run["status"], 4)
+        self.assertIn("half-signed", run["result"])
+        self.assertEqual(run["errors"], ["+++-WARNING(prepare_elections.sh line 247): : You have unsigned transactions to DePool on the validator address!! Sign it first before continue!"])
+
+    def test_an_end_mark_written_after_a_cut_line_is_still_read(self):
+        """A run killed while the kit was printing: its end mark follows the cut line."""
+        run = self.last(
+            "=== 2026-11-15 14:18:01 UTC election run started\n"
+            "---INFO: Send tik query to Depool... === 2026-11-15 14:18:06 UTC election run ended with status 143\n")
+        self.assertEqual((run["ended"], run["status"]), ("2026-11-15 14:18:06 UTC", 143))
 
     def test_a_log_without_a_marked_run_reports_none(self):
         self.assertIsNone(self.describe(enabled=True)["last_run"])
@@ -1149,3 +1271,65 @@ class CronDaemonDetectionTests(unittest.TestCase):
 
     def test_a_failing_pgrep_reports_unknown(self):
         self.assertEqual(self.detect(error=OSError("boom"))[0], "unknown")
+
+
+class DePoolFundingHintTests(unittest.TestCase):
+    """depool prepare names what depool deploy will ask for: DePool_deploy.sh
+    refuses a DePool holding less than twice its balance threshold plus 5 tokens."""
+
+    def next_step(self, threshold=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        store = storage.NodeStateStore(temporary.name)
+        settings = dict(configuration.DEFAULT_ENVIRONMENT)
+        if threshold is not None:
+            settings["BalanceThresholdT"] = threshold
+        config = make_node_configuration(
+            "validator01", validator_type="depool", setup_stage="wallet-deployed",
+            settings=settings,
+            wallet={"mode": "new", "custodians": 1, "required_signatures": 1,
+                    "wallet_address": "0:" + "a" * 64, "depool_address": None})
+        keys = store.node_directory("validator01") / "keys"
+        (keys / "DPKeys_validator01").mkdir(parents=True)
+        for path, text in ((keys / "depool.addr", "0:" + "b" * 64),
+                           (keys / "DPKeys_validator01" / "depool_seed.txt", " ".join(["word"] * 12))):
+            path.write_text(text)
+            path.chmod(0o600)
+        with patch("evernode.scripts.execute_validator_script"), \
+                patch("evernode.wallets.ensure_unassigned"):
+            _, result, _ = wallets.depool_prepare(store, config)
+        return result["next"]
+
+    def test_the_default_threshold_asks_for_45_tokens(self):
+        self.assertIn("with at least 45 tokens", self.next_step())
+
+    def test_the_amount_follows_the_configured_threshold(self):
+        self.assertIn("with at least 65 tokens", self.next_step(threshold=30))
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("sleep"), "Requires bash")
+class KilledRunMarkTests(unittest.TestCase):
+    """A run killed by SIGTERM (a reboot, kill, a stopped service) must not be
+    recorded as a clean run, and its end mark must be readable even when the
+    kit was in the middle of a line."""
+
+    def test_a_terminated_run_records_the_signal_on_its_own_line(self):
+        import signal
+        import subprocess
+        import time
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        script = directory / "sequence.sh"
+        script.write_text("#!/bin/bash\nset -euo pipefail\n" + elections.RUN_MARKS
+                          + "printf 'Send tik query to Depool... '\nsleep 30\n")
+        log = directory / "election-cron.log"
+        with open(log, "w") as output:
+            child = subprocess.Popen(["bash", str(script)], stdout=output, stderr=output,
+                                     start_new_session=True)
+            time.sleep(1)
+            os.killpg(child.pid, signal.SIGTERM)
+            child.wait(timeout=20)
+        run = elections.last_run(log)
+        self.assertEqual(run["status"], 143, log.read_text())
+        self.assertTrue(any(line.startswith("=== ") and "ended with status 143" in line
+                            for line in log.read_text().splitlines()), log.read_text())

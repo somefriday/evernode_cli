@@ -227,3 +227,22 @@ class CommandContractTests(unittest.TestCase):
     def test_lifecycle_rejects_unknown_actions_before_accessing_state(self):
         with self.assertRaisesRegex(process.OperationError, "Unsupported"):
             nodes.apply_node_lifecycle_operation(None, "node-01", "unknown")
+
+
+class InterruptMessageTests(unittest.TestCase):
+    """Ctrl+C cannot recall a transaction already handed to the network: one
+    sent just before it can still execute, and depool stake run again then
+    stakes twice (seen on the test network, 4 s after the interrupt)."""
+
+    def test_an_interrupted_operation_warns_that_a_sent_transaction_can_still_land(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        from evernode import cli
+        with patch("evernode.cli.setup_actions.handle_setup_action", side_effect=KeyboardInterrupt), \
+                patch("evernode.cli.require_root_privileges"), patch("evernode.cli.os.umask"), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            code = cli.main(["depool", "stake", "-n", "validator01", "--amount", "10", "--yes"])
+        self.assertEqual(code, 130)
+        self.assertIn("can still take effect", said.getvalue())
+        self.assertIn("depool stake and depool replenish add funds each time", said.getvalue())

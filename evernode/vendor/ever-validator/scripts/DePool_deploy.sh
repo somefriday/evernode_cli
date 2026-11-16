@@ -138,13 +138,19 @@ Depool_Status=$(echo "$Depool_INFO" | awk '{print $1}')
 Depool_AMOUNT=$(echo "$Depool_INFO" | awk '{print $2}')
 
 if [[ "$Depool_Status" == "None" ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): DePool address '${Depool_addr}' not found on the blockchain with any tokens!"
+    echo "###-ERROR(${SelfScriptName} line $LINENO): DePool address '${Depool_addr}' not found on the blockchain with any tokens! Fund it with at least $((BalanceThresholdT * 2  + 5)) tokens."
     exit 1
 fi
 
+# The amount goes on the ###-ERROR line: evernode shows only those lines. The
+# balance is shown exactly: storage taken between two transfers leaves it a few
+# nanotokens under a round number, which rounding down would hide.
 if [[ $Depool_AMOUNT -lt $((BalanceThresholdT * 1000000000 * 2  + 5000000000)) ]];then
-    echo "###-ERROR(${SelfScriptName} line $LINENO): You have not anought balance on depool address!"
-    echo -e "It should have at least $((BalanceThresholdT * 2  + 5)), but now it has $((Depool_AMOUNT / 1000000000))\n"
+    Depool_Tokens="$((Depool_AMOUNT / 1000000000))"
+    if (( Depool_AMOUNT % 1000000000 ));then
+        Depool_Tokens+=".$(printf '%09d' $((Depool_AMOUNT % 1000000000)) | sed 's/0*$//')"
+    fi
+    echo "###-ERROR(${SelfScriptName} line $LINENO): The DePool address holds ${Depool_Tokens} tokens; it needs at least $((BalanceThresholdT * 2  + 5)) to deploy."
     exit 1
 fi
 

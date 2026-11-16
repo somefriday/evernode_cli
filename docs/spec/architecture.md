@@ -127,7 +127,7 @@ each file.
     scripts/ configs/ contracts/     the node's copy of the kit
     node_cfg/               node configuration and its keys
     node_db/                the block database
-    keys/                   Safe and DePool keys, addresses, seed phrases
+    keys/                   Safe and DePool keys and addresses
     elections/              election files, account states, the election lock
     logs/                   node logs and election logs
     run-elections.sh        what cron starts
@@ -170,8 +170,8 @@ the line `# Managed by evernode`; evernode refuses to replace or remove a file w
 
 - evernode runs as root and trusts only files that root owns and nobody else can read or write
   ([SEC-1](properties.md#sec-1)).
-- Secrets on the server: the node's own keys in `node_cfg/`, the Safe's and the DePool's seed
-  phrases and key pairs in `keys/`. A nominator's owner key is never on the server
+- Secrets on the server: the node's own keys in `node_cfg/`, the Safe's and the DePool's key
+  pairs in `keys/`, and their seed phrases, root-only. A nominator's owner key is never on the server
   ([SEC-3](properties.md#sec-3)).
 - evernode changes only containers that carry its label for that node
   ([SEC-5](properties.md#sec-5)).

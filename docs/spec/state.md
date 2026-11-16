@@ -151,10 +151,8 @@ the file again from the template.
 | --------------------------------------- | ------------------------------------------------------- |
 | `NAME.addr`                             | the Safe's address                                      |
 | `NAME_1.keys.json` … `NAME_N.keys.json` | one key pair per custodian                              |
-| `MSKeys_NAME/`                          | the seed phrases (`NAME_seed_I.txt`) and what was generated from them |
-| `NAME.secret.json`                      | the kit's own summary, with the seed phrases            |
+| `NAME.secret.json`                      | the kit's own summary                                   |
 | `depool.addr`, `depool.keys.json`       | the DePool's address and deployment key                 |
-| `DPKeys_NAME/`                          | the DePool's seed phrase and what was generated from it |
 | `proxy0.addr`, `proxy1.addr`            | the DePool's two proxies, written by the election run   |
 | `NAME_msig_deploy.boc`, `NAME_depool_deploy.boc` | the deploy messages, with their logs           |
 

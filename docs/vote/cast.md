@@ -31,7 +31,7 @@ Votes for a registered proposal with every current validator key the named files
 - For machines without a managed node; needs no root, and records nothing.
 - With `-n` or `--all` it is refused: managed nodes vote through `vote join`.
 - Any ever-node's key ring is copied by `(umask 077; sudo jq '{validator_key_ring}' /PATH/TO/node_cfg/config.json > keyring.json)`.
-- After the next election a copy holds no current key, and `vote status --keyring keyring.json --keys` shows `holds []`: copy it again. `--watch` reads it again at every check.
+- After the next election a copy holds no current key, and `vote status --keyring keyring.json --keys` shows `holds []`: copy it again. With only such copies `cast` refuses and names them. `--watch` reads it again at every check.
 - A `--keyring`, `--control` or `--relay` file must be readable by its owner only.
 - Without `--watch` it ends once every key is counted in this round, with an error if a key file could not be read.
 
