@@ -22,7 +22,9 @@ Reports whether the cron file exists, whether a cron daemon runs, and the node's
 
 - `enabled`: the schedule is installed. `cron_daemon`: `running`, `not running` or `unknown`.
 - `chain`: `in_current_vset_p34`, `in_next_vset_p36`, `validation_status`, `validating`.
-- `last_run`: when the latest scheduled run started and ended, its exit status, `result` and its last error lines. `result` is `no election open` or `already bid in this election` for a run that had nothing to do (the kit exits 1 for both), says so when every run stops at a half-signed transaction in the Safe, and is empty otherwise. A run killed by a signal ends with status 129, 130 or 143; one killed outright (out of memory) has no end. A proxy it found frozen, or without code (uninit or gone), is shown again as a red alarm.
+- `last_run`: when the latest scheduled run started and ended, its exit status, `result` and its last error lines. A proxy it found frozen, or without code (uninit or gone), is shown again as a red alarm.
+- `result`: `no election open` or `already bid in this election` for a run that had nothing to do (the kit exits 1 for both), a note when every run stops at a half-signed transaction in the Safe, and empty otherwise.
+- A run killed by a signal ends with status 129, 130 or 143; one killed outright has no end.
 - An installed schedule with no cron daemon never runs; the report warns.
 - `in_next_vset_p36: false` during an election does not mean the bid failed: the next set is not chosen yet.
 

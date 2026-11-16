@@ -1252,10 +1252,8 @@ function Current_MC_Storage_Prices() {
 # What a DePool proxy owes for storage since its last transaction. The balance
 # it shows does not include it: storage is taken at the next transaction, and in
 # the masterchain an account that then owes over 0.1 token is frozen. It is
-# counted at the prices in force now for a proxy's state (37 cells and 11262
-# bits on mainnet, 36 and 11960 on the test network; 40 and 13000 are counted),
-# and never as less than 0.1 token a day: at mainnet's prices a proxy costs about
-# 0.044 token a day, so that floor decides there, and higher prices raise it.
+# counted at the storage prices in force for a proxy's state, rounded up to the
+# cells and bits below, and never as less than 0.1 token a day.
 # Input: the proxy's last_paid (unix time). Output: nanotokens; 0 when last_paid
 # is unknown, and 0 is what a failed read reports ("None 0 0").
 PROXY_STORAGE_BITS=13000

@@ -657,38 +657,30 @@ The run these rules belong to is in [elections.md](elections.md).
 
 **A proxy is funded before it can freeze.**
 
-- **Rule.** A proxy whose balance, less its storage owed, is under 1.92 tokens is topped up: by
-  DePool preparation before each tick, and by evernode before `election start` installs the
-  schedule and before `depool stake` and `depool stake-initial`. Storage owed is counted at the
-  masterchain storage prices in force now (config param 18) for a proxy's state, taken as 40
-  cells and 13,000 bits, and never as less than 0.1 token a day since the proxy's last
-  transaction; as none when that time is not known. The top-up is 5 tokens plus the storage owed
-  in whole tokens, in a transfer that does not bounce, and only to a proxy that reads as Active; a
-  proxy that owes more than 50 tokens gets nothing. It is done when the proxy's balance is at
-  least the old one plus 4 tokens. A top-up that fails, while the proxy owes more storage than it
-  holds, ends preparation before the tick and refuses the command; otherwise the command goes
-  ahead with a warning.
+- **Rule.** A proxy whose balance, less its storage owed, is under 1.92 tokens is topped up before
+  each tick, and before `election start`, `depool stake` and `depool stake-initial`. Storage owed
+  is counted at the storage prices in force, and never as less than 0.1 token a day since the
+  proxy's last transaction; as none when that time is not known. The top-up is 5 tokens plus the
+  storage owed in whole tokens, in a transfer that does not bounce, and only to a proxy that reads
+  as Active; a proxy that owes more than 50 tokens gets nothing. It is done when the proxy's
+  balance is at least the old one plus 4 tokens. A top-up that fails while the proxy owes more
+  than it holds stops the run before the tick, or the command; otherwise it is a warning.
 - **Why.** A frozen proxy can neither carry a stake to the elector nor bring one back. Its balance
   is as of its last transaction, so a proxy idle for weeks can owe more than it shows, and the
   next small message then freezes it. A transfer that bounces is credited only after the proxy
   pays its storage, so a proxy that owes more than it holds freezes before the tokens arrive.
-- **Enforced by.** The proxy loop in `prepare_elections.sh`; `Proxy_Storage_Owed`,
-  `Current_MC_Storage_Prices` and `top_app_account` in `functions.shinc`; `fund_proxies` in
-  `wallets.py`, which runs `PROXY_TOP_UP` in `scripts.py`.
+- **Enforced by.** The proxy loop in `prepare_elections.sh` and `wallets.fund_proxies`;
+  `Proxy_Storage_Owed` and `top_app_account` in `functions.shinc`.
 - **Checked by.** `tests/test_prepare_elections.py`, `tests/test_proxy_top_up.py`,
   `tests/test_depool_commands.py`.
 
-On mainnet a proxy's storage costs about 0.044 token a day, less than the 0.1 token counted, so
-that floor decides there and a top-up that arrived shows the 4 tokens; higher prices in force
-raise the count. Only prices in force count: an entry of config param 18 dated in the future is
-not read. A transfer shorter than the debt would be credited and then taken in full, freezing
-the proxy, so above 50 tokens (500 days at the floor) nothing is sent and the error names what
-the proxy needs. Whole tokens keep the amount the same from one
-run to the next, which is how a run finds the top-up an earlier run left pending ([OP-5](#op-5)).
-Under 1 token (`MIN_PROXY_BALANCE` in the DePool's code) a proxy refuses the DePool's request, and
-the DePool rolls it back; only owing more than it holds freezes it, so only that stops the run. A
-proxy returns what it holds above 2 tokens to the validator's wallet on request
-(`withdrawExcessTons`).
+A transfer shorter than the debt would be credited and then taken in full, freezing the proxy, so
+above 50 tokens nothing is sent and the error names what the proxy needs. Whole tokens keep the
+amount the same from one run to the next, which is how a run finds the top-up an earlier run left
+pending ([OP-5](#op-5)). Under 1 token (`MIN_PROXY_BALANCE` in the DePool's code) a proxy refuses
+the DePool's request, and the DePool rolls it back; only owing more than it holds freezes it, so
+only that stops the run. A proxy returns what it holds above 2 tokens to the validator's wallet on
+request (`withdrawExcessTons`).
 
 ### ELECT-8
 
@@ -706,10 +698,9 @@ proxy returns what it holds above 2 tokens to the validator's wallet on request
   that cannot be read may be frozen. A withdrawal only records a request in the DePool, which
   pays it from its own rounds, and no message passes a proxy; it is paid when its round
   completes, which needs the ticks to run again, so nothing arrives until the proxy is restored.
-- **Enforced by.** The proxy loop in `prepare_elections.sh`; `wallets.require_live_proxies`,
-  called by `wallets.depool_stake_initial`, `wallets.depool_stake`,
-  `setup_actions._review_transaction` and, for `election start`, by `cli.main`; the proxy check
-  in `stake_to_depool.sh`, which a withdrawal skips; `elections.last_run` for `election status`.
+- **Enforced by.** The proxy loop in `prepare_elections.sh`; `wallets.require_live_proxies` for
+  the commands, through `wallets.fund_proxies` where a top-up follows; the proxy check in
+  `stake_to_depool.sh`, which a withdrawal skips; `elections.last_run` for `election status`.
 - **Checked by.** `tests/test_prepare_elections.py`, `tests/test_depool_commands.py`,
   `tests/test_depool_operations.py`.
 

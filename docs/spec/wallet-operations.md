@@ -147,7 +147,7 @@ Every caller builds, submits, signs and awaits the effect in the same way. Two s
 | The five DePool operations        | `depool_functions/*.shinc`              | yes              | yes                       |
 | Funding the nominator deployer    | `scripts.NOMINATOR_FUND_DEPLOYER`       | yes              | yes                       |
 | `stake recover`                   | `scripts.SOLO_STAKE_RECOVER`            | no               | no                        |
-| Proxy top-up, scheduled           | `top_app_account` in `functions.shinc`  | yes              | no                        |
+| Proxy top-up                      | `top_app_account` in `functions.shinc`  | yes              | no                        |
 | DePool replenishment, scheduled   | `prepare_elections.sh`                  | no               | yes                       |
 | Recovery, scheduled               | `prepare_elections.sh`                  | yes              | yes                       |
 | DePool tick                       | `prepare_elections.sh`                  | yes              | yes                       |

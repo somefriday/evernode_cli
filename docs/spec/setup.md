@@ -170,9 +170,8 @@ Command: [`wallet recover`](../wallet/recover.md). Code: `wallets.wallet_recover
 **Logic**
 
 1. If no phrase is stored, or with `--replace-seeds`, read the Safe's custodians and threshold
-   on chain first; where they differ from what setup recorded (without a terminal it records 3
-   and 2), use the Safe's and say so. Ask for one phrase per custodian. Each must
-   be one line of at least 12 words. Store them root-only (mode 0600). All are checked
+   on chain; where setup recorded others, use the Safe's and say so. Ask for one phrase per
+   custodian. Each must be one line of at least 12 words. Store them root-only (mode 0600). All are checked
    before any is written.
 2. `Msig-prep.sh` derives the key pairs from the stored phrases.
 3. Read the Safe at the recorded address: its custodians and its threshold
@@ -257,12 +256,13 @@ Command: [`depool stake-initial`](../depool/stake-initial.md). Code:
 **Requires**
 
 - Stage `depool-deployed`.
-- Both proxies read as Active ([ELECT-8](properties.md#elect-8)).
+- Both proxies read as Active ([ELECT-8](properties.md#elect-8)), and a low one is topped up
+  first ([ELECT-7](properties.md#elect-7)).
 - The Safe holds at least the validator assurance plus 1 token.
 
 **Logic**
 
-1. Take the election lock and check the proxies.
+1. Take the election lock, check the proxies and top up a low one.
 2. Run the ordinary-stake operation for the validator assurance
    ([staking.md](staking.md#depool-operations)), marked as the initial stake.
 3. Marked so, the operation transfers nothing if the Safe's stake in the DePool is already at
@@ -359,9 +359,8 @@ Command: [`nominator deploy`](../nominator/deploy.md). Code: `nominator.deploy`,
    3. The effect is the deployer's balance reaching the deploy value, 10 tokens.
 3. Send the deployer's message through the console. It is not signed: the deployer's code can
    only create the contract and delete itself.
-4. Wait up to a minute for the contract to become active. Until it is, send the trigger again,
-   three sends in all: a dropped external message would otherwise fail the deploy, and a later
-   copy finds no deployer once the first has run.
+4. Wait up to a minute for the contract to become active; until it is, send the trigger again,
+   three sends in all. A later copy finds no deployer once the first has run.
 5. The stage becomes `nominator-deployed`.
 
 **On failure**

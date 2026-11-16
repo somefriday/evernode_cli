@@ -509,8 +509,8 @@ mod tests {
         assert!(check_registered(&plan.proposal).unwrap().iter().any(|w| w.contains("system contracts")));
     }
 
-    /// A p18 entry dated in the future is an ordinary change (decided 2026-11-16): the tool works from the
-    /// config as it is and leaves the timing of a price change to the validators who vote for it.
+    /// A p18 entry dated in the future is an ordinary change: the tool works from the config as it is and
+    /// leaves the timing of a price change to the validators who vote for it.
     #[test]
     fn storage_prices_dated_in_the_future_are_an_ordinary_change() {
         let cfg = crate::emulate::tests::config_account();

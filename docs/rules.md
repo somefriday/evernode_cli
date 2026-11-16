@@ -63,7 +63,8 @@ Write only what decides whether the command works or what it leaves behind:
 - exit codes other than 0 for success and 1 for an error;
 - what the reader runs next.
 
-Five to eight items. One fact per item. Put the condition before the instruction.
+Only what is relevant and important, as many items as there are. One fact per item. Put the
+condition before the instruction.
 
 ## Wording
 

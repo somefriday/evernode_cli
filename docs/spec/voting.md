@@ -137,11 +137,10 @@ Code: `vote_schedule.tick`, `vote_schedule.run_due_pass`, `vote_schedule.run_pas
    2. Write the description: the stored endpoint, the key rings, and what earlier passes read
       about the proposal (`known`), which lets the engine recognise a stale endpoint and the
       proposal's end.
-   3. Run `evernode-vote follow`. Its progress and its result line go to `voting/cron.log`;
-      evernode adds a line of its own only for a key ring it could not read, and for each
-      `--keyring` file the engine reports holding no key of the round (`keyless`): not elected,
-      or a copy made before the last election. Its lines start with the engine's stamp,
-      `[HH:MM:SSZ]` in UTC, so every line of the log reads and filters alike.
+   3. Run `evernode-vote follow`. Its progress and its result line go to `voting/cron.log`.
+      evernode adds a line of its own only for a key ring it could not read and for each
+      `--keyring` file that holds no key of the round (`keyless`), with the engine's stamp,
+      `[HH:MM:SSZ]` in UTC.
    4. Save each vote the moment the engine reports it counted
       ([VOTE-4](properties.md#vote-4)).
    5. Kill a pass that runs 600 s.
