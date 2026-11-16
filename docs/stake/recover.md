@@ -10,7 +10,7 @@ sudo evernode stake recover -n validator01
 
 ## What it does
 
-Sends the recovery request from the Safe, signs it through and waits until the staking account's balance rises.
+Sends the recovery request from the Safe, signs it through and waits until the elector has paid the stake and the staking account's balance has risen.
 
 ## Flags
 

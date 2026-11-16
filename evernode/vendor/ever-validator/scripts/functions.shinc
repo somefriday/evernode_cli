@@ -1278,19 +1278,35 @@ function Proxy_Storage_Owed() {
     echo "$floor"
 }
 #=================================================
-# The balance a staking account (a solo validator's Safe or a nominator
-# contract) reaches once a recovered stake has arrived: its balance now plus
-# half the stake. The elector returns the stake in one message, and what the
-# account pays meanwhile (the value sent with the request, fees, the storage
-# it owes) never comes near half of it, whatever the prices and however long
-# the account was idle.
-# Input: account, recovered amount (nanotokens)
-# Output: nanotokens
-function Recovery_Target() {
-    local balance
-    balance=$(Get_Account_Info "$1" | awk '{print $2}')
-    [[ $balance =~ ^[0-9]+$ ]] || balance=0
-    echo $(( balance + $2 / 2 ))
+# What the elector owes an account (a solo validator's Safe or a nominator
+# contract) from rounds that have finished: compute_returned_stake on the
+# elector's current state.
+# Input: account address
+# Output: nanotokens; fails when the elector cannot be read
+function Elector_Owes() {
+    local result elector type boc answer owed
+    result=$(Get_Current_Elector_Type) || return 1
+    read -r elector type <<< "$result"
+    boc="${INPL_ELECTIONS_WORK_DIR}/${elector##*:}.boc"
+    case $type in
+        fift)
+            answer=$($CALL_CLI runget --boc "$boc" compute_returned_stake "0x${1##*:}" 2>&1) || return 1
+            owed=$(grep "Result:" <<< "$answer" | awk -F'"' '{print $2}')
+            ;;
+        solidity)
+            # It takes the account as a number: a bare hex string is rejected,
+            # so the address keeps its 0x prefix.
+            answer=$($CALL_CLI -j run --boc "$boc" compute_returned_stake \
+                "$(jq -cn --arg account "0x${1##*:}" '{wallet_addr: $account}')" \
+                --abi "${INPL_Elector_ABI}" 2>&1) || return 1
+            owed=$(jq -r '.value0 // empty' <<< "$answer" 2>/dev/null)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    [[ $owed =~ ^[0-9]+$ ]] || return 1
+    echo "$owed"
 }
 #=================================================
 # top_app_account - top up one of the DePool's proxies from the validator's Safe.

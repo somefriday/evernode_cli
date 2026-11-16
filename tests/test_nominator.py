@@ -569,7 +569,7 @@ class SafeTransportTests(unittest.TestCase):
         source = (KIT / "prepare_elections.sh").read_text()
         self.assertIn('Recover_Subject="$NOMINATOR_ADDR"', source)
         self.assertIn('Recover_Dest="$NOMINATOR_ADDR"', source)
-        self.assertIn('compute_returned_stake "0x${Recover_Subject_HEX}"', source)
+        self.assertIn('Elector_Owes "$Recover_Subject"', source)
 
     def test_every_step_of_recovery_uses_the_parameterised_account(self):
         """A half-done parameterisation is the dangerous outcome here.
@@ -584,11 +584,11 @@ class SafeTransportTests(unittest.TestCase):
         end = source.index("+++-INFO: The recovered stake has arrived", start)
         block = source[start:end]
         for required in (
-            'compute_returned_stake "0x${Recover_Subject_HEX}"',          # whose credit
-            'Recovery_Target "${Recover_Subject}"',                       # whose balance before
+            'Elector_Owes "$Recover_Subject"',                            # whose credit
+            'Get_Account_Info "${Recover_Subject}"',                      # whose balance before
             'Find_Matching_Pending_Trans "$Validator_addr" "$Recover_Dest"',
             'Submit_And_Identify "$Validator_addr" "$Recover_Dest"',      # where it is sent
-            'Effect_Account_Balance_At_Least "$Recover_Subject"',         # whose balance rises
+            'Effect_Stake_Recovered "$Recover_Subject"',                  # whose debt falls, balance rises
         ):
             with self.subTest(step=required.split('"')[0].strip()):
                 self.assertIn(required, block)

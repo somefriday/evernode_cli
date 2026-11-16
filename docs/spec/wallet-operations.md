@@ -133,7 +133,7 @@ true.
 | Cancel a withdrawal                    | No withdrawal is recorded and the reinvest flag is on.                 |
 | Replenish the DePool                   | The DePool's own balance is at least the old one plus the amount, less the fee. |
 | Top up a proxy                         | The proxy's balance is at least the old one plus 4 tokens ([ELECT-7](properties.md#elect-7)). |
-| Recover a stake                        | The staking account's balance is at least the old one plus the stake, less the value sent and 1 token. |
+| Recover a stake                        | The elector owes the staking account less than before, and its balance is above the old one. |
 | Fund the nominator deployer            | The deployer's balance is at least the deploy value.                   |
 | Tick the DePool                        | One of the DePool's rounds carries the election's id.                  |
 | Bid                                    | The elector lists the node's ADNL address ([ELECT-3](properties.md#elect-3)). |

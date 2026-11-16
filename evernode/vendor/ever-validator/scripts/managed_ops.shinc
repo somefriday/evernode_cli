@@ -894,6 +894,21 @@ function Effect_Account_Balance_At_Least() {
     [[ $observed -ge $2 ]]
 }
 #=================================================
+# A recovered stake has come back: the elector owes the account less than it
+# did before the request (its own record that it paid), and the account holds
+# more than before the request (the payment has landed).
+# Input: account address, what the elector owed it and its balance before the
+# request (nanotokens)
+function Effect_Stake_Recovered() {
+    local owed info balance
+    owed=$(Elector_Owes "$1") || return 2
+    [[ $owed -lt $2 ]] || return 1
+    info=$(Get_Account_Info "$1") || return 2
+    balance=$(awk '{print $2}' <<< "$info")
+    [[ $balance =~ ^[0-9]+$ ]] || return 2
+    [[ $balance -gt $3 ]]
+}
+#=================================================
 # Deliver a prepared message and identify the transaction it created.
 #
 # Send_Message is not used for this. It counts the pending entries addressed to

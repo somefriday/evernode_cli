@@ -374,32 +374,14 @@ set +u
 source ./env.sh
 source ./functions.shinc
 read -r elector_addr elector_type <<< "$(Get_Current_Elector_Type)"
-wallet_hex=${EVERNODE_WALLET##*:}
-Get_SC_current_state "$elector_addr" >/dev/null
-elector_boc="${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc"
+if [[ $elector_type != fift && $elector_type != solidity ]];then
+    echoerr "###-ERROR: unknown elector type ${elector_type}"
+    exit 1
+fi
 # What the elector owes this wallet from rounds that have already finished.
-# compute_returned_stake takes the wallet as a number, so the address has to
-# carry its 0x prefix; a bare hex string is rejected outright.
-case $elector_type in
-    fift)
-        answer=$($CALL_CLI runget --boc "$elector_boc" \
-            compute_returned_stake "0x${wallet_hex}" 2>&1 || true)
-        recoverable=$(grep "Result:" <<< "$answer" | awk -F'"' '{print $2}')
-        ;;
-    solidity)
-        argument=$(jq -cn --arg address "0x${wallet_hex}" '{wallet_addr: $address}')
-        answer=$($CALL_CLI -j run --boc "$elector_boc" \
-            compute_returned_stake "$argument" --abi "${INPL_Elector_ABI}" 2>&1 || true)
-        recoverable=$(jq -r '.value0 // 0' <<< "$answer" 2>/dev/null || echo 0)
-        ;;
-    *)
-        echoerr "###-ERROR: unknown elector type ${elector_type}"
-        exit 1
-        ;;
-esac
-# Owed nothing is the normal state, so an empty or absent answer is zero, not
-# a failure that aborts the report.
-[[ $recoverable =~ ^[0-9]+$ ]] || recoverable=0
+# Owed nothing is the normal state, so a failed read is zero, not a failure
+# that aborts the report.
+recoverable=$(Elector_Owes "$EVERNODE_WALLET") || recoverable=0
 """
 
 SOLO_STAKE_STATUS = r"""
@@ -472,9 +454,11 @@ if ! trans_id=$(Submit_And_Identify "$signer" "$dest" \
     echoerr "###-ERROR: the stake recovery request did not reach the wallet."
     exit 1
 fi
+# Recovered once the elector owes the account less than before and the account
+# holds more than before the request, as in a scheduled run.
 Complete_And_Await "$trans_id" "$signer" "$VALIDATOR_NAME" \
-    "Stake recovery" Effect_Account_Balance_At_Least "$EVERNODE_WALLET" \
-    "$(( wallet_before + recoverable - value - 1000000000 ))" || exit 1
+    "Stake recovery" Effect_Stake_Recovered "$EVERNODE_WALLET" \
+    "$recoverable" "$wallet_before" || exit 1
 read -r _ wallet_after _ <<< "$(Get_Account_Info "$EVERNODE_WALLET")"
 jq -cn --arg requested "$recoverable" --arg before "$wallet_before" \
     --arg after "$wallet_after" --arg id "$trans_id" \

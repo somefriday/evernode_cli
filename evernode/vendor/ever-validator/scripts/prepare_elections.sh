@@ -278,7 +278,6 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         Recover_Dest="$NOMINATOR_ADDR"
         Recover_Value=$(( ${NOMINATOR_OP_FEE:-2000000000} ))
     fi
-    Recover_Subject_HEX="${Recover_Subject##*:}"
 
     echo "+++-WARNING(${SelfScriptName} line $LINENO): Staking mode is set to $STAKE_MODE. Preparation is recover stake only. Depool will not be ticked."
     if [[ $elections_id -eq 0 ]];then
@@ -289,25 +288,9 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
     fi
 
     #=================================================
-    # check availabylity to recover amount
-    case ${ELECTOR_TYPE} in
-        "fift")
-            recover_amount=$($CALL_CLI runget --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "0x${Recover_Subject_HEX}" 2>&1 | \
-                grep "Result:" | awk -F'"' '{print $2}')
-            ;;
-        "solidity")
-            # compute_returned_stake takes the wallet as a number: a bare hex
-            # string is rejected, so the address keeps its 0x prefix.
-            recover_amount=$($CALL_CLI run --boc "${INPL_ELECTIONS_WORK_DIR}/${elector_addr##*:}.boc" compute_returned_stake "{\"wallet_addr\":\"0x${Recover_Subject_HEX}\"}" --abi "${INPL_Elector_ABI}" 2>&1 | \
-                grep -i "value0" | awk '{print $2}' | tr -d '"')
-            ;;
-        *)
-            echo "###-ERROR(${SelfScriptName} line $LINENO): Unknown Elector type!"
-            exit 1
-            ;;
-    esac
-    
-    recover_amount=$((recover_amount))
+    # What the elector owes the staking account. A failed read counts as
+    # nothing to recover; the next run reads it again.
+    recover_amount=$(Elector_Owes "$Recover_Subject") || recover_amount=0
     echo "---INFO: recover_amount = ${recover_amount} nanotokens ( $((recover_amount/1000000000)) Tokens )"
     # =================================================
     # recover_amount=1
@@ -350,7 +333,8 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         # each signature is evidenced before the next is sent, and the effect
         # is the recovered stake arriving in the wallet.
         declare -i Recover_Deadline=$(( $(date +%s) + $(Signing_Window) ))
-        declare -i Recover_Target=$(Recovery_Target "${Recover_Subject}" "$recover_amount")
+        read -r _ Recover_Balance_Before _ <<< "$(Get_Account_Info "${Recover_Subject}")"
+        [[ $Recover_Balance_Before =~ ^[0-9]+$ ]] || Recover_Balance_Before=0
         New_Elect_Trans_ID=""
         if [[ ${Required_Signs} -gt 1 ]];then
             New_Elect_Trans_ID=$(Find_Matching_Pending_Trans "$Validator_addr" "$Recover_Dest" \
@@ -392,17 +376,16 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
             fi
         fi
         #=================================================
-        # A signed wallet transaction is not a recovered stake: the elector
-        # returns it as a transfer, so wait for the staking account's own
-        # balance to carry it (Recovery_Target: its balance now plus half of
-        # what the elector reported it would return).
+        # A signed wallet transaction is not a recovered stake: it has come
+        # back once the elector owes the staking account less than before and
+        # the account holds more than before the request.
         declare -i Recover_Now=$(date +%s)
         if [[ $Recover_Deadline -lt $((Recover_Now + ${EFFECT_MIN_WAIT:-10})) ]];then
             Recover_Deadline=$((Recover_Now + ${EFFECT_MIN_WAIT:-10}))
         fi
         if ! Await_Effect "The recovery of ${recover_amount} nanotokens" "$Recover_Deadline" \
-                "${EFFECT_POLL_INTERVAL:-2}" Effect_Account_Balance_At_Least "$Recover_Subject" \
-                "$Recover_Target";then
+                "${EFFECT_POLL_INTERVAL:-2}" Effect_Stake_Recovered "$Recover_Subject" \
+                "$recover_amount" "$Recover_Balance_Before";then
             echo "###-ERROR(${SelfScriptName} line $LINENO): The recovered stake has not arrived in ${Recover_Subject}." \
                 | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
             Send_msg_toTelBot "$VALIDATOR_NAME Server" "$Tg_SOS_sign ###-ERROR: Stake recovery did not arrive!!!" > /dev/null 2>&1

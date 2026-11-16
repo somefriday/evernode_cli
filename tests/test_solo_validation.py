@@ -779,50 +779,156 @@ class ElectionSequenceTests(unittest.TestCase):
         self.assertIn("recover_amount = 7", log.read_text())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 NANO = 1_000_000_000
+KIT = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
+
+
+def kit_function(file, name):
+    """One function's text, cut out of a kit file."""
+    text = (KIT / file).read_text()
+    start = text.index(f"function {name}() {{")
+    return text[start: text.index("\n}\n", start) + 3]
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class ElectorOwesTests(unittest.TestCase):
+    """What the elector owes an account, read with compute_returned_stake from
+    either elector: the amount a recovery asks for, and the record that says
+    it was paid."""
+
+    def owes(self, elector, answer):
+        program = (
+            f"Get_Current_Elector_Type() {{ {elector}; }}\n"
+            f"cli() {{ printf '%s\\n' '{answer}'; }}\n"
+            "CALL_CLI=cli INPL_ELECTIONS_WORK_DIR=/tmp INPL_Elector_ABI=elector.abi.json\n"
+            + kit_function("functions.shinc", "Elector_Owes")
+            + f"Elector_Owes -1:{'a' * 64}\n"
+        )
+        return subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+
+    def test_each_elector_answer_is_read(self):
+        fift = self.owes("echo '-1:3333 fift'", 'Result: ["110109108665029"]')
+        self.assertEqual((fift.returncode, fift.stdout.strip()), (0, "110109108665029"))
+        solidity = self.owes("echo '-1:3333 solidity'", '{"value0": "7000"}')
+        self.assertEqual((solidity.returncode, solidity.stdout.strip()), (0, "7000"))
+
+    def test_owing_nothing_is_zero(self):
+        result = self.owes("echo '-1:3333 fift'", 'Result: ["0"]')
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "0"))
+
+    def test_an_answer_that_cannot_be_read_is_a_failure_not_zero(self):
+        """Taken as zero, it would tell a recovery that the elector had paid."""
+        for elector, answer in (("echo '-1:3333 fift'", "Error: no state"),
+                                ("echo '-1:3333 solidity'", "{}"),
+                                ("return 1", 'Result: ["0"]')):
+            with self.subTest(elector=elector, answer=answer):
+                result = self.owes(elector, answer)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), "")
 
 
 @unittest.skipUnless(shutil.which("bash"), "Requires bash")
-class RecoveryTargetTests(unittest.TestCase):
-    """The recovery check counts a stake as arrived once the staking account has
-    grown by half the recovered amount. It used to expect the balance before
-    plus the stake less the value sent and a token, and the storage the
-    request's own transaction pays first made a stake that had arrived read as
-    missing, with an SOS: after a Safe was idle for weeks, or after a price rise
-    (seen on the test network)."""
+class StakeRecoveredEffectTests(unittest.TestCase):
+    """A recovered stake has come back once the elector owes the account less
+    than before the request and the account holds more than before it. No
+    estimate of fees or storage enters, so neither a long idle spell nor a price
+    rise makes a stake that arrived read as missing (seen on the test network)."""
 
-    SCRIPTS = Path(__file__).resolve().parents[1] / "evernode/vendor/ever-validator/scripts"
-
-    def target(self, balance, recovered):
-        text = (self.SCRIPTS / "functions.shinc").read_text()
-        start = text.index("function Recovery_Target() {")
-        function = text[start: text.index("\n}\n", start) + 3]
+    def effect(self, owed_now, balance_now, owed_before=110109 * NANO, balance_before=51 * NANO):
+        elector = f"echo {owed_now}" if owed_now is not None else "return 1"
+        account = f'echo "Active {balance_now} 1"' if balance_now is not None else "return 1"
         program = (
-            f'Get_Account_Info() {{ echo "Active {balance} $(date +%s)"; }}\n'
-            + function + f"Recovery_Target -1:{'a' * 64} {recovered}\n"
+            f"Elector_Owes() {{ {elector}; }}\n"
+            f"Get_Account_Info() {{ {account}; }}\n"
+            + kit_function("managed_ops.shinc", "Effect_Stake_Recovered")
+            + f"Effect_Stake_Recovered -1:{'a' * 64} {owed_before} {balance_before}\n"
         )
-        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return int(result.stdout)
+        return subprocess.run(["bash", "-c", program], capture_output=True, text=True,
+                              timeout=30).returncode
 
-    def test_a_stake_that_arrived_counts_whatever_storage_took(self):
-        # Safe: 51 tokens; 110,205 come back. The request sends 1 token and pays its storage first:
-        # 2.8 after a month idle at mainnet's prices, 6 after a price rise on the test network,
-        # 5,000 for a price rise far beyond anything seen.
-        target = self.target(51 * NANO, 110205 * NANO)
-        for storage in (2820000000, 6 * NANO, 5000 * NANO):
+    def test_paid_and_landed_whatever_storage_took(self):
+        # 51 tokens before; the request sends 1, pays its fees and the storage owed (2.8 after a
+        # month idle, 6 after a price rise, 5,000 for a rise far beyond anything seen), and the
+        # 110,109 owed come back with most of the token sent.
+        for storage in (2_820_000_000, 6 * NANO, 5000 * NANO):
             with self.subTest(storage=storage):
-                arrived = 51 * NANO - storage - NANO + 110206 * NANO
-                self.assertLessEqual(target, arrived)
+                landed = 51 * NANO - NANO - storage - 50_000_000 + 110109 * NANO + 983_000_000
+                self.assertEqual(self.effect(0, landed), 0)
 
-    def test_a_recovery_that_brought_nothing_is_not_counted(self):
-        target = self.target(51 * NANO, 110205 * NANO)
-        self.assertGreater(target, 51 * NANO)  # nothing came back: only fees and storage went out
+    def test_not_yet_while_the_elector_still_owes_it(self):
+        self.assertEqual(self.effect(110109 * NANO, 45 * NANO), 1)
+
+    def test_not_yet_while_the_payment_has_not_landed(self):
+        self.assertEqual(self.effect(0, 45 * NANO), 1)
+
+    def test_a_chain_that_cannot_be_read_is_neither_answer(self):
+        self.assertEqual(self.effect(None, 200000 * NANO), 2)
+        self.assertEqual(self.effect(0, None), 2)
 
     def test_the_election_run_uses_it(self):
-        script = (self.SCRIPTS / "prepare_elections.sh").read_text()
-        self.assertIn('Recovery_Target "${Recover_Subject}" "$recover_amount")', script)
+        script = (KIT / "prepare_elections.sh").read_text()
+        self.assertIn('recover_amount=$(Elector_Owes "$Recover_Subject")', script)
+        self.assertIn('Effect_Stake_Recovered "$Recover_Subject"', script)
+        self.assertIn('"$recover_amount" "$Recover_Balance_Before"', script)
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq") and shutil.which("base64"),
+                     "Requires bash, jq and base64")
+class ManualRecoveryArrivalTests(unittest.TestCase):
+    """`stake recover` makes the request a scheduled run makes and waits for
+    the same effect. It used to expect the balance before plus the stake, less
+    the value sent and a token, which the storage the request pays first
+    broke."""
+
+    STUBS = r"""
+echoerr() { echo "$*" >&2; }
+Get_Account_Custodians_Info() { echo "1 1"; }
+# Before the request is signed the account and the elector read as before it; then as after.
+Get_Account_Info() {
+    if [[ -f $TEST_ROOT/signed ]]; then echo "Active $TEST_AFTER 1"; else echo "Active $TEST_BEFORE 1"; fi
+}
+Elector_Owes() {
+    if [[ -f $TEST_ROOT/signed ]]; then echo "$TEST_OWED_AFTER"; else echo "$TEST_RECOVERABLE"; fi
+}
+console() { echo request > "$ELECTIONS_WORK_DIR/recover-query.boc"; }
+base64() { command base64 < "$1"; }  # GNU base64 takes a file; the BSD one on macOS does not
+cli() { while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && : > "$2"; shift; done; }
+Submit_And_Identify() { echo 7; }
+# Signing executes the request; then the effect named is asked once.
+Complete_And_Await() { touch "$TEST_ROOT/signed"; local effect=$5; shift 5; "$effect" "$@"; }
+CALL_CONS=console CALL_CLI=cli elector_addr=-1:3333 recoverable=$TEST_RECOVERABLE
+ELECTIONS_WORK_DIR=$TEST_ROOT INPL_ELECTIONS_WORK_DIR=$TEST_ROOT KEYS_DIR=$TEST_ROOT
+INPL_KEYS_DIR=$TEST_ROOT VALIDATOR_NAME=v MSG_LIFETIME=60
+"""
+
+    def recover(self, after, owed_after, before=51 * NANO, owed=110109 * NANO):
+        from evernode import scripts
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # The program sources managed_ops.shinc: here only the effect it waits for.
+            (root / "managed_ops.shinc").write_text(
+                kit_function("managed_ops.shinc", "Effect_Stake_Recovered"))
+            return subprocess.run(
+                ["bash", "-c", self.STUBS + scripts.SOLO_STAKE_RECOVER],
+                cwd=root, capture_output=True, text=True, timeout=30,
+                env=dict(os.environ, TEST_ROOT=str(root), TEST_BEFORE=str(before),
+                         TEST_AFTER=str(after), TEST_RECOVERABLE=str(owed),
+                         TEST_OWED_AFTER=str(owed_after), EVERNODE_WALLET="-1:" + "a" * 64),
+            )
+
+    def test_a_stake_that_arrived_after_storage_was_taken_counts(self):
+        owed = 110109 * NANO
+        landed = 51 * NANO - NANO - 5 * NANO - 50_000_000 + owed + 983_000_000
+        result = self.recover(landed, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"recovered_nanotokens":"110109000000000"', result.stdout)
+        # The rule before this fix expected more than arrived.
+        self.assertGreater(51 * NANO + owed - NANO - NANO, landed)
+
+    def test_a_recovery_the_elector_did_not_pay_fails(self):
+        result = self.recover(51 * NANO - 6 * NANO, 110109 * NANO)
+        self.assertNotEqual(result.returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

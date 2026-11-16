@@ -163,8 +163,8 @@ waiting for an election.
    - nominator: to the contract, with `NOMINATOR_OP_FEE`, 2 tokens. The contract asks the
      elector and receives the stake.
 6. Submit, sign and wait for the effect
-   ([wallet-operations.md](wallet-operations.md#one-operation)): the staking account's balance
-   grows by what was owed, less the value sent and 1 token.
+   ([wallet-operations.md](wallet-operations.md#one-operation)): the elector owes the staking
+   account less than before the request, and the account holds more than before it.
 
 **Result**
 

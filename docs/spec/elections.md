@@ -134,9 +134,8 @@ validator.
     `NOMINATOR_OP_FEE` (nominator).
 12. Follow the protocol ([wallet-operations.md](wallet-operations.md#one-operation)). The
     deadline is now plus `Signing_Window`, and at most 5 s before the transaction expires.
-13. Wait for the effect: the staking account's balance grows by at least half of what the elector
-    reported it owes (`Recovery_Target`), since the stake comes back in one message. The effect
-    gets at least 10 s.
+13. Wait for the effect (`Effect_Stake_Recovered`): the elector owes the staking account less than
+    before the request, and the account holds more than before it. The effect gets at least 10 s.
 
 ### Preparation, DePool
 
