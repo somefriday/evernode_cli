@@ -17,7 +17,7 @@ Prints the param's hash, whether it is mandatory and critical, how many rounds a
 | Flag         | Value | Default              | Meaning                          |
 | ------------ | ----- | -------------------- | -------------------------------- |
 | ID           | N     | required             | Param number.                    |
-| `--endpoint` | URL   | `$EVERNODE_ENDPOINT` | GraphQL endpoint of the network. |
+| `--endpoint` | URL   | mainnet's public     | GraphQL endpoint of the network. |
 
 ## Behaviour
 

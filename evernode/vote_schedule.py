@@ -141,11 +141,6 @@ def proposal_hash(value):
 
 def join(store, options, proposal):
     """Show the proposal, ask, save it as open and due now, then vote at once."""
-    endpoint = options.endpoint or os.environ.get("EVERNODE_ENDPOINT")
-    if not endpoint:
-        raise process.OperationError(
-            "Name the GraphQL endpoint: set EVERNODE_ENDPOINT or pass --endpoint URL"
-        )
     if not (options.name or options.all or options.keyring):
         raise process.OperationError(
             "Name the keys that vote: -n NAME, --all for every managed node, "
@@ -163,6 +158,10 @@ def join(store, options, proposal):
     # Joined already: the preview is held to what earlier passes read, as every tick is.
     joined = open_entry(store.load(), proposal)
     refuse_another_network(store.state, joined, names, proposal)
+    # An open proposal keeps its endpoint unless --endpoint names another.
+    stored = joined["endpoint"] if joined is not None else None
+    endpoint = voting.vote_endpoint(options, stored=stored, sends=True)
+    voting.require_endpoint_network(store.state, endpoint, names)
     with external_key_rings(store, sources) as external:
         net = {"endpoint": endpoint, "nodes": nodes + external}
         if joined is not None and joined.get("config_version") is not None:
@@ -192,9 +191,10 @@ def join(store, options, proposal):
             }
             data["proposals"].append(entry)
         else:
+            given = ", through the endpoint given now" if options.endpoint else ""
             print(
                 f"{proposal[:12]} was joined already: it now votes with {', '.join(names + sources)} "
-                f"(before: {voters(entry)}), through the endpoint given now"
+                f"(before: {voters(entry)}){given}"
             )
         entry.update(nodes=names, keyrings=sources, endpoint=endpoint, next_pass_at=now)
         merge_report(entry, preview, now, record_pass=False)
@@ -400,7 +400,6 @@ def run_pass(engine, net, proposal, *, dry_run, on_vote=None, quiet=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=voting.engine_environment(),
         )
     except BaseException:
         os.close(write)

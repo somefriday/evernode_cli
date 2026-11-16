@@ -7,8 +7,8 @@ on the contracts' own code, and follows every vote until the config counts it.
 This module only tells it what evernode knows: where a managed node's
 validator keys are, and which wallet pays. That description goes through a
 pipe, so a seed phrase or an endpoint's project key never shows in the
-engine's arguments or environment (EVERNODE_ENDPOINT is not passed on), and
-the engine's errors never name the endpoint. No file holds a seed phrase; a
+engine's arguments or environment, and the engine's errors never name the
+endpoint. No file holds a seed phrase; a
 joined proposal's endpoint is kept in the root-only vote store while it is
 open.
 
@@ -34,12 +34,14 @@ from . import arguments, configuration, elections, process, storage, wallets
 
 ENGINE = "evernode-vote"
 # The engine release this module speaks to; vote/Cargo.toml has the same version.
-ENGINE_VERSION = "0.2.6"
+ENGINE_VERSION = "0.2.7"
 # host setup builds it from the vote/ sources this package carries.
 INSTALL = "sudo evernode host setup"
 # Commands that read neither the chain nor a key, and those that sign votes.
 OFFLINE_COMMANDS = ("burn-key", "mint-wallet")
 VOTING_COMMANDS = ("cast", "run", "burn")
+# Commands that send to the chain: they name the endpoint when it is the default.
+SENDING_COMMANDS = ("propose", *VOTING_COMMANDS)
 # Engine options this group sets itself, or keeps off the command line.
 REFUSED_OPTIONS = {
     "--net": "evernode describes the network itself; run evernode-vote for a net file",
@@ -91,11 +93,7 @@ def handle_vote(args):
     # A relay is a wallet file too: its key spends what carries every vote.
     if any(item == "--relay" or item.startswith("--relay=") for item in rest):
         require_private_wallet(Path(wallet_file(rest, "--relay")))
-    endpoint =options.endpoint or os.environ.get("EVERNODE_ENDPOINT")
-    if not endpoint:
-        raise process.OperationError(
-            "Name the GraphQL endpoint: set EVERNODE_ENDPOINT or pass --endpoint URL"
-        )
+    endpoint = vote_endpoint(options, sends=args.command in SENDING_COMMANDS)
     net = {"endpoint": endpoint, "nodes": []}
     store = None
     if options.name or options.all:
@@ -106,6 +104,7 @@ def handle_vote(args):
         store = storage.NodeStateStore(args.state_dir)
         names = [options.name] if options.name else store.list_node_names()
         net["nodes"] += managed_key_rings(store, names, skip_missing=options.all)
+        require_endpoint_network(store, endpoint, [node["name"] for node in net["nodes"]])
     for kind in ("keyring", "control"):
         # A key ring holds the validator's secret keys, a console file the console's.
         for path in getattr(options, kind):
@@ -142,6 +141,40 @@ def managed_vote_refusal(command, options, rest):
         f"propose ... --pay-from-safe or --from FILE), then sudo evernode vote join {nodes} "
         "--proposal HASH with the hash it prints"
     )
+
+
+def vote_endpoint(options, *, stored=None, sends=False):
+    """The GraphQL endpoint: --endpoint, else the one a joined proposal was stored
+    with, else mainnet's public endpoint, which a command that sends names first."""
+    if os.environ.get("EVERNODE_ENDPOINT"):
+        # It named the endpoint once: ignored, it would let another network's votes go to mainnet.
+        raise process.OperationError(
+            "EVERNODE_ENDPOINT is no longer read: unset it and pass --endpoint URL"
+        )
+    if options.endpoint is not None and not options.endpoint.strip():
+        # A script's unset variable: refused, not read as "use mainnet".
+        raise process.OperationError("--endpoint is empty: name the GraphQL endpoint's URL")
+    if options.endpoint or stored:
+        return options.endpoint or stored
+    if sends:
+        print(
+            f"endpoint: {arguments.DEFAULT_ENDPOINT} (default; --endpoint URL for another network)",
+            file=sys.stderr,
+        )
+    return arguments.DEFAULT_ENDPOINT
+
+
+def require_endpoint_network(store, endpoint, names):
+    """The default endpoint is mainnet's: refuse it for a managed node on another network."""
+    if endpoint != arguments.DEFAULT_ENDPOINT:
+        return
+    for name in names:
+        network = store.load_node_config(name)["network"]
+        if network != "main":
+            raise process.OperationError(
+                f"{name} is on {network}, and {endpoint} is mainnet's: "
+                "pass its network's endpoint with --endpoint URL"
+            )
 
 
 def managed_key_rings(store, names, *, skip_missing):
@@ -394,12 +427,6 @@ def find_engine():
     return path
 
 
-def engine_environment():
-    """evernode's environment without EVERNODE_ENDPOINT: the endpoint, which may
-    hold a project key, reaches the engine only through the description pipe."""
-    return {k: v for k, v in os.environ.items() if k != "EVERNODE_ENDPOINT"}
-
-
 def run_engine(engine, command, rest, net=None):
     """Run one engine command in the operator's terminal; return its exit code.
 
@@ -409,14 +436,13 @@ def run_engine(engine, command, rest, net=None):
     # What evernode printed comes first; the engine writes to the same terminal.
     sys.stdout.flush()
     if net is None:
-        child = subprocess.Popen([engine, command, *rest], env=engine_environment())
+        child = subprocess.Popen([engine, command, *rest])
     else:
         read, write = os.pipe()
         try:
             child = subprocess.Popen(
                 [engine, command, "--net", f"/dev/fd/{read}", *rest],
                 pass_fds=(read,),
-                env=engine_environment(),
             )
         except BaseException:
             os.close(write)

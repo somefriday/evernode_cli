@@ -5,7 +5,7 @@ Register a proposal and pay its price.
 ## Example
 
 ```bash
-sudo -E evernode vote propose -n validator01 --pay-from-safe --burn
+sudo evernode vote propose -n validator01 --pay-from-safe --burn
 ```
 
 ## What it does
@@ -35,12 +35,12 @@ Checks the change against the contract's rules, shows it and its price, dry-runs
 | `--ttl`              | SECONDS                      | the minimum               | Keep the proposal longer, for a higher price.                    |
 | `--dry-run`          |                              | off                       | Stop after the checks; shows hash and price.                     |
 | `--yes`              |                              | ask                       | Pay without asking.                                              |
-| `--endpoint`         | URL                          | `$EVERNODE_ENDPOINT`      | GraphQL endpoint of the network.                                 |
+| `--endpoint`         | URL                          | mainnet's public          | GraphQL endpoint of the network.                                 |
 
 ## Behaviour
 
 - One change flag is required, and one way to pay unless `--dry-run`.
-- Under `sudo`, pass the endpoint with `sudo -E` or `--endpoint`: plain `sudo` drops the variable.
+- Without `--endpoint` it pays on mainnet through its public endpoint and says so first; it refuses a node on devnet named with `-n`.
 - The config takes payment only from the masterchain, so a DePool validator's Safe is refused (use `--from` or `--pay-from`); a Safe with several custodians carries at most 4 cells, a burn or a small param.
 - The payer needs the price plus 3 tokens; the config keeps the price and returns the rest.
 - A proposal already registered is not paid for again; a change already in effect is refused.

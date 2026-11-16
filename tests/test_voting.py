@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from evernode import cli, voting
+from evernode import arguments, cli, voting
 from support import make_node_configuration
 
 # Stands in for evernode-vote: logs its arguments and the description it read
@@ -20,7 +20,7 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 if args == ["--version"]:
-    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.6"))
+    print(os.environ.get("FAKE_ENGINE_VERSION", "evernode-vote 0.2.7"))
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 with open(os.environ["FAKE_ENGINE_LOG"], "a") as log:
@@ -105,18 +105,17 @@ class VoteGroupTests(unittest.TestCase):
         )
 
     def test_engine_options_pass_on_in_order_and_abbreviations_stay_off(self):
-        with patch.dict(os.environ, {"EVERNODE_ENDPOINT": "http://env/graphql"}):
-            self.vote(
-                "propose", "--param", "-999", "--value-json", '{"p0": 1}',
-                "--control", "console.json", "--if-hash", "none", "--dry-run",
-            )
-            self.vote("status", "--keys")
+        self.vote(
+            "propose", "--endpoint", "http://gql/graphql", "--param", "-999", "--value-json",
+            '{"p0": 1}', "--control", "console.json", "--if-hash", "none", "--dry-run",
+        )
+        self.vote("status", "--keys")
         propose, status = self.calls()
         self.assertEqual(
             propose["argv"][3:],
             ["--param", "-999", "--value-json", '{"p0": 1}', "--if-hash", "none", "--dry-run"],
         )
-        self.assertEqual(propose["net"]["endpoint"], "http://env/graphql")
+        self.assertEqual(propose["net"]["endpoint"], "http://gql/graphql")
         self.assertEqual(propose["net"]["nodes"][0]["name"], "console.json")
         # the engine's --keys is not read as evernode's --keyring
         self.assertEqual((status["argv"][3:], status["net"]["nodes"]), (["--keys"], []))
@@ -126,8 +125,9 @@ class VoteGroupTests(unittest.TestCase):
             (["cast", "--endpoint", "u", "--keyring", "k", "--net", "n.json"], "--net:"),
             (["mint-wallet", "--name", "payer", "--secret", "00"], "never accepted"),
             (["propose", "--endpoint", "u", "--burn", "--from", "w.json", "--lock", "/tmp/x"], "names the lock itself"),
-            (["cast", "--keyring", "k", "--proposal", PROPOSAL], "EVERNODE_ENDPOINT"),
             (["cast", "--endpoint", "u", "--proposal", PROPOSAL], "signs with validator keys"),
+            # a script's unset variable does not mean mainnet
+            (["cast", "--endpoint", "", "--keyring", "k", "--proposal", PROPOSAL], "--endpoint is empty"),
             (["run", "--endpoint", "u", "--keyring", "k", "--burn", "--pay-from", ADDRESS], "pay only with propose"),
             (["propose", "--endpoint", "u", "--burn", "--pay-from-safe", "--from", "w.json"], "one wallet"),
             (["propose", "--endpoint", "u", "--burn", "--pay-from-safe"], "name the node with -n"),
@@ -148,6 +148,44 @@ class VoteGroupTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn(message, err)
         self.assertEqual(self.calls(), [])
+
+    def test_the_endpoint_is_the_flag_else_mainnets_public_one(self):
+        cases = [
+            # (argv, endpoint the engine gets, whether evernode names it)
+            (["status"], arguments.DEFAULT_ENDPOINT, False),
+            (["cast", "--keyring", "k", "--proposal", PROPOSAL], arguments.DEFAULT_ENDPOINT, True),
+            (["cast", "--endpoint", "http://devnet", "--keyring", "k", "--proposal", PROPOSAL], "http://devnet", False),
+        ]
+        for argv, endpoint, named in cases:
+            with self.subTest(argv=argv):
+                code, err = self.vote(*argv)
+                self.assertEqual(code, 0)
+                self.assertEqual(self.calls()[-1]["net"]["endpoint"], endpoint)
+                self.assertEqual(f"endpoint: {arguments.DEFAULT_ENDPOINT} (default" in err, named)
+
+    def test_evernode_endpoint_is_refused_not_ignored(self):
+        # It named the endpoint before; ignoring it would send another network's votes to mainnet.
+        with patch.dict(os.environ, {"EVERNODE_ENDPOINT": "http://devnet"}):
+            code, err = self.vote("cast", "--endpoint", "http://devnet", "--keyring", "k", "--proposal", PROPOSAL)
+        self.assertEqual(code, 1)
+        self.assertIn("EVERNODE_ENDPOINT is no longer read: unset it and pass --endpoint URL", err)
+        self.assertEqual(self.calls(), [])
+
+    def test_mainnets_endpoint_is_refused_for_a_node_on_another_network(self):
+        state, store = self.managed_node()
+        store.load_node_config.return_value["network"] = "devnet"
+        with (
+            patch("evernode.voting.storage.NodeStateStore", return_value=store),
+            patch("evernode.voting.storage.validate_private_path"),
+            patch("evernode.vote_schedule.print_status"),
+        ):
+            code, err = self.vote("status", "-n", "validator01", "--keys", euid=0)
+            self.assertEqual(code, 1)
+            self.assertIn(f"validator01 is on devnet, and {arguments.DEFAULT_ENDPOINT} is mainnet's", err)
+            self.assertEqual(self.calls(), [])
+            code, _ = self.vote("status", "-n", "validator01", "--endpoint", "http://devnet", "--keys", euid=0)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls()[0]["net"]["endpoint"], "http://devnet")
 
     def test_offline_commands_reach_the_engine_as_typed(self):
         out = io.StringIO()
@@ -284,7 +322,7 @@ class VoteGroupTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_ENGINE_VERSION": "evernode-vote 0.0.9"}):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertEqual(code, 1)
-        self.assertIn("needs evernode-vote 0.2.6: run sudo evernode host setup", err)
+        self.assertIn("needs evernode-vote 0.2.7: run sudo evernode host setup", err)
         with patch("evernode.voting.shutil.which", return_value=None):
             code, err = self.vote("status", "--endpoint", "u")
         self.assertIn("evernode-vote is not installed: run sudo evernode host setup", err)

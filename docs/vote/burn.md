@@ -23,7 +23,7 @@ The same as `vote run --burn`.
 | `--poll`     | SECONDS | `15`                      | Time between checks.                                                      |
 | `--settle`   | SECONDS | `40`                      | Wait after a new validator set before voting.                             |
 | `--timeout`  | SECONDS | none                      | Give up after this long.                                                  |
-| `--endpoint` | URL     | `$EVERNODE_ENDPOINT`      | GraphQL endpoint of the network.                                          |
+| `--endpoint` | URL     | mainnet's public          | GraphQL endpoint of the network.                                          |
 
 ## Behaviour
 

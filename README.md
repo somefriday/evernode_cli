@@ -89,10 +89,9 @@ evernode node restart -n validator01      # after election stop; refuses while i
 Burn the config master key, set a param or upgrade code, by validator vote:
 
 ```bash
-export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/graphql
-sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # shows the price, asks, pays
-sudo -E evernode vote join -n validator01 --proposal HASH              # votes now and in every round, from cron
-sudo -E evernode vote status                                           # round end, elections, joined proposals
+sudo evernode vote propose -n validator01 --pay-from-safe --burn      # shows the price, asks, pays
+sudo evernode vote join -n validator01 --proposal HASH                 # votes now and in every round, from cron
+sudo evernode vote status                                              # round end, elections, joined proposals
 sudo evernode vote history                                             # every proposal joined here, and its votes
 ```
 

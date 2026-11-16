@@ -7,9 +7,9 @@ round until the change is decided. Flags are in the
 [command reference](docs/README.md#network-config-votes).
 
 ```bash
-sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # registers and pays; prints the hash
-sudo -E evernode vote join -n validator01 --proposal HASH              # votes now and in every round
-sudo -E evernode vote status                                           # the round, the elections, joined proposals
+sudo evernode vote propose -n validator01 --pay-from-safe --burn      # registers and pays; prints the hash
+sudo evernode vote join -n validator01 --proposal HASH                 # votes now and in every round
+sudo evernode vote status                                              # the round, the elections, joined proposals
 sudo evernode vote history                                             # what this server voted for
 ```
 
@@ -17,9 +17,12 @@ sudo evernode vote history                                             # what th
 
 ```bash
 sudo evernode host setup --yes                                           # the vote engine, and cron, which votes
-export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/graphql   # the network's GraphQL endpoint
-sudo -E evernode vote status -n validator01 --keys                      # -E passes the endpoint through sudo
+sudo evernode vote status -n validator01 --keys                          # shows which current validator key the node holds
 ```
+
+Votes go through mainnet's public GraphQL endpoint, `https://mainnet.evercloud.dev/graphql`.
+For another network, or your own endpoint, add `--endpoint URL` to each command. A joined
+proposal keeps the endpoint it was joined with.
 
 ## How a change wins
 
@@ -38,8 +41,8 @@ Register a change early in a round: a round it does not win counts as lost.
 ```bash
 evernode vote burn-key                   # the key the burn installs: nobody can sign with it
 evernode vote propose --burn --dry-run   # the hash and the price; sends nothing
-sudo -E evernode vote propose -n validator01 --pay-from-safe --burn
-sudo -E evernode vote join -n validator01 --proposal 25276f466b97fe640e038b05aa3da9159a946ef7902fbecea11e8f93cf77a934
+sudo evernode vote propose -n validator01 --pay-from-safe --burn
+sudo evernode vote join -n validator01 --proposal 25276f466b97fe640e038b05aa3da9159a946ef7902fbecea11e8f93cf77a934
 ```
 
 The burn's hash is the same on every network. Once the burn is accepted,
@@ -50,8 +53,8 @@ The burn's hash is the same on every network. Once the burn is accepted,
 ```bash
 evernode vote param 17                                                      # copy the JSON into p17.json and edit it
 evernode vote propose --param 17 --value-json "$(cat p17.json)" --dry-run   # the change, field by field, and the price
-sudo -E evernode vote propose -n validator01 --pay-from-safe --param 17 --value-json "$(cat p17.json)"
-sudo -E evernode vote join -n validator01 --proposal HASH
+sudo evernode vote propose -n validator01 --pay-from-safe --param 17 --value-json "$(cat p17.json)"
+sudo evernode vote join -n validator01 --proposal HASH
 ```
 
 - Write each field as `param` prints it: `propose` refuses a value the network
@@ -61,9 +64,9 @@ sudo -E evernode vote join -n validator01 --proposal HASH
 ## Join a proposal
 
 ```bash
-sudo -E evernode vote status                                # open proposals and their hashes
-sudo -E evernode vote join -n validator01 --proposal HASH   # one node
-sudo -E evernode vote join --all --proposal HASH            # every node on this server
+sudo evernode vote status                                   # open proposals and their hashes
+sudo evernode vote join -n validator01 --proposal HASH      # one node
+sudo evernode vote join --all --proposal HASH               # every node on this server
 ```
 
 `join` shows the change and asks, then votes at once and in every round. Cron
@@ -81,7 +84,7 @@ burn 22.8 tokens, a critical param about 22, a normal param 2 to 3. The wallet
 needs the price plus 3 tokens; the rest comes back.
 
 ```bash
-sudo -E evernode vote propose -n validator01 --pay-from-safe --burn   # the node's Safe: solo and nominator validators
+sudo evernode vote propose -n validator01 --pay-from-safe --burn      # the node's Safe: solo and nominator validators
 evernode vote propose --pay-from ADDRESS --burn                       # any masterchain wallet; asks for its seed phrase
 evernode vote propose --from payer.json --burn                        # a wallet file, below
 ```
@@ -115,7 +118,7 @@ custodians run the same command with their own keys.
 ```bash
 evernode vote simulate --config-code @CODE.boc --force   # plays the whole vote offline first
 evernode vote propose --from payer.json --config-code @CODE.boc --force
-sudo -E evernode vote join -n validator01 --proposal HASH
+sudo evernode vote join -n validator01 --proposal HASH
 ```
 
 For the elector, use `--elector-code`; `simulate` shows whether the elector
@@ -142,14 +145,14 @@ newer: `cargo install --locked --root /usr/local --path /root/evernode_cli/vote`
 ```bash
 pgrep -af ever-node                                                         # config.json is in its --configs directory
 sudo chmod 600 /PATH/TO/config.json
-sudo -E evernode vote join --keyring /PATH/TO/config.json --proposal HASH
+sudo evernode vote join --keyring /PATH/TO/config.json --proposal HASH
 ```
 
 For a node in Docker:
 
 ```bash
 sudo docker exec CONTAINER chmod 600 /PATH/TO/config.json
-sudo -E evernode vote join --keyring CONTAINER:/PATH/TO/config.json --proposal HASH
+sudo evernode vote join --keyring CONTAINER:/PATH/TO/config.json --proposal HASH
 ```
 
 ## Messages and what they mean

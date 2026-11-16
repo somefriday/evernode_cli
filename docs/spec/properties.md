@@ -108,13 +108,11 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 **The vote engine gets its endpoint and phrases through a pipe.**
 
 - **Rule.** The GraphQL endpoint, a payer's seed phrase and the paths of key files reach
-  `evernode-vote` only in the description evernode writes into a pipe. `EVERNODE_ENDPOINT` must not
-  be in the engine's environment. A joined proposal's endpoint is stored only while the proposal is
-  open.
+  `evernode-vote` only in the description evernode writes into a pipe. A joined proposal's endpoint
+  is stored only while the proposal is open.
 - **Why.** An endpoint's URL can carry a project key, and arguments and environment are readable
   by other users.
-- **Enforced by.** `voting.run_engine`, `voting.engine_environment`, `vote_schedule.run_pass`,
-  `vote_schedule.end`.
+- **Enforced by.** `voting.run_engine`, `vote_schedule.run_pass`, `vote_schedule.end`.
 - **Checked by.** `tests/test_voting.py`, `tests/test_vote_schedule.py`.
 
 ### SEC-5
@@ -293,7 +291,8 @@ Read-only commands (`depool info`, `stake status`, `nominator info`) do not take
 **The node's console is the only transport.**
 
 - **Rule.** Every read from the chain and every message for a node goes through that node's own
-  console. There is no fallback to a public endpoint. A command or script that needs the chain
+  console. There is no fallback to a public endpoint. Network config votes are not a node's: they
+  go through a GraphQL endpoint ([voting.md](voting.md)). A command or script that needs the chain
   must refuse when the node does not answer or lags:
   - evernode: the status must be `synchronization_by_blocks` or `synchronization_finished` and
     both lags within 10 s. It reads up to three times, 5 s apart.

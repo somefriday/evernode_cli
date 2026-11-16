@@ -305,8 +305,8 @@ only decides who can pay for the proposal, which one validator does once.
 
 evernode's `vote` group (`../evernode/voting.py`) runs this binary for its operator commands. It writes the
 net description into a pipe (`--net /dev/fd/N`): the endpoint, absolute paths, and wallets in place, so that
-a seed phrase or an endpoint's project key never shows in an argument or the engine's environment
-(`EVERNODE_ENDPOINT` is not passed on), and the engine's errors never name the endpoint's URL. A joined
+a seed phrase or an endpoint's project key never shows in an argument or the engine's environment, and
+the engine's errors never name the endpoint's URL. A joined
 proposal's endpoint is kept in the root-only vote store while the proposal is open, and dropped when it
 ends. `--endpoint` and `--yes` are evernode's own (`--yes` is passed on to a paying `propose`); every other
 option passes through unchanged; `--net` and `--secret` are refused.

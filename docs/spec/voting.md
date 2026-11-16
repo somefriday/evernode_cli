@@ -12,8 +12,9 @@ Two parts do the work.
 | evernode's `vote` group                     | Tells the engine where keys and wallets are, keeps joined proposals, and starts a pass from cron. | this file                            |
 
 The operator's procedure is in [voting_instruction.md](../../voting_instruction.md). The engine
-reaches the chain through a GraphQL endpoint that the operator names. Nothing here uses a node's
-console.
+reaches the chain through a GraphQL endpoint: mainnet's public one,
+`https://mainnet.evercloud.dev/graphql` (`arguments.DEFAULT_ENDPOINT`), unless the operator names
+another with `--endpoint`. Nothing here uses a node's console.
 
 ## How evernode runs the engine
 
@@ -22,7 +23,6 @@ Code: `voting.handle_vote`, `voting.run_engine`.
 **Requires**
 
 - The engine in the version evernode names ([VOTE-5](properties.md#vote-5)).
-- An endpoint, from `--endpoint` or `EVERNODE_ENDPOINT`, for every command that reads the chain.
 - Root, only when a managed node's keys are used (`-n`, `--all`) or for the schedule commands.
 
 **Logic**
@@ -37,13 +37,18 @@ Code: `voting.handle_vote`, `voting.run_engine`.
 6. Refuse a paying option with any command but `propose`, and more than one paying option
    ([VOTE-2](properties.md#vote-2)).
 7. Write the *description*: the endpoint and the nodes that vote.
+   - The endpoint is `--endpoint`, else mainnet's public one. An empty `--endpoint` is refused. A
+     command that sends (`propose`, `cast`, `run`, `burn`) names the default before the engine
+     starts.
+   - Mainnet's public endpoint is refused for a managed node on another network
+     (`voting.require_endpoint_network`).
    - A managed node is its key ring, `nodes/NAME/node_cfg/config.json`, read in place. The file
      must pass the private-path check ([SEC-1](properties.md#sec-1)).
    - `--all` passes over a removed node and a node with no key ring yet. If none is left, it is
      an error.
    - A `--keyring` or `--control` file must not be readable by other users.
 8. Start the engine with `--net /dev/fd/N` and write the description into that pipe
-   ([SEC-4](properties.md#sec-4)). `EVERNODE_ENDPOINT` is taken out of the engine's environment.
+   ([SEC-4](properties.md#sec-4)).
 9. The engine prints to the operator's terminal. Its exit code is evernode's.
 
 `vote status` run as root adds the proposals joined on this host.
@@ -99,7 +104,7 @@ keeps each one ([state.md](state.md#vote-store)). Cron is only a clock: every mi
 
 **Requires**
 
-- Root, an endpoint, and the proposal's hash.
+- Root and the proposal's hash.
 - The keys that vote: `-n NAME`, `--all`, or `--keyring` for a node evernode does not manage. A
   key ring may be a file on the host or `CONTAINER:/PATH` in a running container. It must not be
   readable by other users.
@@ -109,15 +114,17 @@ keeps each one ([state.md](state.md#vote-store)). Cron is only a clock: every mi
 
 1. If the proposal is already joined for managed nodes on another network, refuse. One host
    keeps one schedule per proposal hash.
-2. Run a pass with the engine's `--dry-run`. It shows the proposal and sends nothing. A proposal
+2. Take the endpoint: `--endpoint`, else the one the open proposal was joined with, else
+   mainnet's public one, which is named. Refuse mainnet's for a managed node on another network.
+3. Run a pass with the engine's `--dry-run`. It shows the proposal and sends nothing. A proposal
    that is not open is refused.
-3. Ask.
-4. Take the vote lock ([VOTE-3](properties.md#vote-3)).
-5. Install the cron file. A join that cannot schedule its passes records nothing.
-6. Add the proposal to the store as `open` and due now, with its nodes, key rings and endpoint.
-   A proposal joined before keeps its votes and gets the new nodes and endpoint.
-7. Run one pass at once.
-8. Remove the cron file if no proposal is open any more.
+4. Ask.
+5. Take the vote lock ([VOTE-3](properties.md#vote-3)).
+6. Install the cron file. A join that cannot schedule its passes records nothing.
+7. Add the proposal to the store as `open` and due now, with its nodes, key rings and endpoint.
+   A proposal joined before keeps its votes and gets the new nodes, key rings and endpoint.
+8. Run one pass at once.
+9. Remove the cron file if no proposal is open any more.
 
 **Result**
 

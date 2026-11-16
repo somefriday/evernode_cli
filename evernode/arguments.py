@@ -35,6 +35,8 @@ VOTE_COMMANDS = (
 )
 HIDDEN_VOTE_COMMANDS = ("tick",)
 DEFAULT_STATE_DIR = "/var/lib/ever-validator"
+# vote commands reach the chain here unless --endpoint names another endpoint.
+DEFAULT_ENDPOINT = "https://mainnet.evercloud.dev/graphql"
 
 
 def normalize_address_arguments(argv):
@@ -514,7 +516,10 @@ def build_vote_schedule_parser(command):
             help="Vote with another node's config.json, or CONTAINER:/PATH inside a container",
         )
         p.add_argument(
-            "--endpoint", metavar="URL", help="GraphQL endpoint; default: $EVERNODE_ENDPOINT"
+            "--endpoint",
+            metavar="URL",
+            help="GraphQL endpoint; default: the one the proposal was joined with, "
+            f"else {DEFAULT_ENDPOINT}",
         )
         p.add_argument("--yes", action="store_true", help="Join without asking")
     return p
@@ -557,7 +562,7 @@ def build_vote_option_parser():
         help="A node's console.json: the node signs over its control server",
     )
     p.add_argument(
-        "--endpoint", metavar="URL", help="GraphQL endpoint; default: $EVERNODE_ENDPOINT"
+        "--endpoint", metavar="URL", help=f"GraphQL endpoint; default: {DEFAULT_ENDPOINT}"
     )
     payer = p.add_mutually_exclusive_group()
     payer.add_argument(

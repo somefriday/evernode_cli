@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from evernode import cli, vote_schedule
+from evernode import arguments, cli, vote_schedule
 from support import make_node_configuration
 
 # Stands in for evernode-vote: logs each run with the description it read from
@@ -20,12 +20,12 @@ FAKE_ENGINE = """#!/usr/bin/env python3
 import json, os, sys, time
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("evernode-vote 0.2.6")
+    print("evernode-vote 0.2.7")
     sys.exit(0)
 net = json.load(open(args[args.index("--net") + 1])) if "--net" in args else None
 rings = {n["name"]: open(n["keyring"]).read() for n in (net or {}).get("nodes", []) if n.get("keyring")}
 with open(os.environ["FAKE_ENGINE_LOG"], "a") as log:
-    log.write(json.dumps({"argv": args, "net": net, "rings": rings, "endpoint_env": os.environ.get("EVERNODE_ENDPOINT")}) + "\\n")
+    log.write(json.dumps({"argv": args, "net": net, "rings": rings, "env_with_endpoint": sorted(k for k, v in os.environ.items() if "gql/SECRET" in v)}) + "\\n")
 replies = json.load(open(os.environ["FAKE_REPLIES"]))
 reply = replies.pop(0) if replies else {"exit": 0, "report": None}
 json.dump(replies, open(os.environ["FAKE_REPLIES"], "w"))
@@ -201,6 +201,44 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("joined already: it now votes with validator01 (before: validator01)", out)
         [entry] = self.stored()
         self.assertEqual(entry["endpoint"], "http://other")
+
+    def test_join_without_an_endpoint_stores_mainnets_and_joining_again_keeps_the_stored_one(self):
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 60)})
+        code, _, err = self.run_vote("join", "-n", "validator01", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn(f"endpoint: {arguments.DEFAULT_ENDPOINT} (default", err)
+        [entry] = self.stored()
+        self.assertEqual(entry["endpoint"], arguments.DEFAULT_ENDPOINT)
+        # joined with --endpoint, then again without: the preview, the pass and the store keep it
+        self.run_vote("leave", "--proposal", PROPOSAL)
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 60)})
+        self.join()
+        engine_runs = len(self.calls())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 60)})
+        code, out, err = self.run_vote("join", "--all", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 0)
+        self.assertNotIn("endpoint", out + err)
+        self.assertEqual([c["net"]["endpoint"] for c in self.calls()[engine_runs:]], ["http://gql"] * 2)
+        self.assertEqual(self.stored()[-1]["endpoint"], "http://gql")
+
+    def test_join_refuses_mainnets_endpoint_for_a_node_on_another_network(self):
+        self.add_node("devnode", "solo")
+        self.configs["devnode"]["network"] = "devnet"
+        code, _, err = self.run_vote("join", "-n", "devnode", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn(f"devnode is on devnet, and {arguments.DEFAULT_ENDPOINT} is mainnet's", err)
+        with patch.dict(os.environ, {"EVERNODE_ENDPOINT": "http://devnet"}):
+            code, _, err = self.run_vote("join", "-n", "devnode", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("EVERNODE_ENDPOINT is no longer read", err)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.state / "voting" / "proposals.json").exists())
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 60)})
+        code, _, _ = self.run_vote("join", "-n", "devnode", "--endpoint", "http://devnet", "--proposal", PROPOSAL, "--yes")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.stored()[0]["endpoint"], "http://devnet")
 
     def test_the_same_proposal_on_another_network_does_not_take_the_schedule_over(self):
         """A proposal can hash the same on two networks; one host keeps one schedule for it."""
@@ -417,15 +455,19 @@ class ScheduleTests(unittest.TestCase):
         [entry] = self.stored()
         self.assertEqual([v["transaction"] for v in entry["votes"]], ["tx1"])
 
-    def test_the_engine_never_sees_the_endpoint_in_its_environment(self):
-        # #17: the endpoint, which may hold a project key, goes only through the description pipe
+    def test_the_engine_gets_the_endpoint_only_through_the_pipe(self):
+        # #17: the endpoint, which may hold a project key, is in no argument and no environment variable
         now = int(time.time())
-        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 600)})
-        with patch.dict(os.environ, {"EVERNODE_ENDPOINT": "http://gql/SECRET"}):
-            code, _, _ = self.run_vote("join", "-n", "validator01", "--proposal", PROPOSAL, "--yes")
-        self.assertEqual(code, 0)
-        self.assertEqual([c["endpoint_env"] for c in self.calls()], [None, None])
-        self.assertEqual(self.calls()[0]["net"]["endpoint"], "http://gql/SECRET")
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now)})
+        self.run_vote("join", "-n", "validator01", "--endpoint", "http://gql/SECRET", "--proposal", PROPOSAL, "--yes")
+        self.reply({"report": report(next_pass_at=now + 600)})
+        self.assertEqual(self.run_vote("tick")[0], 0)
+        calls = self.calls()
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertEqual(call["net"]["endpoint"], "http://gql/SECRET")
+            self.assertEqual(call["env_with_endpoint"], [])
+            self.assertFalse(any("gql/SECRET" in item for item in call["argv"]))
 
     def test_a_node_missing_for_a_pass_is_tried_again_within_a_minute(self):
         # #24: the healthy node is counted and the engine schedules the next round, but the missing one is not

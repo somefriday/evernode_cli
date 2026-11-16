@@ -29,7 +29,7 @@ Registers the change and votes it through on a copy of the config contract's rea
 | `--if-hash`          | `auto` `current` `none` HASH | `auto`                    | Apply only if the param still has this value.                    |
 | `--force`            |                              | off                       | Allow changes to params 0, 1, 8-12, 31, validator sets and code. |
 | `--validators`       | N                            | `3`                       | Stand-in validators.                                             |
-| `--endpoint`         | URL                          | `$EVERNODE_ENDPOINT`      | GraphQL endpoint of the network.                                 |
+| `--endpoint`         | URL                          | mainnet's public          | GraphQL endpoint of the network.                                 |
 
 ## Behaviour
 
