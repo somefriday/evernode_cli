@@ -375,12 +375,12 @@ def run_due_pass(store, engine, data, entry, *, log=True):
         print(f"{stamp(now)} {entry['proposal'][:12]}: {'; '.join(missing)}{following}", flush=True)
 
 
-def run_pass(engine, net, proposal, *, dry_run, on_vote=None):
+def run_pass(engine, net, proposal, *, dry_run, on_vote=None, quiet=False):
     """Run `evernode-vote follow` and return its JSON report.
 
     The description goes through a pipe, as for every other engine command.
     The engine's progress (stderr) is passed on line by line, to the terminal at
-    join and to the cron log at a tick, while its stdout is read: JSON lines,
+    join and to the cron log at a tick (not at all when `quiet`), while its stdout is read: JSON lines,
     each vote the moment it is counted (handed to `on_vote` at once), then the
     report. Neither pipe can fill while the other is read. The error the engine
     ends with is not passed on: it is raised as PassFailed, with the votes it
@@ -424,7 +424,7 @@ def run_pass(engine, net, proposal, *, dry_run, on_vote=None):
         for line in child.stderr:
             if line.startswith("Error: ") or error:
                 error.append(line.strip())
-            else:
+            elif not quiet:
                 sys.stderr.write(line)
                 sys.stderr.flush()
 
@@ -568,19 +568,62 @@ def remove_cron_if_idle(store, data):
         path.unlink()
 
 
+def check_open(store):
+    """Read each open proposal from the chain for `vote status`, so that it shows what is true now.
+
+    Read-only on chain: no key ring, no vote, and the endpoint the proposal was joined with, never
+    the one `status` was given (on another network the proposal is missing, which must not end it
+    here). One decided since the last pass ends as that pass would end it, and the cron line goes
+    with the last one; the next pass stays when it was due. Returns the entries ended now and the
+    error of each check that failed. While a pass holds the store, nothing is checked (Busy).
+    """
+    ended, failed = [], {}
+    with store.locked():
+        data = store.load()
+        entries = [e for e in data["proposals"] if e["state"] == "open"]
+        if not entries:
+            return ended, failed
+        engine = voting.find_engine()
+        for entry in entries:
+            net = {"endpoint": entry["endpoint"], "nodes": []}
+            if entry.get("config_version") is not None:
+                net["known"] = known(entry)
+            try:
+                report = run_pass(engine, net, entry["proposal"], dry_run=True, quiet=True)
+            except process.OperationError as exc:
+                failed[entry["proposal"]] = str(exc)
+                continue
+            merge_report(entry, report, int(time.time()), record_pass=False)
+            if entry["state"] != "open":
+                ended.append((entry, report["result"]))
+        store.save(data)
+        remove_cron_if_idle(store, data)
+    return ended, failed
+
+
 def print_status(state_dir):
-    """The open proposals joined here, for `status` with sudo."""
+    """The open proposals joined here, for `status` with sudo, each read from the chain first."""
     store = VoteStore(state_dir)
     if not store.path.exists():
         return
+    try:
+        ended, failed = check_open(store)
+    except Busy:
+        ended, failed = [], {}
     entries = [e for e in store.load()["proposals"] if e["state"] == "open"]
     print()
+    for entry, result in ended:
+        print(f"joined      {entry['proposal']}: {summary(entry)}")
+        print(f"            {result}")
     if not entries:
-        print("joined      none open on this host (sudo evernode vote history lists past ones)")
+        if not ended:
+            print("joined      none open on this host (sudo evernode vote history lists past ones)")
         return
     for entry in entries:
         print(f"joined      {entry['proposal']}: {summary(entry)}")
         print(f"            nodes {voters(entry)}; {progress_line(entry)}")
+        if entry["proposal"] in failed:
+            print(f"            not checked now: {failed[entry['proposal']]}")
         last = entry.get("last_pass") or {}
         if last:
             outcome = last.get("result") or ""
@@ -652,8 +695,9 @@ def progress_line(entry):
         f"losses {p['losses']}/{p['losses_allowed']}, {p['rounds_left']} round(s) left, "
         f"{p['voters']} voter(s){won}"
     )
-    # an ended proposal is no longer read: this is how it stood the last time it was open
-    return text if entry["state"] == "open" else "last read open: " + text
+    # as the last pass or `vote status` read it (other voters may have voted since); an
+    # ended proposal is no longer read: this is how it stood the last time it was open
+    return ("last read: " if entry["state"] == "open" else "last read open: ") + text
 
 
 def utc(t):

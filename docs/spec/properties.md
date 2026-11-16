@@ -750,11 +750,13 @@ The feature these rules belong to is in [voting.md](voting.md).
 
 **One vote pass at a time.**
 
-- **Rule.** At most one of `vote join`, `vote leave` and `vote tick` works on a state directory at
-  a time. A tick that finds the vote lock held ends without output; `join` and `leave` refuse. A
-  pass that runs 600 s is killed.
+- **Rule.** At most one of `vote join`, `vote leave`, `vote tick` and `vote status`'s read of the
+  joined proposals works on a state directory at a time. A tick that finds the vote lock held ends
+  without output; `join` and `leave` refuse; `status` shows what was last read. A pass that runs
+  600 s is killed.
 - **Why.** Two passes would send the same votes and write the same store.
-- **Enforced by.** `VoteStore.locked`, `vote_schedule.tick`, `vote_schedule.run_pass`.
+- **Enforced by.** `VoteStore.locked`, `vote_schedule.tick`, `vote_schedule.check_open`,
+  `vote_schedule.run_pass`.
 - **Checked by.** `tests/test_vote_schedule.py`.
 
 ### VOTE-4

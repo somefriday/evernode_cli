@@ -248,7 +248,7 @@ entry per proposal joined on this host, open or ended.
 | `next_pass_at`                          | when the next pass is due                                     |
 | `votes`                                 | every vote counted: round, node, validator index, key, transaction, times |
 | `param`, `target`, `config_version`     | what later passes need to recognise the proposal's end        |
-| `change`, `change_lines`, `critical`, `progress`, `earliest_acceptance`, `round_end` | the last report, for `vote status` and `vote history` |
+| `change`, `change_lines`, `critical`, `progress`, `earliest_acceptance`, `round_end` | the last report (a pass's, or `vote status`'s read), for `vote status` and `vote history` |
 | `last_pass`                             | when the last pass ran and its result or error                |
 
 `voting/lock` is the vote lock. `voting/cron.log` is the output of every `vote tick`.

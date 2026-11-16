@@ -468,6 +468,82 @@ class ScheduleTests(unittest.TestCase):
             vote_schedule.print_status(str(self.state))
         self.assertIn(f"WARNING     {self.cron} is missing", shown.getvalue())
 
+    def status(self):
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            vote_schedule.print_status(str(self.state))
+        return shown.getvalue()
+
+    def test_status_ends_a_proposal_others_decided_since_the_last_pass(self):
+        # bd-o: another host's vote accepted p116 at 04:50:31; this host's entry stayed open until
+        # its next pass, a round later (on mainnet up to ~18 h)
+        now = int(time.time())
+        self.reply(
+            {"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 600)},
+            {"exit": 0},  # the engine's own `status`
+            {"report": report(state="applied", change=None, progress=None,
+                              result="closed: it is no longer among the config's proposals; the change is in effect")},
+        )
+        self.join()
+        code, out, _ = self.run_vote("status", "--endpoint", "http://another-network")
+        self.assertEqual(code, 0, out)
+        [entry] = self.stored()
+        self.assertEqual((entry["state"], entry["next_pass_at"]), ("applied", None))
+        self.assertNotIn("endpoint", entry)
+        self.assertFalse(self.cron.exists(), "the last open proposal took the cron line with it")
+        self.assertIn("closed: it is no longer among the config's proposals; the change is in effect", out)
+        self.assertNotIn("none open", out)
+        check = self.calls()[-1]
+        self.assertEqual(check["argv"][3:], ["--proposal", PROPOSAL, "--dry-run"])
+        self.assertEqual(check["net"]["endpoint"], "http://gql", "the joined endpoint, not the one status was given")
+        self.assertEqual(check["net"]["nodes"], [], "no key ring is read")
+        self.assertIn("config_version", check["net"]["known"])
+
+    def test_status_shows_live_progress_and_leaves_the_schedule(self):
+        # bd-o: node1 won the round after the pass, which had read "wins 0/4, 3 voter(s)"
+        now = int(time.time())
+        live = dict(report()["progress"], wins=1, voters=4, won_this_round=True)
+        self.reply(
+            {"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 600)},
+            {"report": report(next_pass_at=now + 5, progress=live, result="dry run: nothing to vote", stderr="")},
+        )
+        self.join()
+        [before] = self.stored()
+        out = self.status()
+        [entry] = self.stored()
+        self.assertIn("; last read: round 1: wins 1/4, losses 0/2, 7 round(s) left, 4 voter(s), won", out)
+        self.assertNotIn("[progress]", out, "the check prints nothing of its own")
+        self.assertEqual(entry["progress"], live)
+        self.assertEqual(
+            (entry["state"], entry["next_pass_at"], entry["last_pass"]),
+            ("open", before["next_pass_at"], before["last_pass"]),
+            "the check is not a pass: the next one stays when it was due",
+        )
+        self.assertTrue(self.cron.exists())
+
+    def test_a_status_check_that_fails_changes_nothing(self):
+        now = int(time.time())
+        self.reply(
+            {"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 600)},
+            {"exit": 1, "stderr": "Error: the endpoint's newest block is 200 s old\n"},
+        )
+        self.join()
+        before = self.stored()
+        out = self.status()
+        self.assertEqual(self.stored(), before)
+        self.assertIn("not checked now: the endpoint's newest block is 200 s old", out)
+        self.assertIn("; last read: round 1: wins 0/4,", out)
+
+    def test_status_checks_nothing_while_a_pass_holds_the_store(self):
+        now = int(time.time())
+        self.reply({"report": report(next_pass_at=now)}, {"report": report(next_pass_at=now + 600)})
+        self.join()
+        calls = len(self.calls())
+        with vote_schedule.VoteStore(str(self.state)).locked():
+            out = self.status()
+        self.assertEqual(len(self.calls()), calls)
+        self.assertIn(f"joined      {PROPOSAL}", out)
+
     def test_join_all_with_no_key_ring_is_refused(self):
         # #29: a join with nothing to vote with records nothing, rather than an entry that fails every minute
         (self.state / "nodes" / "validator01" / "node_cfg" / "config.json").unlink()

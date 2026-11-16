@@ -17,7 +17,7 @@ sudo evernode vote history                                             # what th
 
 ```bash
 sudo evernode host setup --yes                                           # the vote engine, and cron, which votes
-export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/PROJECT/graphql   # the network's GraphQL endpoint
+export EVERNODE_ENDPOINT=https://mainnet.evercloud.dev/graphql   # the network's GraphQL endpoint
 sudo -E evernode vote status -n validator01 --keys                      # -E passes the endpoint through sudo
 ```
 

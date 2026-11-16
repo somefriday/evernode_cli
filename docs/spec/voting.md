@@ -161,7 +161,12 @@ What a pass checks, when it votes and when it calls the next pass are the engine
   removes the cron file if no proposal is open. Votes already sent stay on chain.
 - `vote history` prints every proposal joined on this host, open and ended, with each vote sent.
 - `vote status`, as root, adds the open joined proposals to the engine's report. It warns when
-  the cron file is missing or no cron daemon runs.
+  the cron file is missing or no cron daemon runs. First, under the vote lock, it reads each open
+  proposal with a dry-run pass through the endpoint stored with it (never the one `status` was
+  given), with no key ring (`vote_schedule.check_open`). One the pass finds decided ends as at a
+  pass: its state, its endpoint removed, the cron file removed when none is open. Any other gets
+  the report's progress; `last_pass` and `next_pass_at` stay. A failed read changes nothing and
+  is shown. While a pass holds the lock, nothing is read.
 
 ### The cron file
 

@@ -34,7 +34,7 @@ Reads the proposal from the chain, shows what it changes, asks, votes with every
 - A `--keyring` file with no key of the round is named in each pass: if it is an old copy, export `validator_key_ring` again.
 - When a `--keyring` file is readable by other users, join refuses it: `chmod 600` it, or `docker exec CONTAINER chmod 600 /PATH` for one in a container; ever-node keeps that mode. Join only reads the mode, and passes do not check it again.
 - Joining again replaces the nodes, key rings and endpoint. `--all` means the nodes that exist now, except removed ones; `-n` still takes a removed node. A proposal joined for managed nodes on one network is refused for nodes on another (one schedule per proposal): `vote leave` it first.
-- When the proposal is accepted, expires or loses too many rounds, the entry closes as `applied` or `not applied` and the cron line is removed.
+- When the proposal is accepted, expires or loses too many rounds, the entry closes as `applied` or `not applied` and the cron line is removed: at the next pass, or at `vote status` if that comes first.
 
 ## See also
 
