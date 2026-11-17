@@ -97,6 +97,14 @@ sudo evernode node start -n validator01
 sudo evernode election start -n validator01
 ```
 
+**Send tokens from the Safe.** `wallet send` refuses while the schedule is installed.
+
+```bash
+sudo evernode election stop -n validator01              # no new bids; a stake already placed stays
+sudo evernode wallet send -n validator01 --address 0:ADDRESS --amount 100   # waits until the Safe has paid
+sudo evernode election start -n validator01
+```
+
 **A node that does not bid.** Read these in order.
 
 ```bash
@@ -106,7 +114,7 @@ sudo evernode depool info -n validator01                # DePool: rounds, stake,
 sudo evernode stake status -n validator01               # solo, nominator: stake, balance, pending transactions
 ```
 
-A pending Safe transaction stops every run until `depool confirm` or `stake confirm` finishes it, or it expires after an hour. A DePool round that holds no stake has nothing to bid with.
+A pending Safe transaction to the elector, the DePool or the nominator contract stops every run until `depool confirm` or `stake confirm` finishes it, or it expires after an hour. A DePool round that holds no stake has nothing to bid with.
 
 ## Host
 
@@ -144,6 +152,7 @@ A pending Safe transaction stops every run until `depool confirm` or `stake conf
 | [`wallet deploy`](wallet/deploy.md)   | Deploy the funded Safe.                                                                 |
 | [`wallet recover`](wallet/recover.md) | Rebuild an imported Safe's keys from its seed phrases and check them against the chain. |
 | [`wallet verify`](wallet/verify.md)   | Check an imported Safe's custodians and threshold again.                                |
+| [`wallet send`](wallet/send.md)       | Send tokens from the node's Safe to any address.                                        |
 
 ## DePool validator
 

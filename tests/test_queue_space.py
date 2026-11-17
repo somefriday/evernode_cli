@@ -160,6 +160,13 @@ class QueueGuardWiringTests(unittest.TestCase):
             text.index("Require_Queue_Space"), text.index("Submit_And_Identify")
         )
 
+    def test_wallet_send_checks_before_submitting(self):
+        text = scripts.SAFE_SEND
+        self.assertIn("Require_Queue_Space", text)
+        self.assertLess(
+            text.index("Require_Queue_Space"), text.index("Submit_And_Identify")
+        )
+
     def test_the_limit_matches_the_contract(self):
         contract = (
             SCRIPTS.parent / "contracts/EverX/safemultisig/SafeMultisigWallet.sol"

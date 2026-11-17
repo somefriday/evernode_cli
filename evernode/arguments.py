@@ -13,6 +13,7 @@ ADDRESS_OPTIONS = (
     "--owner-address",
     "--validator-address",
     "--pay-from",
+    "--address",
 )
 ADDRESS_VALUE = re.compile(r"^-[0-9]+:[0-9a-fA-F]{64}$")
 # The vote engine's commands an operator uses (the test network's stay with
@@ -264,6 +265,18 @@ def build_argument_parser():
             )
     q = wallet.add_parser("verify")
     q.add_argument("-n", "--name", required=True)
+    q = wallet.add_parser("send", help="Send tokens from this node's Safe to an address")
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument(
+        "--address", required=True, help="Destination: -1: or 0: and 64 hex digits"
+    )
+    q.add_argument("--amount", type=int, required=True, help="Whole tokens to send")
+    q.add_argument(
+        "--no-bounce",
+        action="store_true",
+        help="Keep the tokens at the address even if it has no contract",
+    )
+    q.add_argument("--yes", action="store_true")
     depool = groups.add_parser("depool").add_subparsers(dest="action", required=True)
     for command in ("prepare", "deploy", "stake-initial"):
         q = depool.add_parser(command)

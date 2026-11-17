@@ -1,7 +1,7 @@
 # Operations from the Safe
 
 How any transfer from a node's Safe is built, sent, signed and judged. Every stake operation, the
-recovery, the DePool tick and the bid follow this one protocol. Its code is
+recovery, the DePool tick, the bid and `wallet send` follow this one protocol. Its code is
 `scripts/managed_ops.shinc` in the kit; its rules are [OP-1](properties.md#op-1) to
 [OP-9](properties.md#op-9).
 
@@ -137,6 +137,7 @@ true.
 | Fund the nominator deployer            | The deployer's balance is at least the deploy value.                   |
 | Tick the DePool                        | One of the DePool's rounds carries the election's id.                  |
 | Bid                                    | The elector lists the node's ADNL address ([ELECT-3](properties.md#elect-3)). |
+| Send to an address                     | The Safe's balance is below the one before the send.                   |
 
 ## Who takes which step
 
@@ -152,10 +153,11 @@ Every caller builds, submits, signs and awaits the effect in the same way. Two s
 | Recovery, scheduled               | `prepare_elections.sh`                  | yes              | yes                       |
 | DePool tick                       | `prepare_elections.sh`                  | yes              | yes                       |
 | Bid                               | `take_part_in_elections.sh`             | yes              | yes                       |
+| `wallet send`                     | `scripts.SAFE_SEND`                     | no               | yes                       |
 
-- The last three stop earlier if a transaction to their destination is already pending
-  ([ELECT-6](properties.md#elect-6)). Their resume step meets only a transaction that arrived
-  during the run.
+- The DePool tick, the bid and the scheduled recovery stop earlier if a transaction to their
+  destination is already pending ([ELECT-6](properties.md#elect-6)). Their resume step meets only
+  a transaction that arrived during the run.
 
 ## Confirm by hand
 
@@ -200,3 +202,83 @@ refuse, so check the result with `depool info`, `stake status` or `nominator inf
 **On failure**
 
 The transaction keeps the signatures it got. Run the command again before it expires.
+
+## Send to an address
+
+Command: [`wallet send`](../wallet/send.md). Code: `setup_actions._review_send`,
+`setup_actions._own_accounts`, `wallets.plan_send`, `wallets.wallet_send`, `scripts.SAFE_SEND`,
+`scripts.send_from_safe`.
+
+The send is kept apart from everything else the node does: it never runs beside the node's
+election schedule, and it never pays an account that only the node's own commands pay.
+
+**Requires**
+
+- A Safe on chain: any setup stage but `preparing`, `node-started` and `wallet-created`.
+- An address in workchain -1 or 0, and whole tokens from 1 to 10^9.
+- No election schedule installed: no `/etc/cron.d/evernode-NAME`.
+- An address that is none of the node's own accounts (step 3).
+
+**Logic**
+
+1. Check the stage, the address and the amount (`wallets.plan_send`). Nothing is read yet. The
+   address is used in lower case from here on.
+2. Refuse if the node's election schedule is installed.
+3. Name the node's own accounts (`setup_actions._own_accounts`) and refuse the address if it is
+   one of them:
+   - the elector, the config contract and the Safe itself;
+   - a nominator validator's contract, once `nominator prepare` has recorded its address;
+   - a DePool validator's DePool, once `depool prepare` has made one. If the DePool's address
+     reads as `Nonexist` or `Uninit`, the DePool has no proxies yet. Otherwise its proxies are
+     read the way `depool confirm` reads them (`setup_actions._own_contracts`).
+
+   A read that fails refuses the send.
+4. Ask, showing the amount, the Safe, the address and whether the transfer bounces. `--yes`
+   skips the question but no check.
+5. Take the election lock.
+6. Make the checks of step 1 again.
+7. From here the send runs to its end (`wallets.wallet_send`): the first Ctrl+C only prints that
+   it finishes within 3 minutes, or 6 with more than one signature required; a second one stops
+   it. The program runs in its own session, so Ctrl+C reaches evernode alone.
+8. Read the Safe. Stop, sending nothing, if it cannot be read, is not active, or holds less than
+   the amount plus the reserve, which names the most it can send:
+   - 1 token for each signature the Safe requires: each is a message it pays for;
+   - in the masterchain, the storage the Safe owes since its `last_paid`, which its balance does
+     not show yet: never less than 0.2 token a day, and more when a Safe counted as 50,000 bits
+     and 100 cells costs more at the current p18 masterchain prices. At mainnet's prices that
+     Safe costs 0.132 token a day and a real one 0.09, so 0.2 is what counts. A `last_paid` that
+     cannot be read stops it.
+
+   The Safe sends with "ignore errors": a transfer it cannot pay is dropped while it still pays
+   its fees, which step 12 would take for the transfer.
+9. Build one transfer to the address, with an empty payload and the bounce flag on unless
+   `--no-bounce` ([one operation](#one-operation), step 1).
+10. Resume nothing: step 2 is skipped. With more than one signature required, check the queue
+    (step 3).
+11. Submit, identify and sign (steps 4 and 5). The identification looks at entries made in the
+    last 60 s, so a run within a minute of an identical entry left waiting can sign that entry
+    instead of its own, or refuse when it sees both. Either way at most one transfer goes out.
+12. Await the effect (step 6): the Safe's balance is below the one read in step 8.
+
+**Result**
+
+The Safe has paid the transfer. The destination is not read. With bounce, a destination with no
+contract, or one that refuses the transfer, sends the value back minus fees; the Safe's balance
+stays below the one before, because the fees are not returned. The node record does not change.
+
+**On failure**
+
+- A failure in steps 1 to 10 sends nothing.
+- A failure the program reports itself is final ([OP-3](properties.md#op-3)): nothing it sent
+  can still go out, so the send can run again at once. Only a line that says the state is
+  unknown leaves the outcome open.
+- The kit's own lines are shown, and the whole output is in
+  `logs/validator/wallet-send-failed-TIME.log`.
+- A send stopped from outside (a second Ctrl+C, a killed program, a lost session) may still have
+  a message in flight: wait a minute and check the Safe in an explorer, since a second run sends a
+  second transfer.
+- With more than one signature required, a transaction left short of signatures is not sent by
+  any run: a scheduled run stops only at a transaction to its own destination
+  ([ELECT-6](properties.md#elect-6)), and `depool confirm` or `stake confirm` signs it only with
+  `--force`, which sends it. Its message says so. It expires an hour after it was made, and until
+  then counts toward the submitting key's limit of 5 pending transactions.

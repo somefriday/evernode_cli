@@ -235,6 +235,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
     `depool confirm`;
   - `stake set`, `stake recover`, `stake confirm`;
   - `nominator prepare`, `nominator deploy`, `nominator submit`;
+  - `wallet send`;
   - `node restart`, `node update`, and `node lsync` for both nodes;
   - the install step of `node sync-scripts`;
   - the payment of `vote propose --pay-from-safe`.
@@ -245,7 +246,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
   `cli.handle_script_refresh`, `voting.pay_and_propose`, and the runner written by
   `elections.write_election_programs`.
 - **Checked by.** `tests/test_depool_commands.py`, `tests/test_node_management.py`,
-  `tests/test_voting.py`.
+  `tests/test_voting.py`, `tests/test_wallet_send.py`.
 
 Read-only commands (`depool info`, `stake status`, `nominator info`) do not take it.
 
@@ -259,7 +260,8 @@ Read-only commands (`depool info`, `stake status`, `nominator info`) do not take
   answers.
 - **Enforced by.** `setup_actions.handle_setup_action`, `cli.handle_script_refresh`,
   `voting.pay_and_propose`; in the engine, `propose` in `vote/src/campaign.rs`.
-- **Checked by.** `tests/test_depool_commands.py`, `tests/test_voting.py`.
+- **Checked by.** `tests/test_depool_commands.py`, `tests/test_voting.py`,
+  `tests/test_wallet_send.py`.
 
 ### LOCK-4
 
@@ -448,7 +450,8 @@ The protocol these rules belong to is in [wallet-operations.md](wallet-operation
   recognises an account that is already active, so a late deploy message does no harm.
 - **Enforced by.** `--lifetime "$MSG_LIFETIME"` on every `submitTransaction` and
   `confirmTransaction` the kit and `evernode/scripts.py` build.
-- **Checked by.** `tests/test_depool_operations.py`, `tests/test_signature_handshake.py`.
+- **Checked by.** `tests/test_depool_operations.py`, `tests/test_signature_handshake.py`,
+  `tests/test_wallet_send.py`.
 
 ### OP-2
 
@@ -463,6 +466,10 @@ The protocol these rules belong to is in [wallet-operations.md](wallet-operation
 - **Enforced by.** `Await_Effect`, `Complete_And_Await` and the `Effect_` functions in
   `managed_ops.shinc`.
 - **Checked by.** `tests/test_await_effect.py`, `tests/test_election_verdict.py`.
+
+`wallet send` takes the Safe's own payment as its effect, a balance below the one before, and
+never reads the destination: a transfer that bounces back counts as sent
+([wallet-operations.md](wallet-operations.md#send-to-an-address)).
 
 ### OP-3
 
@@ -506,8 +513,8 @@ The protocol these rules belong to is in [wallet-operations.md](wallet-operation
   `tests/test_proxy_top_up.py`.
 
 A scheduled run finishes a proxy top-up it finds. It does not finish a pending bid, tick,
-replenishment or recovery: it stops at it ([ELECT-6](#elect-6)). `stake recover` submits a new
-request each time it runs.
+replenishment or recovery: it stops at it ([ELECT-6](#elect-6)). `stake recover` and
+`wallet send` submit a new request each time they run.
 
 ### OP-6
 
@@ -528,8 +535,8 @@ request each time it runs.
 **No submit into a full queue.**
 
 - **Rule.** With a Safe that needs more than one signature, the election scripts, the DePool
-  operations and the deployer funding must not submit while the submitting key has 5 live
-  transactions in the wallet.
+  operations, the deployer funding and `wallet send` must not submit while the submitting key has
+  5 live transactions in the wallet.
 - **Why.** The Safe refuses the sixth before it accepts the message, so nothing on chain says why.
 - **Enforced by.** `Require_Queue_Space` in `managed_ops.shinc`, called by each of them.
 - **Checked by.** `tests/test_queue_space.py`.

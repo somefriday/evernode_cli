@@ -171,9 +171,64 @@ def _review_transaction(store, config, args):
     )
 
 
+def _own_accounts(store, config):
+    """This node's own accounts, which wallet send never pays: those
+    _own_contracts names, and the Safe itself.
+
+    _own_contracts reads the DePool's proxies, which exist only once the DePool
+    is on chain. A DePool node can send before that, and then the list holds
+    the DePool's address alone, once it has one. A read that fails refuses the
+    send."""
+    profile = wallets.node_wallet_profile(config)
+    depool = profile.get("depool_address")
+    if configuration.validator_type(config) == "depool" and (
+        not depool
+        or scripts.read_account_status(store, config, depool) in ("Nonexist", "Uninit")
+    ):
+        contracts = {
+            nodes.fetch_special_address(config, 1): "the elector",
+            nodes.fetch_special_address(config, 0): "the config contract",
+        }
+        if depool:
+            contracts[depool] = "this node's DePool"
+        accounts = {address.lower(): whose for address, whose in contracts.items()}
+    else:
+        accounts = _own_contracts(store, config)
+    accounts[profile["wallet_address"].lower()] = "this node's own Safe"
+    return accounts
+
+
+def _review_send(store, config, args):
+    """The question before wallet send, asked after every check that can refuse
+    it. The send stays apart from the node's own work: never while the election
+    schedule is installed, and never to the node's own accounts."""
+    name = config["name"]
+    plan = wallets.plan_send(config, args.address, args.amount)
+    if elections.node_election_cron_path(name).exists():
+        raise process.OperationError(
+            f"{name}'s election schedule is installed. Stop it, send, and start it "
+            f"again: evernode election stop -n {name}, then evernode election "
+            f"start -n {name}"
+        )
+    whose = _own_accounts(store, config).get(plan["address"])
+    if whose:
+        raise process.OperationError(f"wallet send never pays {whose} ({plan['address']})")
+    bounce = (
+        "Bounce is off: the tokens stay at the address even if it has no contract."
+        if args.no_bounce
+        else "Bounce is on: an address with no contract, or one that refuses the "
+        "tokens, sends them back minus fees."
+    )
+    return (
+        f"Send {args.amount} tokens from {name}'s Safe {plan['wallet_address']} "
+        f"to {plan['address']}? {bounce}"
+    )
+
+
 # These submit multisig transactions from the node's Safe, so they must not run
 # beside a scheduled election attempt that is signing from the same wallet.
 ELECTION_LOCKED_ACTIONS = (
+    ("wallet", "send"),
     ("depool", "stake-initial"),
     ("depool", "stake"),
     ("depool", "confirm"),
@@ -214,11 +269,12 @@ def handle_setup_action(store, args):
         # Every question comes before the election lock: while one waits for
         # an answer with the lock held, each scheduled election run is skipped.
         if mutating:
-            question = (
-                _review_transaction(store, config, args)
-                if action in CONFIRM_ACTIONS
-                else _confirmation_question(args, config)
-            )
+            if action in CONFIRM_ACTIONS:
+                question = _review_transaction(store, config, args)
+            elif action == ("wallet", "send"):
+                question = _review_send(store, config, args)
+            else:
+                question = _confirmation_question(args, config)
             ui.confirm_operation(args.yes, question)
         if action == ("stake", "set") and args.amount is None and args.mode is None and not args.all_balance:
             args.mode = stake.ask_mode(store, config)
@@ -236,6 +292,14 @@ def handle_setup_action(store, args):
             result_config, result = wallets.wallet_recover(store, config)
         elif action == ("wallet", "verify"):
             result_config, result = wallets.wallet_verify(store, config)
+        elif action == ("wallet", "send"):
+            result_config, result = config, wallets.wallet_send(
+                store,
+                config,
+                address=args.address,
+                amount=args.amount,
+                bounce=not args.no_bounce,
+            )
         elif action == ("depool", "prepare"):
             result_config, result, phrase = wallets.depool_prepare(store, config)
             _print_new_secrets("DePool", result["depool_address"], [phrase])

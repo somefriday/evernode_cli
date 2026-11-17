@@ -778,6 +778,178 @@ def recover_solo_stake(
         raise process.OperationError("Could not read the recovery result") from exc
 
 
+# wallet send: one transfer from the node's Safe, built, submitted and signed
+# as every operation from the Safe is. Its effect is the Safe's own payment: a
+# balance below the one before the send. A transfer that bounces back returns
+# its value but not its fees, so the effect stays. That holds only for a
+# transfer the Safe can pay: one it cannot is dropped without a trace ("ignore
+# errors") while the Safe still pays its fees, so the amount has to leave
+# behind everything the Safe pays first. Nothing is read at the destination,
+# and nothing pending is resumed: a rerun submits a new transfer.
+SAFE_SEND = r"""set -eo pipefail
+set +u
+source ./env.sh
+source ./functions.shinc
+""" + READ_SIGNATURE_THRESHOLD + r"""
+if [[ ! ${SEND_DEST:-} =~ ^(-1|0):[0-9a-f]{64}$ ]] || [[ ! ${SEND_VALUE:-} =~ ^[1-9][0-9]*$ ]] \
+        || [[ ${SEND_BOUNCE:-} != true && ${SEND_BOUNCE:-} != false ]];then
+    echoerr "###-ERROR: the destination, the value and the bounce flag are all required."
+    exit 1
+fi
+if ! info=$(Get_Account_Info "$EVERNODE_WALLET");then
+    echoerr "###-ERROR: could not read the Safe, so nothing was sent."
+    exit 1
+fi
+read -r wallet_status wallet_before last_paid <<< "$info"
+if [[ $wallet_status != Active ]] || [[ ! $wallet_before =~ ^[0-9]+$ ]];then
+    echoerr "###-ERROR: the Safe reads as ${wallet_status:-unknown}, not Active, so nothing was sent."
+    exit 1
+fi
+# What the Safe pays before the transfer leaves it, kept back from the amount:
+# each signature is a message it pays for (about 0.17 token in the masterchain),
+# and a masterchain Safe first pays the storage it owes since its last
+# transaction, which the balance above does not show yet.
+# Shown cut to 3 decimals, not rounded, so the numbers add up to the "at most".
+tokens() { awk -v n="$1" 'BEGIN { printf "%.3f", int(n / 1000000) / 1000 }'; }
+owed=0
+if [[ $EVERNODE_WALLET == -1:* ]];then
+    if [[ ! $last_paid =~ ^[1-9][0-9]*$ ]];then
+        echoerr "###-ERROR: could not read when the Safe last paid for its storage, so nothing was sent."
+        exit 1
+    fi
+    since=$(( $(date +%s) - last_paid ))
+    [[ $since -gt 0 ]] || since=0
+    # Counted the way Proxy_Storage_Owed counts a proxy's: a Safe's state rounded
+    # up (70 to 75 cells and 34,000 to 35,000 bits with up to 3 custodians) at
+    # the masterchain prices in force now, but never less than 0.2 token a day,
+    # about twice what a Safe pays at mainnet's prices (0.09 a day).
+    owed=$(( since * 200000000 / 86400 ))
+    prices="$($CALL_CONS -jc 'getconfig 18' 2>/dev/null | jq -r --argjson now "$(date +%s)" \
+        '[.p18[] | select(.utime_since <= $now)] | last | "\(.mc_bit_price_ps_dec) \(.mc_cell_price_ps_dec)"' \
+        2>/dev/null)" || prices=""
+    if [[ $prices =~ ^[0-9]+\ [0-9]+$ ]];then
+        read -r bit_price cell_price <<< "$prices"
+        priced=$(echo "($since * (50000 * $bit_price + 100 * $cell_price) + 65535) / 65536" | ${CALL_BC:-bc})
+        if [[ $priced =~ ^[0-9]+$ ]];then
+            # Past what bash arithmetic holds: far over any balance, which then refuses.
+            [[ ${#priced} -lt 19 ]] || priced=999999999999999999
+            [[ $priced -le $owed ]] || owed=$priced
+        fi
+    fi
+fi
+reserve=$(( Required_Signs * 1000000000 + owed ))
+if [[ $wallet_before -lt $(( SEND_VALUE + reserve )) ]];then
+    most=$(( (wallet_before - reserve) / 1000000000 ))
+    storage=""
+    # Under 0.001 token it would read as 0.000: not worth a word.
+    [[ $owed -lt 1000000 ]] || storage=" and $(tokens "$owed") for the storage it owes since its last transaction"
+    if [[ $most -ge 1 ]];then
+        can="It can send at most ${most} tokens now"
+    else
+        can="It cannot send a whole token now"
+    fi
+    echoerr "###-ERROR: the Safe holds $(tokens "$wallet_before") tokens and keeps back $(tokens "$reserve"): 1 token for each of the ${Required_Signs} signature(s) it needs${storage}. ${can}, so nothing was sent."
+    exit 1
+fi
+request=$(jq -cn --arg dest "$SEND_DEST" --argjson value "$SEND_VALUE" \
+    --argjson bounce "$SEND_BOUNCE" \
+    '{dest: $dest, value: $value, bounce: $bounce, allBalance: false, payload: ""}')
+if ! $CALL_CLI message --raw --output "${INPL_ELECTIONS_WORK_DIR}/wallet-send.boc" \
+        --lifetime "$MSG_LIFETIME" \
+        --sign "${INPL_KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json" ${SIG_ID_OPTION} \
+        --abi "$INPL_SafeC_Wallet_ABI" "$EVERNODE_WALLET" submitTransaction \
+        "$request" >/dev/null;then
+    echoerr "###-ERROR: could not build the Safe transaction for the send, so nothing was sent."
+    exit 1
+fi
+# The Safe records a transfer without a body as an empty cell, and that is how
+# this one is recognised among its pending transactions.
+empty_body="te6ccgEBAQEAAgAAAA=="
+key_file="${KEYS_DIR}/${VALIDATOR_NAME}_1.keys.json"
+if [[ $Required_Signs -gt 1 ]];then
+    Require_Queue_Space "$EVERNODE_WALLET" "$key_file" || exit 1
+fi
+# The kit's own lines name depool confirm and stake confirm for pending entries
+# of stake operations; for a send, signing a waiting one pays a second time.
+waiting="A transfer left waiting for signatures expires an hour after it was made: run the send again for a new one, and do not sign the waiting one with depool confirm or stake confirm --force, which would send it too."
+if ! trans_id=$(Submit_And_Identify "$EVERNODE_WALLET" "$SEND_DEST" \
+        "${INPL_ELECTIONS_WORK_DIR}/wallet-send.boc" "$SEND_VALUE" "$empty_body" \
+        "$key_file" "$SEND_BOUNCE");then
+    echoerr "###-ERROR: nothing was transferred. ${waiting}"
+    exit 1
+fi
+if ! Complete_And_Await "$trans_id" "$EVERNODE_WALLET" "$VALIDATOR_NAME" \
+        "The send" Effect_Account_Balance_At_Most "$EVERNODE_WALLET" \
+        "$(( wallet_before - 1 ))";then
+    [[ $Required_Signs -le 1 ]] || echoerr "###-ERROR: ${waiting}"
+    exit 1
+fi
+wallet_after=""
+if info=$(Get_Account_Info "$EVERNODE_WALLET");then
+    read -r _ wallet_after _ <<< "$info"
+fi
+jq -cn --arg id "${trans_id:-}" --arg before "$wallet_before" \
+    --arg after "$wallet_after" \
+    '{transaction_id: $id, wallet_balance_before_nanotokens: $before,
+      wallet_balance_after_nanotokens: $after}'
+"""
+
+
+def send_from_safe(
+    store, config, wallet_address, destination, value, bounce, timeout=900
+):
+    """Send VALUE nanotokens from the node's Safe to DESTINATION, with or
+    without bounce, and return once the Safe has paid it (wallet send)."""
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "EVERNODE_WALLET": wallet_address,
+            "SEND_DEST": destination,
+            "SEND_VALUE": str(value),
+            "SEND_BOUNCE": "true" if bounce else "false",
+        }
+    )
+    result = process.execute_command(
+        ["bash", "-c", SAFE_SEND],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+        sensitive=True,
+        check=False,
+    )
+    if result.returncode:
+        path = _record_script_failure(
+            store.node_directory(config["name"]), "wallet-send", result
+        )
+        reported = script_diagnostics(result)
+        # The program exits 1 where it decides to stop, and the kit reports a
+        # failure only once nothing it sent can still go out (OP-3). Any other
+        # exit is a program stopped from outside, with a message maybe in flight.
+        advice = (
+            "Nothing it sent can still go out; if a line above says the state is "
+            "unknown, check the Safe in an explorer before sending again."
+            if result.returncode == 1
+            else "It stopped before it finished: wait a minute and check the Safe "
+            "in an explorer before sending again."
+        )
+        raise process.OperationError(
+            "The send did not complete"
+            + ("\n" + "\n".join(reported) if reported else "")
+            + "\n"
+            + advice
+            + "\nFull output: "
+            + str(path)
+        )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not read the result of the send; check the Safe in an explorer "
+            "before sending again"
+        ) from exc
+
+
 def read_depool_state(store, config, depool_address, wallet_address, timeout=300):
     """Read DePool settings, rounds, pending Safe transactions and own stake.
 

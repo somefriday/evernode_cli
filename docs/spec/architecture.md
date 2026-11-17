@@ -194,7 +194,7 @@ the line `# Managed by evernode`; evernode refuses to replace or remove a file w
 | `nodes.py`           | start, stop, remove, status, sync state, duty guards, `lsync`, `update` |
 | `role.py`            | `node setup`                                                            |
 | `setup_actions.py`   | the `wallet`, `depool`, `stake` and `nominator` commands: locks, order  |
-| `wallets.py`         | Safe and DePool setup stages, DePool commands                           |
+| `wallets.py`         | Safe and DePool setup stages, DePool commands, `wallet send`            |
 | `stake.py`           | the recorded stake of a solo or nominator validator                     |
 | `nominator.py`       | the nominator contract: build, deploy, verify, owner requests           |
 | `scripts.py`         | running kit scripts and inline kit programs                             |

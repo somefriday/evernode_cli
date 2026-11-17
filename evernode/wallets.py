@@ -4,6 +4,7 @@ import getpass
 import json
 import os
 import re
+import signal
 import sys
 
 from . import configuration, process, scripts, storage, ui
@@ -557,6 +558,91 @@ def wallet_verify(store, config):
         "stage": config["setup_stage"],
         "wallet": observed,
         "next": f"Run: evernode depool verify -n {config['name']}",
+    }
+
+
+# wallet send. Before wallet deploy, or wallet recover for an existing Safe,
+# the Safe is only an address: there is no contract to sign for.
+STAGES_WITHOUT_SAFE = ("preparing", "node-started", "wallet-created")
+SEND_ADDRESS = re.compile(r"^(-1|0):[0-9a-f]{64}$")
+# Keeps the value in nanotokens inside bash's 64-bit arithmetic.
+SEND_MAX_TOKENS = 10**9
+
+
+def plan_send(config, address, amount):
+    """The checks of wallet send that read nothing: a Safe on chain to pay
+    from, an address in the masterchain or workchain 0, whole tokens. The
+    address comes back in lower case, the form the Safe's pending list holds."""
+    profile = node_wallet_profile(config)
+    if config.get("setup_stage", "node-started") in STAGES_WITHOUT_SAFE:
+        raise process.OperationError(
+            "This node's Safe is not on chain yet; run: "
+            + (next_setup_command(config) or f"evernode node status -n {config['name']}")
+        )
+    address = str(address).lower()
+    if not SEND_ADDRESS.fullmatch(address):
+        raise process.OperationError(
+            "The address must be -1: or 0: followed by 64 hex digits"
+        )
+    if not 1 <= amount <= SEND_MAX_TOKENS:
+        raise process.OperationError(
+            f"The amount must be whole tokens, from 1 to {SEND_MAX_TOKENS}"
+        )
+    return {"wallet_address": profile["wallet_address"].lower(), "address": address}
+
+
+def wallet_send(store, config, *, address, amount, bounce):
+    """Send whole tokens from this node's Safe to an address.
+
+    setup_actions._review_send makes every check before the question; the ones
+    that read nothing are made again here. The send succeeds once the Safe has
+    paid it: whether the address keeps the tokens or bounces them back is not
+    read (docs/spec/wallet-operations.md, "Send to an address").
+
+    Once it has started, the send runs to its end. A send stopped in the middle
+    can still go out unreported, and running it again then pays twice, so the
+    first Ctrl+C only says it goes on and a second one stops it. The program
+    runs in its own session, so Ctrl+C reaches only this process, which keeps
+    waiting for it.
+    """
+    plan = plan_send(config, address, amount)
+    longest = "3 minutes" if node_wallet_profile(config)["required_signatures"] == 1 else "6 minutes"
+    presses = []
+
+    def keep_sending(_signum, _frame):
+        presses.append(_signum)
+        if len(presses) == 1:
+            print(
+                f"The send has started and finishes within {longest}; "
+                "press Ctrl+C again to stop it anyway.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        print(
+            "Stopped. What the send already handed to the network can still go out: "
+            "wait a minute and check the Safe in an explorer before sending again.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGINT, keep_sending)
+    try:
+        sent = scripts.send_from_safe(
+            store, config, plan["wallet_address"], plan["address"], amount * 10**9, bounce
+        )
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    return {
+        "wallet_address": plan["wallet_address"],
+        "address": plan["address"],
+        "tokens": amount,
+        "bounce": bounce,
+        **sent,
+        "note": "The Safe has sent it. An explorer shows whether the address kept "
+        "it or it bounced back.",
+        "next": next_setup_command(config) or "",
     }
 
 

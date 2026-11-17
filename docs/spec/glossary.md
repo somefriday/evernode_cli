@@ -7,6 +7,7 @@ defined in [state.md](state.md).
 | --------------------- | --------------------------------------------------------------------------------------- |
 | ADNL address          | The network address a validator key is known by. The elector lists a bid under it.      |
 | bid                   | A node's request to the elector to take part in one election, with a stake.             |
+| bounce                | A transfer's flag: a destination with no contract, or one that refuses it, sends the value back minus fees. |
 | console               | ever-node's control tool, run inside the node container. evernode's only way to a node's chain data. |
 | custodian             | One key holder of a Safe. A Safe has 1 to 31.                                            |
 | deployer              | The one-shot contract that creates a nominator contract and deletes itself.             |
