@@ -41,12 +41,14 @@ defined in [state.md](state.md).
 | run                   | One start of a node's election sequence by cron.                                         |
 | runner                | `run-elections.sh`: what cron starts. It takes the election lock and starts the sequence. |
 | Safe                  | A node's SafeMultisigWallet. It pays for and signs everything the node sends.            |
+| scheduled stop        | A node stop that cron carries out once the node has applied a named masterchain block.  |
 | seed phrase           | The 12 words a key pair is derived from.                                                 |
 | sequence              | The script a run follows: preparation, then the bid.                                     |
 | setup stage           | How far a node's validator setup has come.                                               |
 | stake fee             | The value a DePool asks with each instruction and partly returns.                        |
 | staking account       | The account whose balance a solo or nominator validator stakes: the Safe, or the contract. |
 | state directory       | Where evernode keeps everything it owns. `/var/lib/ever-validator` by default.           |
+| stop check            | One start by cron of a scheduled stop's wait: about a minute of console readings.       |
 | storage owed          | What an account owes for storage since its last transaction. Its balance does not show it; the next transaction takes it. |
 | synchronized          | A node at the head of the chain: both lags within the limit.                             |
 | tick                  | The message that makes a DePool move its rounds and enter the open election. `vote tick` is something else: cron's start of the vote passes. |

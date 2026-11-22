@@ -40,7 +40,7 @@ class BuildWithEngineSources(build_py):
 
 setup(
     name="evernode-manager",
-    version="0.5.0",
+    version="0.5.1",
     description="Build and manage Everscale validator node containers",
     python_requires=">=3.9",
     packages=find_packages(include=["evernode", "evernode.*"]),

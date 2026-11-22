@@ -21,9 +21,11 @@ def subcommands(parser):
 
 
 def long_flags(parser):
+    """The flags an operator can use: one hidden from the help is cron's own."""
     return {
         option
         for action in parser._actions
+        if action.help is not argparse.SUPPRESS
         for option in action.option_strings
         if option.startswith("--") and option not in ("--help", "--version")
     }

@@ -131,10 +131,12 @@ each file.
     elections/              election files, account states, the election lock
     logs/                   node logs and election logs
     run-elections.sh        what cron starts
+    stop-at-block.json      a scheduled stop
 ```
 
-Outside it evernode writes only `/etc/cron.d/evernode-NAME`, `/etc/cron.d/evernode_vote`, what
-`host setup` installs, and temporary directories for image builds.
+Outside it evernode writes only `/etc/cron.d/evernode-NAME`, `/etc/cron.d/evernode_stop_NAME`,
+`/etc/cron.d/evernode_vote`, what `host setup` installs, and temporary directories for image
+builds.
 
 ## Locks
 
@@ -148,6 +150,7 @@ a queue.
 | Build lock    | `locks/image-KEY.lock`                      | one build of one image record                                    |
 | Election lock | `nodes/NAME/elections/evernode-election.lock` | a scheduled run, and every command in [LOCK-2](properties.md#lock-2) |
 | Vote lock     | `voting/lock`                               | `vote join`, `vote leave` and each `vote tick`                   |
+| Stop check lock | `nodes/NAME/stop-at-block.lock`           | each stop check of a scheduled stop                              |
 | Script locks  | `nodes/NAME/elections/SCRIPT.lock`          | a kit script, against a second copy of itself. The election scripts, the setup scripts and `Sign_Trans.sh` take one. |
 
 Read-only node commands (`node status`, `node sync`, `node logs`, `node config`) take no lock.
@@ -161,9 +164,11 @@ The order is fixed: node lock, then election lock, then registry lock
 | ---------------------------- | ----------------------------------------------------------- | ---------------- |
 | `/etc/cron.d/evernode-NAME`  | every N minutes, `nodes/NAME/run-elections.sh`              | `election start` |
 | `/etc/cron.d/evernode_vote`  | every minute, `evernode --state-dir DIR vote tick`          | `vote join`      |
+| `/etc/cron.d/evernode_stop_NAME` | every minute, `evernode --state-dir DIR node stop -n NAME --check` | `node stop --after-block` |
 
 N is the node's `CRONTAB_INTERVAL`, 10 unless `node setup` set another. A state directory other
-than the default gets its own vote file, `evernode_vote_` and 8 hex digits. Both files start with
+than the default gets its own vote file, `evernode_vote_` and 8 hex digits. A node name holds no
+underscore, so a node's two files and the vote file never share a name. Every file starts with
 the line `# Managed by evernode`; evernode refuses to replace or remove a file without it.
 
 ## Trust and exposure
@@ -201,4 +206,5 @@ the line `# Managed by evernode`; evernode refuses to replace or remove a file w
 | `elections.py`       | the election schedule, its programs and the election lock               |
 | `voting.py`          | the `vote` group: what evernode tells the engine                        |
 | `vote_schedule.py`   | joined proposals, their store and the cron tick                         |
+| `stop_schedule.py`   | a node's scheduled stop: its cron file, record, log and stop check      |
 | `log_level.py`, `resources.py`, `disk_usage.py`, `ui.py` | log level, resource report, prompts |

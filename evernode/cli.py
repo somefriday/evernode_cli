@@ -24,6 +24,7 @@ from . import (
     role,
     setup_actions,
     stake,
+    stop_schedule,
     storage,
     ui,
     voting,
@@ -100,6 +101,10 @@ def handle_node_lifecycle(store, args):
     names = select_node_names(store, args)
     if getattr(args, "timeout", 1) < 1:
         raise process.OperationError("Timeout must be positive")
+    if args.action == "stop" and (
+        args.after_block is not None or args.watch or args.cancel or args.check
+    ):
+        return handle_scheduled_stop(store, args, names)
     # Resolve/validate metadata for all targets before beginning a batch.
     for name in names:
         store.load_node_config(name)
@@ -137,6 +142,78 @@ def handle_node_lifecycle(store, args):
             failed = True
             ui.print_json_result({"node": name, "result": "failed", "error": str(exc)})
     return 1 if failed else 0
+
+
+def handle_scheduled_stop(store, args, names):
+    """node stop --after-block, --watch and --cancel, and cron's --check."""
+    if args.all:
+        raise process.OperationError(
+            "A stop at a block is scheduled for one node: name it with -n, not --all"
+        )
+    name = names[0]
+    config = store.load_node_config(name)
+    if args.check:
+        return stop_schedule.check(
+            store,
+            name,
+            read=lambda: nodes.fetch_node_statistics(config),
+            stop=lambda timeout, force: nodes.apply_node_lifecycle_operation(
+                store, name, "stop", timeout=timeout, force=force
+            ),
+        )
+    if args.watch:
+        ui.print_json_result(stop_schedule.describe(store, name))
+        return watch_scheduled_stop(store, name)
+    if args.cancel:
+        ui.print_json_result({"action": "stop", "node": name, "cancel": True})
+        if args.dry_run:
+            return 0
+        with store.acquire_operation_lock(name):
+            cancelled = stop_schedule.cancel(store, name)
+        ui.print_json_result(
+            {"node": name, "result": "cancelled" if cancelled else "no stop scheduled"}
+        )
+        return 0
+    if args.after_block < 1:
+        raise process.OperationError("--after-block takes a masterchain block number")
+    ui.print_json_result(
+        {
+            "action": "stop",
+            "node": name,
+            "after_block": args.after_block,
+            "timeout": args.timeout,
+            "force": args.force,
+        }
+    )
+    if args.dry_run:
+        return 0
+    with store.acquire_operation_lock(name):
+        # What the stop itself would refuse is refused now, not at the block.
+        if not args.force:
+            nodes.refuse_stop(store, config)
+        offset = stop_schedule.schedule(
+            store,
+            name,
+            args.after_block,
+            nodes.fetch_node_statistics(config),
+            timeout=args.timeout,
+            force=args.force,
+        )
+    return watch_scheduled_stop(store, name, offset)
+
+
+def watch_scheduled_stop(store, name, offset=None):
+    """Show a scheduled stop until it ends; Ctrl+C ends only the display."""
+    try:
+        result = stop_schedule.watch(store, name, offset=offset)
+    except KeyboardInterrupt:
+        print(
+            f"Stopped watching; the stop of {name} stays scheduled. See it again "
+            f"with evernode node stop -n {name} --watch, remove it with --cancel.",
+            file=sys.stderr,
+        )
+        return 130
+    return 0 if result == "stopped" else 1
 
 
 def handle_node_local_sync(store, args):

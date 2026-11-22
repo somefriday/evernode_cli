@@ -27,6 +27,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 | [NODE-3](#node-3)     | A node with an undecided bid is not stopped by accident.              |
 | [NODE-4](#node-4)     | Maintenance does not run under a schedule.                            |
 | [NODE-5](#node-5)     | Stopping a node removes its schedule; only `election start` installs one. |
+| [NODE-6](#node-6)     | A scheduled stop stops a node once, and only after its block is applied. |
 | [SETUP-1](#setup-1)   | Setup commands run in stage order.                                    |
 | [SETUP-2](#setup-2)   | A stage is recorded only after the chain shows it.                    |
 | [SETUP-3](#setup-3)   | A role is fixed once wallet setup begins.                             |
@@ -354,6 +355,25 @@ Read-only commands (`depool info`, `stake status`, `nominator info`) do not take
   would bid without the operator's decision.
 - **Enforced by.** `nodes.stop_node`, `elections.disable_node_election_schedule`.
 - **Checked by.** `tests/test_node_management.py`.
+
+### NODE-6
+
+**A scheduled stop stops a node once, and only after its block is applied.**
+
+- **Rule.** `node stop --after-block N` must find the node below masterchain block N when it
+  schedules the stop. The stop must not begin until the console has reported block N and every
+  shard block N lists as applied, and 30 s have passed since. A node found at or past N that was
+  last seen below N more than 600 s ago must not be stopped: the scheduled stop ends with a
+  failure. The stop is tried once. `--cancel` and every other stop of the node must end the
+  scheduled stop, and a stop that was ended must not be carried out. The wait must hold no node
+  lock and no election lock.
+- **Why.** The stopped node is read to export the state of block N. A node stopped earlier does
+  not hold the block, a node already past N may have deleted its state, and a node reports from
+  memory, so it needs time to write its block records. A stop carried out late, or after a
+  cancel, stops a node for nothing.
+- **Enforced by.** `stop_schedule.schedule`, `stop_schedule.BlockWait`, `stop_schedule.check`,
+  `stop_schedule.MISSED_SECONDS`, `stop_schedule.remove_cron`, `nodes.stop_node`.
+- **Checked by.** `tests/test_stop_schedule.py`.
 
 ## Setup
 

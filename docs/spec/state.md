@@ -209,6 +209,7 @@ Nothing removes election directories.
 | `node/stdout.log`, `node/stderr.log`    | the node container's command                                  |
 | `validator/election-cron.log`           | every scheduled run, whole output                             |
 | `validator/transactions.log`            | the election scripts: counts of pending Safe transactions     |
+| `validator/stop-at-block.log`           | a scheduled stop: a JSON line a minute, and its result        |
 | `validator/SCRIPT-failed-TIME.log`      | evernode, when a kit script it ran failed ([SEC-2](properties.md#sec-2)) |
 
 ## Other files in the node's directory
@@ -219,6 +220,8 @@ Nothing removes election directories.
 | `run-elections.sh`                          | the runner cron starts                              |
 | `run-election-sequence.sh`, `run-solo-election-sequence.sh` | the sequence the runner runs; one of the two exists |
 | `lsync.json`                                | the last local sync into this node                  |
+| `stop-at-block.json`                        | a scheduled stop: `version`, `after_block`, `timeout`, `force`, and `seen_below_at`, the Unix time a reading last showed the node below the block |
+| `stop-at-block.lock`                        | the stop check lock                                 |
 | `.node_db-lsync-*`                          | a local sync's working copies; a leftover is named in a warning |
 
 ## Image records

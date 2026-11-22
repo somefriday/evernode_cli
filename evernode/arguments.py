@@ -200,6 +200,27 @@ def build_argument_parser():
             q.add_argument("--timeout", type=int, default=30)
         if command in ("start", "stop", "restart", "remove"):
             q.add_argument("--dry-run", action="store_true")
+        if command == "stop":
+            at_block = q.add_mutually_exclusive_group()
+            at_block.add_argument(
+                "--after-block",
+                type=int,
+                metavar="N",
+                help="Schedule the stop for when the node has applied masterchain "
+                "block N and its shard blocks; cron carries it out",
+            )
+            at_block.add_argument(
+                "--watch",
+                action="store_true",
+                help="Show the progress of the stop scheduled with --after-block",
+            )
+            at_block.add_argument(
+                "--cancel",
+                action="store_true",
+                help="Remove the stop scheduled with --after-block",
+            )
+            # Cron's minute of a scheduled stop, not an operator's flag.
+            q.add_argument("--check", action="store_true", help=argparse.SUPPRESS)
         if command == "remove":
             q.add_argument("--purge-data", action="store_true")
             q.add_argument("--yes", action="store_true")

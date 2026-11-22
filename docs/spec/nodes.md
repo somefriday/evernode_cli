@@ -203,6 +203,9 @@ Commands: [`node stop`](../node/stop.md), [`node restart`](../node/restart.md),
 - `node remove`: ask, stop as above, remove both containers and the node's Docker network. With
   `--purge-data`, empty `node_db/` and `logs/`. Set phase `removed`.
 
+Every stop of a node, by these commands and by `node update` and `node lsync`, also removes the
+node's scheduled stop and says so ([NODE-6](properties.md#node-6)).
+
 With several nodes each one is done in turn. A node that fails is reported and the rest continue;
 the exit code is 1.
 
@@ -216,6 +219,85 @@ the exit code is 1.
 
 A cron file that does not start with `# Managed by evernode` is not removed, and the command
 stops before it stops anything.
+
+## Stop at a block
+
+Command: [`node stop`](../node/stop.md) with `--after-block`, `--watch` or `--cancel`. Code:
+`cli.handle_scheduled_stop`, `stop_schedule.py`.
+
+A scheduled stop stops a node once it has applied masterchain block N, so that the state of block
+N can be exported from the stopped node. The node's cron file, `/etc/cron.d/evernode_stop_NAME`,
+is the schedule: the stop is scheduled while the file exists, and whoever removes the file ends
+it ([NODE-6](properties.md#node-6)).
+
+**Requires**
+
+- One node: `--all` is refused. The parser takes one of the three flags at a time.
+- To schedule: what `node stop` requires, unless `--force`; a console that reports a last applied
+  masterchain block below N; no stop scheduled for the node, and no stop check of an earlier one
+  still working; a cron daemon; `evernode` on root's `PATH`.
+
+**Logic**
+
+`--after-block N` (`stop_schedule.schedule`):
+
+1. Print the plan. `--dry-run` ends here.
+2. Under the node lock: make the refusals of `node stop` (`nodes.refuse_stop`) unless `--force`,
+   read the console once, and check what **Requires** lists.
+3. Write the record `stop-at-block.json`: N, the timeout, `--force`, and the time of this
+   reading as `seen_below_at`.
+4. Write the cron file: every minute, as root, `evernode --state-dir DIR node stop -n NAME
+   --check`, with its output appended to `logs/validator/stop-at-block.log`.
+5. Write the `scheduled` line to the log, and show the log as `--watch` does.
+
+A stop check, which cron starts every minute (`stop_schedule.check`):
+
+1. Take the stop check lock without waiting. If an earlier check holds it, end.
+2. No cron file: end. No readable record: remove the cron file, write a `failed` line, end.
+3. Read the console every 5 s for 55 s (`stop_schedule.BlockWait`):
+   - the node has reached the block at the first reading whose `masterchainblocknumber` is N or
+     more; keep that reading's `masterchainblocktime`;
+   - it is ready when `masterchainblocktime + timediff - shards_timediff`, the creation time of
+     the masterchain block the shard client is at, is that time or later;
+   - a reading that fails, or holds a value that is not a whole number, changes nothing;
+   - after each reading, if the cron file is gone, end;
+   - a reading below N is the newest `seen_below_at`. A reading at or past N more than 600 s
+     after `seen_below_at` ends the scheduled stop: remove the cron file and the record, write a
+     `failed` line, and leave the node running.
+4. Not ready after 55 s: save `seen_below_at` in the record, write a line with the last applied
+   block and the blocks left, or the reading's error, and end.
+5. Ready: write a line with `stop_in_seconds`, and wait 30 s. Every 5 s: if the cron file is
+   gone, end.
+6. Remove the cron file. If another caller removed it first, end.
+7. Stop the node with `nodes.apply_node_lifecycle_operation`, the recorded timeout and
+   `--force`. Write a `stopped` line, or a `failed` line with the error. Remove the record.
+
+`--watch` (`stop_schedule.watch`) prints what is scheduled, the log's latest line, and each new
+line. It ends when the cron file is gone and no stop check holds its lock. It takes no node lock
+and changes nothing.
+
+`--cancel` (`stop_schedule.cancel`), under the node lock, removes the cron file and the record
+and writes a `cancelled` line.
+
+**Result**
+
+- After `--after-block`: the cron file, the record and a `scheduled` line. The node runs.
+- After the stop check that stops the node: what `node stop` leaves, no cron file, no record, and
+  a `stopped` line. `--after-block` and `--watch` end with exit code 0.
+- After `--cancel`: no cron file, no record. The node runs.
+
+**On failure**
+
+- A refusal when scheduling changes nothing.
+- A stop that is refused or fails at the block is not tried again: the node runs, nothing is
+  scheduled, and the `failed` line names the error. `--after-block` and `--watch` end with exit
+  code 1.
+- Ctrl+C ends `--after-block` and `--watch` with exit code 130. The stop stays scheduled.
+- While the console does not answer, each stop check writes the error and the stop stays
+  scheduled.
+- If no stop check runs for more than 600 s while the node passes block N, or the shard blocks
+  of block N do not come within that time, the node is not stopped: nothing is scheduled, and
+  the `failed` line names the block the node is at and when it was last seen below N.
 
 ## Sync state
 

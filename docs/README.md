@@ -97,6 +97,18 @@ sudo evernode node start -n validator01
 sudo evernode election start -n validator01
 ```
 
+**Export the state of a masterchain block.** [state-export](https://github.com/somefriday/ever-node-state-export) reads a stopped node's database. Use a node outside both validator sets, and schedule the stop while the node is still below block N.
+
+```bash
+sudo evernode node stop -n validator01 --after-block N  # cron stops the node once it has applied block N; Ctrl+C ends only the display
+sudo evernode node stop -n validator01 --watch          # the progress again; --cancel removes the scheduled stop
+sudo state-export info --evernode validator01           # the proof: the range in its last line holds N
+sudo state-export export --evernode validator01 --mc-seqno N --out ./export
+sudo evernode node start -n validator01                 # after the export: a running node deletes old states
+```
+
+If `state-export info` does not list N, start the node, stop it again with `node stop`, and check again, all within 30 minutes of block N. After that, export N from another node.
+
 **Send tokens from the Safe.** `wallet send` refuses while the schedule is installed.
 
 ```bash
@@ -133,7 +145,7 @@ A pending Safe transaction to the elector, the DePool or the nominator contract 
 | [`node status`](node/status.md)             | Show one node's containers, sync state and next setup step.            |
 | [`node config`](node/config.md)             | Print a node's saved configuration.                                    |
 | [`node start`](node/start.md)               | Start a node's containers.                                             |
-| [`node stop`](node/stop.md)                 | Stop a node's containers and its election schedule.                    |
+| [`node stop`](node/stop.md)                 | Stop a node and its election schedule, now or at a masterchain block.  |
 | [`node restart`](node/restart.md)           | Stop and start a node.                                                 |
 | [`node remove`](node/remove.md)             | Remove a node's containers, keeping its keys and configuration.        |
 | [`node logs`](node/logs.md)                 | Read one of a node's logs.                                             |

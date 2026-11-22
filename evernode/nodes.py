@@ -18,6 +18,7 @@ from . import (
     process,
     provisioning,
     scripts,
+    stop_schedule,
     storage,
     wallets,
 )
@@ -633,6 +634,14 @@ def stop_node(config, timeout=30, disable_elections=True):
     ]
     if disable_elections:
         elections.disable_node_election_schedule(config["name"])
+    # Any stop of the node ends a stop scheduled for a block (NODE-6). A check
+    # that carries that stop out has removed the file before it comes here.
+    if stop_schedule.remove_cron(config["name"]):
+        print(
+            f"Warning: the stop scheduled for {config['name']} at a masterchain "
+            "block is removed; schedule it again once the node runs",
+            file=sys.stderr,
+        )
     for name, obj in containers:
         if obj and obj["State"]["Status"] in ("running", "restarting", "paused"):
             process.execute_command(
@@ -770,6 +779,12 @@ def _refuse_with_pending_bid(store, config, action):
         "Wait until node status shows it in the next set or the election closes "
         f"without it, or pass --force to {action} it anyway."
     )
+
+
+def refuse_stop(store, config):
+    """What node stop refuses without --force, for a stop that is carried out later."""
+    _refuse_while_validating(config, "stop")
+    _refuse_with_pending_bid(store, config, "stop")
 
 
 def apply_node_lifecycle_operation(
