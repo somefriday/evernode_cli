@@ -379,6 +379,31 @@ class ContractToolTests(unittest.TestCase):
             self.cells("factory", str(init), "10000000000", str(factory)), FACTORY
         )
 
+    def test_every_deployer_trigger_carries_its_own_random_body(self):
+        # REMP drops an external message whose body another message already has.
+        init = self.work / "init.boc"
+        self.cells("init", str(self.code), OWNER, HOT, str(init))
+        bodies = []
+        for name in ("trigger-1.boc", "trigger-2.boc"):
+            trigger = self.work / name
+            self.assertEqual(
+                self.cells("factory", str(init), "10000000000", str(trigger)), FACTORY
+            )
+            result = subprocess.run(
+                ["node", "-e",
+                 "const {Cell, loadMessage} = require('@ton/core');"
+                 "const m = loadMessage(Cell.fromBoc("
+                 "require('fs').readFileSync(process.argv[1]))[0].beginParse());"
+                 "const s = m.body.beginParse();"
+                 "console.log(s.remainingBits, s.remainingRefs, s.loadBuffer(16).toString('hex'));",
+                 str(trigger)],
+                cwd=VENDOR, capture_output=True, text=True, timeout=60, check=True,
+            )
+            bits, refs, value = result.stdout.split()
+            self.assertEqual((bits, refs), ("128", "0"))
+            bodies.append(value)
+        self.assertNotEqual(bodies[0], bodies[1])
+
     @unittest.skipUnless(REFERENCE.is_dir(), "reference artifacts are not present")
     def test_the_bodies_match_the_bytes_the_chain_accepted(self):
         cases = [

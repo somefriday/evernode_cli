@@ -4,6 +4,7 @@
 // signs and never broadcasts: contract execution belongs to the node, and
 // signing to the wallet signer. Keeping those apart is what lets this file
 // run in a build image while keys stay on the operator's machine.
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '..');
@@ -91,8 +92,13 @@ async function main() {
     };
     factory.code = await factory.code;
     const address = contractAddress(-1, factory);
+    // The deployer ignores the trigger's body, but the node's external message
+    // queue (REMP) keys messages by their body's hash and drops all but one of
+    // a kind: two empty-bodied triggers, for any two contracts, collide. 128
+    // bits from the system's secure random source keep every trigger distinct.
     write(rest[2], serialize(external({
-      to: address, init: factory, body: beginCell().endCell(),
+      to: address, init: factory,
+      body: beginCell().storeBuffer(crypto.randomBytes(16)).endCell(),
     })));
     console.log(address.toRawString());
   } else if (command === 'body') {
