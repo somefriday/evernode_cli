@@ -5,8 +5,8 @@ Stop a node's containers and its election schedule, now or at a masterchain bloc
 ## Example
 
 ```bash
-sudo evernode node stop -n validator01
-sudo evernode node stop -n validator01 --after-block 63500000
+evernode node stop -n validator01
+evernode node stop -n validator01 --after-block 63500000
 ```
 
 ## What it does
