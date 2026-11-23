@@ -1339,3 +1339,100 @@ class DeployerFundingRetryTests(unittest.TestCase):
         done, trace = self.fund(pending=False)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(trace, "submitted\nsigned:<new>:validator_2.keys.json\n")
+
+
+class StakeAtElectorTests(unittest.TestCase):
+    """nominator info shows where stake is while the elector holds it."""
+
+    ADNL = "a1" * 32
+
+    def setUp(self):
+        self.store, self.config = object(), nominator_config()
+
+    def rounds(self, rounds, now, held=160):
+        with patch("evernode.nodes.elected_rounds", return_value=rounds), \
+                patch("evernode.nodes.fetch_chain_parameter", return_value={"stake_held_for": held}) as p15:
+            return nominator._rounds_at_elector(self.store, self.config, now=now), p15
+
+    def test_a_round_is_held_until_its_set_ends_plus_the_hold_time(self):
+        value, p15 = self.rounds([
+            {"round": "previous", "utime_since": 400, "utime_until": 1000},
+            {"round": "current", "utime_since": 1000, "utime_until": 1600},
+        ], now=1100)
+        p15.assert_called_once_with(self.config, 15)
+        self.assertEqual(value, [
+            {"round": "previous", "election_id": "400", "returns_about": "1970-01-01 00:19:20Z"},
+            {"round": "current", "election_id": "1000", "returns_about": "1970-01-01 00:29:20Z"},
+        ])
+
+    def test_a_round_whose_hold_has_ended_is_left_to_the_credit(self):
+        value, _ = self.rounds([{"round": "previous", "utime_since": 400, "utime_until": 1000}], now=1160)
+        self.assertEqual(value, [])
+
+    def test_no_round_needs_no_hold_time(self):
+        value, p15 = self.rounds([], now=0)
+        self.assertEqual(value, [])
+        p15.assert_not_called()
+
+    def open_bid(self, election, found, keys=None):
+        keys = [{"election_id": 1600, "adnl": self.ADNL}] if keys is None else keys
+        with patch("evernode.nodes.validator_keys", return_value=keys), \
+                patch("evernode.scripts.read_open_bid", return_value=found) as read:
+            return nominator._open_bid(self.store, self.config, election), read
+
+    def test_the_bid_is_looked_up_by_the_elections_key(self):
+        value, read = self.open_bid(1600, {"status": "found", "stake": "0x2d79883d2000"})
+        read.assert_called_once_with(self.store, self.config, self.ADNL)
+        self.assertEqual(value, {"election_id": "1600", "stake_nanotokens": "50000000000000"})
+
+    def test_a_decimal_stake_reads_the_same(self):
+        value, _ = self.open_bid(1600, {"status": "found", "stake": "50000000000000"})
+        self.assertEqual(value["stake_nanotokens"], "50000000000000")
+
+    def test_no_key_for_the_open_election_means_no_bid(self):
+        value, read = self.open_bid(2200, {"status": "found", "stake": "1"})
+        self.assertIsNone(value)
+        read.assert_not_called()
+
+    def test_no_open_election_means_no_bid(self):
+        value, read = self.open_bid(0, {"status": "found", "stake": "1"}, keys=[])
+        self.assertIsNone(value)
+        read.assert_not_called()
+
+    def test_a_key_the_elector_does_not_list_is_no_bid(self):
+        for status in ("absent", "closed"):
+            with self.subTest(status=status):
+                self.assertIsNone(self.open_bid(1600, {"status": status})[0])
+
+    def test_an_unreadable_elector_is_unknown(self):
+        self.assertEqual(self.open_bid(1600, {"status": "unreadable"})[0], nominator.UNKNOWN)
+
+    def test_a_source_that_fails_is_unknown_for_its_own_field_only(self):
+        def fail():
+            raise process.OperationError("Node container is not running")
+        self.assertEqual(nominator._reading(fail), nominator.UNKNOWN)
+        self.assertEqual(nominator._reading(lambda: []), [])
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class OpenBidSearchTests(unittest.TestCase):
+    """The kit's search answers with an exit code; each is a different state."""
+
+    def search(self, code, output):
+        stub = f'Elector_ADNL_Search() {{ echo "{output}"; return {code}; }}\n'
+        result = subprocess.run(
+            ["bash", "-c", "set -eo pipefail\n" + stub + scripts.OPEN_BID_STATUS],
+            env={**os.environ, "EVERNODE_ADNL": "a1" * 32},
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_each_answer_of_the_search(self):
+        self.assertEqual(self.search(0, "0x2d79883d2000 0 0x30000 0xabc"),
+                         {"status": "found", "stake": "0x2d79883d2000"})
+        self.assertEqual(self.search(3, "null"), {"status": "closed"})
+        self.assertEqual(self.search(4, "absent"), {"status": "absent"})
+        for code in (1, 2, 5, 6):
+            with self.subTest(code=code):
+                self.assertEqual(self.search(code, "unreadable"), {"status": "unreadable"})

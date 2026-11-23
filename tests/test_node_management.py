@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import json
@@ -896,3 +897,83 @@ class LogComponentTests(unittest.TestCase):
         # cron, which this CLI never installs.
         self.assertNotIn('"logs/validator/validator.log"', source)
         self.assertIn("transactions.log", written)
+
+
+class ElectedRoundTests(unittest.TestCase):
+    """Which published validator sets hold one of this node's keys.
+
+    ever-node keeps the node's keys in node_cfg/config.json with each key's
+    ADNL address in base64; validator sets list that address in hex.
+    """
+
+    ADNL = ["a1" * 32, "b2" * 32, "c3" * 32]
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o077))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        guard = patch.object(storage.NodeStateStore, "validate_state_root")
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.store = storage.NodeStateStore(temporary.name)
+        self.config = make_node_configuration("validator01")
+        self.keys = self.store.node_directory("validator01") / "node_cfg"
+        self.keys.mkdir(parents=True)
+
+    def write_keys(self, *keys):
+        entries = [
+            {"election_id": election, "validator_key_id": "k",
+             "validator_adnl_key_id": base64.b64encode(bytes.fromhex(adnl)).decode()}
+            for election, adnl in keys
+        ]
+        (self.keys / "config.json").write_text(json.dumps({"validator_keys": entries}))
+
+    @staticmethod
+    def validator_set(since, *adnl):
+        return {"utime_since": since, "utime_until": since + 600,
+                "list": [{"public_key": "00", "adnl_addr": value} for value in adnl]}
+
+    def test_keys_carry_their_adnl_address_in_hex(self):
+        self.write_keys((100, self.ADNL[0]), (700, self.ADNL[1]))
+        self.assertEqual(
+            nodes.validator_keys(self.store, self.config),
+            [{"election_id": 100, "adnl": self.ADNL[0]}, {"election_id": 700, "adnl": self.ADNL[1]}],
+        )
+
+    def test_a_key_without_a_readable_address_still_counts_for_its_election(self):
+        (self.keys / "config.json").write_text(json.dumps({"validator_keys": [
+            {"election_id": 100, "validator_adnl_key_id": "not base64!"},
+            {"election_id": "100"},
+        ]}))
+        self.assertEqual(nodes.validator_keys(self.store, self.config), [{"election_id": 100, "adnl": None}])
+
+    def test_a_node_that_never_bid_has_no_keys(self):
+        self.assertIsNone(nodes.validator_keys(self.store, self.config))
+
+    def test_each_set_holding_a_key_is_a_round(self):
+        self.write_keys((1000, self.ADNL[0]), (1600, self.ADNL[1]))
+        readings = {
+            "getconfig 32": {"p32": self.validator_set(400, "ff" * 32)},
+            "getconfig 34": {"p34": self.validator_set(1000, self.ADNL[0], "ee" * 32)},
+            "getconfig 36": {"p36": self.validator_set(1600, self.ADNL[1].upper())},
+        }
+        with patch("evernode.nodes._run_console", side_effect=lambda config, command: readings[command]):
+            rounds = nodes.elected_rounds(self.store, self.config)
+        self.assertEqual(rounds, [
+            {"round": "current", "utime_since": 1000, "utime_until": 1600},
+            {"round": "next", "utime_since": 1600, "utime_until": 2200},
+        ])
+
+    def test_an_unpublished_next_set_is_skipped(self):
+        self.write_keys((1000, self.ADNL[0]))
+        readings = {"getconfig 32": {"p32": self.validator_set(400, self.ADNL[0])},
+                    "getconfig 34": {"p34": self.validator_set(1000, "ee" * 32)},
+                    "getconfig 36": {}}
+        with patch("evernode.nodes._run_console", side_effect=lambda config, command: readings[command]):
+            rounds = nodes.elected_rounds(self.store, self.config)
+        self.assertEqual([item["round"] for item in rounds], ["previous"])
+
+    def test_without_keys_no_set_is_read(self):
+        with patch("evernode.nodes._run_console") as console:
+            self.assertEqual(nodes.elected_rounds(self.store, self.config), [])
+        console.assert_not_called()

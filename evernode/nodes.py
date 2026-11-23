@@ -1,5 +1,7 @@
 """Start, stop, remove, inspect and locally seed provisioned node runtimes."""
 
+import base64
+import binascii
 import contextlib
 import hashlib
 import json
@@ -745,23 +747,73 @@ def pending_election(store, config, now=None):
     into the next one; once p36 is out, set membership answers instead. On
     mainnet an election stays open for hours.
     """
+    keys = validator_keys(store, config)
+    now = time.time() if now is None else now
+    upcoming = [key["election_id"] for key in keys or [] if key["election_id"] > now]
+    if not upcoming or _run_console(config, "getconfig 36").get("p36"):
+        return None
+    return max(upcoming)
+
+
+def validator_keys(store, config):
+    """The validator keys this node holds, one per election it bid in.
+
+    ever-node lists them in node_cfg/config.json with the election id and the
+    key's ADNL address (base64 there; hex here, as validator sets list it). It
+    keeps the newest two and drops the oldest when the kit makes a key for a
+    new election, so a round's key stays until the node bids again. None when
+    there is no key file: the node has never bid.
+    """
     path = store.node_directory(config["name"]) / "node_cfg" / "config.json"
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError):
-        return None  # No key file yet: the node has never bid.
-    keys = value.get("validator_keys") if isinstance(value, dict) else None
-    now = time.time() if now is None else now
-    upcoming = [
-        key["election_id"]
-        for key in (keys if isinstance(keys, list) else [])
-        if isinstance(key, dict)
-        and type(key.get("election_id")) is int
-        and key["election_id"] > now
-    ]
-    if not upcoming or _run_console(config, "getconfig 36").get("p36"):
         return None
-    return max(upcoming)
+    keys = value.get("validator_keys") if isinstance(value, dict) else None
+    found = []
+    for key in keys if isinstance(keys, list) else []:
+        if not isinstance(key, dict) or type(key.get("election_id")) is not int:
+            continue
+        try:
+            adnl = base64.b64decode(key.get("validator_adnl_key_id") or "", validate=True).hex()
+        except (binascii.Error, ValueError, TypeError):
+            adnl = ""
+        found.append({"election_id": key["election_id"], "adnl": adnl if len(adnl) == 64 else None})
+    return found
+
+
+# The validator sets a stake can be frozen for, oldest first.
+VALIDATOR_SETS = (("previous", 32), ("current", 34), ("next", 36))
+
+
+def elected_rounds(store, config):
+    """The rounds this node holds a seat in, and the time each one covers.
+
+    A seat is one of the node's validator keys in a published set: previous
+    (config param 32), current (34) or next (36, out only between an
+    election's result and the switch). Keys are matched by ADNL address, which
+    is unique to each key.
+    """
+    addresses = {key["adnl"] for key in validator_keys(store, config) or [] if key["adnl"]}
+    if not addresses:
+        return []
+    rounds = []
+    for label, number in VALIDATOR_SETS:
+        validator_set = _run_console(config, f"getconfig {number}").get(f"p{number}")
+        if not isinstance(validator_set, dict):
+            continue
+        members = {
+            str(member.get("adnl_addr", "")).lower()
+            for member in validator_set.get("list") or []
+            if isinstance(member, dict)
+        }
+        if addresses & members:
+            rounds.append({
+                "round": label,
+                "utime_since": int(validator_set["utime_since"]),
+                "utime_until": int(validator_set["utime_until"]),
+            })
+    return rounds
 
 
 def _refuse_with_pending_bid(store, config, action):

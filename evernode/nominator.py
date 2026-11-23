@@ -24,10 +24,12 @@ import os
 import re
 import shutil
 import sys
+import time
 
 from . import configuration, docker, process, storage
 
 NANO = 10**9
+UNKNOWN = "unknown"
 
 # The node container already mounts the node's elections directory, so
 # artifacts placed here are readable by its console without a new mount and
@@ -731,6 +733,10 @@ def info(store, config):
         "reserve_nanotokens": str(reserve),
         "recoverable_nanotokens": elector.get("recoverable_nanotokens", "0"),
         "active_election_id": elector.get("active_election_id", "0"),
+        "open_bid": _reading(
+            lambda: _open_bid(store, config, int(elector.get("active_election_id") or 0))
+        ),
+        "at_elector": _reading(lambda: _rounds_at_elector(store, config)),
         "elector": elector.get("elector"),
         # The Safe pays for the instructions and holds nothing else. A
         # nominator validator therefore has three balances to keep healthy,
@@ -745,6 +751,75 @@ def info(store, config):
             "only take liquid funds above the reserve."
         ),
     }
+
+
+def _reading(read):
+    """What one source says, or "unknown" when it cannot be read: one silent
+    source must not hide everything else the report shows."""
+    try:
+        return read()
+    except (process.OperationError, KeyError, TypeError, ValueError):
+        return UNKNOWN
+
+
+def _open_bid(store, config, election_id):
+    """This node's bid in the election open now, as the elector lists it.
+
+    None when no election is open or the node has no key for it: the kit makes
+    the key just before it bids, so without one there is no bid.
+    """
+    from . import nodes, scripts
+
+    if not election_id:
+        return None
+    key = next(
+        (
+            item
+            for item in nodes.validator_keys(store, config) or []
+            if item["election_id"] == election_id and item["adnl"]
+        ),
+        None,
+    )
+    if key is None:
+        return None
+    found = scripts.read_open_bid(store, config, key["adnl"])
+    if found.get("status") == "unreadable":
+        return UNKNOWN
+    if found.get("status") != "found":
+        return None
+    stake = found["stake"]
+    return {
+        "election_id": str(election_id),
+        "stake_nanotokens": str(int(stake, 16) if stake.lower().startswith("0x") else int(stake)),
+    }
+
+
+def _rounds_at_elector(store, config, now=None):
+    """The rounds whose stake the elector still holds, and when each comes back.
+
+    A round this node was elected for holds its stake until the set ends and
+    the network's hold time (config param 15, stake_held_for) has passed. The
+    stake is then recoverable, and the next election run recovers it. Amounts
+    are not shown: they are in the elector's frozen records, not read here.
+    """
+    from . import nodes
+
+    rounds = nodes.elected_rounds(store, config)
+    if not rounds:
+        return []
+    held = int(nodes.fetch_chain_parameter(config, 15)["stake_held_for"])
+    now = time.time() if now is None else now
+    return [
+        {
+            "round": item["round"],
+            "election_id": str(item["utime_since"]),
+            "returns_about": time.strftime(
+                "%Y-%m-%d %H:%M:%SZ", time.gmtime(item["utime_until"] + held)
+            ),
+        }
+        for item in rounds
+        if item["utime_until"] + held > now
+    ]
 
 
 OWNER_BODY_PROGRAM = r"""set -e

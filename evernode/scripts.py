@@ -706,6 +706,53 @@ def read_elector_credit(store, config, address, timeout=300):
         ) from exc
 
 
+KIT_PRELUDE = r"""set -eo pipefail
+# The reference scripts intentionally allow unset optional variables.
+set +u
+source ./env.sh
+source ./functions.shinc
+"""
+
+# The kit's search answers with an exit code; each one is a different state.
+OPEN_BID_STATUS = r"""
+status=0
+found=$(Elector_ADNL_Search "$EVERNODE_ADNL") || status=$?
+case $status in
+    0) read -r stake _ <<< "$found"
+       jq -cn --arg stake "$stake" '{status: "found", stake: $stake}' ;;
+    3) jq -cn '{status: "closed"}' ;;
+    4) jq -cn '{status: "absent"}' ;;
+    *) jq -cn '{status: "unreadable"}' ;;
+esac
+"""
+
+
+def read_open_bid(store, config, adnl, timeout=300):
+    """Find the bid made with one validator key in the election open now.
+
+    The elector lists a bid under the key's ADNL address, in the same search
+    the election run uses to see whether it has already bid. Returns the
+    status (found, absent, closed or unreadable) and, when found, the stake as
+    the elector reports it: hex from the FunC elector, decimal from the
+    Solidity one.
+    """
+    scripts_dir = _import_verification_context(store, config)
+    environment = os.environ.copy()
+    environment["EVERNODE_ADNL"] = adnl
+    result = process.execute_command(
+        ["bash", "-c", KIT_PRELUDE + OPEN_BID_STATUS],
+        cwd=scripts_dir,
+        env=environment,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise process.OperationError(
+            "Could not read the open election's bids"
+        ) from exc
+
+
 def read_solo_stake_state(store, config, wallet_address, timeout=300):
     """Read what the elector and the Safe say about a solo validator's stake.
 

@@ -187,6 +187,16 @@ It reads and sends nothing: the contract's state and balance, what the owner cou
 and every pending transaction in the Safe. The Safe pays for each instruction, so an empty Safe
 stops the bidding while the contract is full.
 
+Stake still at the elector is shown by round, without amounts:
+
+- `open_bid`: the node's key for the open election (`node_cfg/config.json`), looked up by its
+  ADNL address with the kit's `Elector_ADNL_Search`, the search the election run uses.
+- `at_elector`: the published sets (p32, p34, p36) that hold one of the node's keys, matched by
+  ADNL address. Each returns at the set's end plus p15 `stake_held_for`; a round past that is in
+  the elector's credit instead. ever-node keeps a node's two newest keys and drops the oldest at
+  the next bid, which on mainnet's p15 comes when the previous round's hold ends.
+- A source that fails reads as `unknown`, for its field only.
+
 ## Owner requests
 
 Commands: [`nominator withdraw`](../nominator/withdraw.md),
