@@ -754,8 +754,9 @@ tick, and nothing reaches the elector.
 - **Rule.** Before a nominator validator's run builds a recovery or a bid, it reads the contract's
   state and compares the hot wallet it names with the node's Safe. Unless they match, nothing is
   sent and the step ends with status 1: preparation before the recovery request, the bid before
-  the console makes a key for the election. A different wallet also raises an alert. The next run
-  checks again.
+  the console makes a key for the election. A different wallet raises an alert, and so does a
+  missing tools image, with the command that rebuilds it: no later run changes either. The next
+  run checks again.
 - **Why.** The owner may replace the hot wallet at any time (`nominator rotate`). The contract then
   keeps what the old Safe sends without acting on it, and nothing bounces. A recovery goes out on
   every run while the elector owes the contract, so the Safe would drain into the contract, and

@@ -302,7 +302,9 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
         if [[ $Hot_Wallet_Status -ne 0 ]];then
             echo "###-ERROR(${SelfScriptName} line $LINENO): ${Hot_Wallet_Says} No recovery was sent." \
                 | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
-            [[ $Hot_Wallet_Status -eq 1 ]] && Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+            # An alert for what no later run changes: another wallet, or a
+            # missing tools image.
+            [[ $Hot_Wallet_Status -eq 1 || $Hot_Wallet_Status -eq 3 ]] && Send_msg_toTelBot "$VALIDATOR_NAME Server" \
                 "$Tg_SOS_sign ###-ERROR: ${Hot_Wallet_Says}" > /dev/null 2>&1
             exit 1
         fi

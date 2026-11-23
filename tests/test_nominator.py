@@ -1498,7 +1498,6 @@ Nominator_Hot_Wallet_Check {POOL} {SAFE.upper()}""")
     def test_a_wallet_that_cannot_be_read_is_unknown(self):
         for case, expected in (
             ({"console": False}, "could not read"),
-            ({"image": False}, "evernode nominator prepare -n validator01"),
             ({"decodes": False}, "could not be decoded"),
             ({"state": "frozen"}, "is frozen, not active"),
         ):
@@ -1506,6 +1505,13 @@ Nominator_Hot_Wallet_Check {POOL} {SAFE.upper()}""")
                 result = self.check(**case)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(expected, result.stdout)
+
+    def test_a_missing_tools_image_has_its_own_answer(self):
+        # No later run brings the image back, so the answer is its own and
+        # names the command that rebuilds it.
+        result = self.check(image=False)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("Rebuild the image: evernode nominator prepare -n validator01", result.stdout)
 
     def guarded(self, block, *, mode, answer, setup=""):
         with tempfile.TemporaryDirectory() as directory:
@@ -1525,7 +1531,7 @@ echo PASSED""")
         start = self.take_part.index("unsigned transactions to the nominator contract")
         check = self.take_part.index("Nominator_Hot_Wallet_Check", start)
         self.assertLess(check, self.take_part.index("election-bid ", start))
-        for answer, alerted in ((1, True), (2, False)):
+        for answer, alerted in ((1, True), (2, False), (3, True)):
             with self.subTest(answer=answer):
                 result, checked, alerts = self.guarded(self.bid_guard, mode="nominator", answer=answer)
                 self.assertEqual(result.returncode, 1)
@@ -1539,7 +1545,7 @@ echo PASSED""")
     def test_a_recovery_is_built_only_after_the_check(self):
         self.assertLess(self.prepare.index("Nominator_Hot_Wallet_Check"),
                         self.prepare.index("recover_stake ${INPL_CURR_ELECTIONS_DIR}"))
-        for answer, alerted in ((1, True), (2, False)):
+        for answer, alerted in ((1, True), (2, False), (3, True)):
             with self.subTest(answer=answer):
                 result, _, alerts = self.guarded(self.recovery_guard, mode="nominator", answer=answer,
                                                  setup="recover_amount=5")
