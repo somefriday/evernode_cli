@@ -128,7 +128,8 @@ validator.
 
 8. With no election open, end with status 1.
 9. Ask the elector what it owes the staking account (`compute_returned_stake`). Nothing owed:
-   end with status 0.
+   end with status 0. A nominator validator then checks the contract's hot wallet
+   ([ELECT-9](properties.md#elect-9)) and ends with status 1 unless it is the Safe.
 10. Have the console build the recovery request.
 11. Build the Safe's message: to the elector with 1 token (solo), or to the contract with
     `NOMINATOR_OP_FEE` (nominator).
@@ -210,7 +211,9 @@ Code: `take_part_in_elections.sh`.
 6. If `ID_bid-stopped.txt` exists, end with status 0 ([ELECT-4](properties.md#elect-4)).
 7. Read the Safe's pending transactions and append their counts to `transactions.log`. End with
    status 3 or 4 at a pending transaction to the run's destination
-   ([ELECT-6](properties.md#elect-6)).
+   ([ELECT-6](properties.md#elect-6)). A nominator validator then checks the contract's hot
+   wallet ([ELECT-9](properties.md#elect-9)) and ends with status 1 unless it is the Safe,
+   before the console makes a key for this election.
 8. Read config param 15.
 9. **The request** ([ELECT-1](properties.md#elect-1)). If `ID_query.boc` exists, use it.
    Otherwise:

@@ -931,6 +931,48 @@ function Elector_ADNL_Search() {
     echo "${Result}"
 }
 #=================================================
+# Does a nominator contract still take instructions from this node's Safe?
+# Its owner can replace the hot wallet at any time, and the contract then
+# keeps whatever the old one sends without acting on it: nothing bounces. So
+# a recovery or a bid is built only once the contract's own state names this
+# Safe. The state is read as `evernode nominator verify` reads it: through
+# the console, decoded by the contract's cell tool in the pinned tools image.
+# Input:  nominator contract address, this node's Safe address
+# Output: why the answer is not yes
+# Return: 0 this Safe; 1 another wallet; 2 cannot be read
+function Nominator_Hot_Wallet_Check() {
+    local Nominator="$1"
+    local Safe="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+    local State_File="nominator_account.boc"
+    if [[ -z ${NOMINATOR_TOOLS_IMAGE:-} ]] || ! docker image inspect "$NOMINATOR_TOOLS_IMAGE" >/dev/null 2>&1;then
+        echo "The nominator tools image is not on this host, so the wallet the contract ${Nominator} takes instructions from cannot be read. Run: evernode nominator prepare -n ${VALIDATOR_NAME}"
+        return 2
+    fi
+    rm -f "${CURR_ELECTIONS_DIR}/${State_File}"
+    if ! $CALL_CONS -c "getaccountstate ${Nominator} ${INPL_CURR_ELECTIONS_DIR}/${State_File}" >/dev/null 2>&1 \
+            || [[ ! -s "${CURR_ELECTIONS_DIR}/${State_File}" ]];then
+        echo "The node could not read the nominator contract ${Nominator}, so the wallet it takes instructions from is unknown."
+        return 2
+    fi
+    local Account
+    if ! Account="$(docker run --rm --network none -v "${CURR_ELECTIONS_DIR}:/work" -w /opt/nominator \
+            "$NOMINATOR_TOOLS_IMAGE" "node tools/cells.cjs account /work/${State_File}" 2>/dev/null)";then
+        echo "The state of the nominator contract ${Nominator} could not be decoded, so the wallet it takes instructions from is unknown."
+        return 2
+    fi
+    Account="$(tail -n 1 <<< "$Account")"
+    local Hot_Wallet="$(jq -r '.validator // empty' <<< "$Account" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    if [[ ! $Hot_Wallet =~ ^-1:[0-9a-f]{64}$ ]];then
+        echo "The nominator contract ${Nominator} is $(jq -r '.state // "unreadable"' <<< "$Account" 2>/dev/null), not active, so it takes instructions from no wallet."
+        return 2
+    fi
+    if [[ "$Hot_Wallet" != "$Safe" ]];then
+        echo "The nominator contract ${Nominator} takes instructions from ${Hot_Wallet}, not from this node's Safe ${Safe}: its owner replaced the hot wallet, and the contract keeps what this Safe sends without acting on it. Stop this node's elections: evernode election stop -n ${VALIDATOR_NAME}"
+        return 1
+    fi
+    return 0
+}
+#=================================================
 # Get network config 15
 # Output:
 #   validators_elected_for elections_start_before elections_end_before stake_held_for

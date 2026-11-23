@@ -428,6 +428,17 @@ case "$STAKE_MODE" in
                 "${Tg_Warn_sign} WARNING($SelfScriptName line $LINENO): You have unsigned transactions to the nominator contract. Wait until they will be confirmed." > /dev/null 2>&1
             exit 3
         fi
+        # The contract acts only on the hot wallet it names and silently keeps
+        # what any other wallet sends it. Checked before the console makes a
+        # key for this election, so a refused run leaves nothing behind.
+        Hot_Wallet_Status=0
+        Hot_Wallet_Says="$(Nominator_Hot_Wallet_Check "$NOMINATOR_ADDR" "$Validator_addr")" || Hot_Wallet_Status=$?
+        if [[ $Hot_Wallet_Status -ne 0 ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): ${Hot_Wallet_Says} No bid was sent."
+            [[ $Hot_Wallet_Status -eq 1 ]] && Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+                "$Tg_SOS_sign ###-ERROR: ${Hot_Wallet_Says}" > /dev/null 2>&1
+            exit 1
+        fi
         ;;
     depool)
         if [[ $Exist_DP_Trans_Qty -gt 0 || $Exist_Proxy0_Trans_Qty -gt 0 || $Exist_Proxy1_Trans_Qty -gt 0 ]];then

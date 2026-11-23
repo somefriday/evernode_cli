@@ -292,6 +292,21 @@ if [[ "$STAKE_MODE" == "msig" ]] || [[ "$STAKE_MODE" == "nominator" ]];then
     # nothing to recover; the next run reads it again.
     recover_amount=$(Elector_Owes "$Recover_Subject") || recover_amount=0
     echo "---INFO: recover_amount = ${recover_amount} nanotokens ( $((recover_amount/1000000000)) Tokens )"
+    #=================================================
+    # A nominator contract acts only on the hot wallet it names and silently
+    # keeps what any other wallet sends it, so a recovery goes out only from
+    # that wallet. Nothing is sent otherwise; the next run checks again.
+    if [[ "$STAKE_MODE" == "nominator" ]] && [[ $recover_amount -gt 0 ]];then
+        Hot_Wallet_Status=0
+        Hot_Wallet_Says="$(Nominator_Hot_Wallet_Check "$NOMINATOR_ADDR" "$Validator_addr")" || Hot_Wallet_Status=$?
+        if [[ $Hot_Wallet_Status -ne 0 ]];then
+            echo "###-ERROR(${SelfScriptName} line $LINENO): ${Hot_Wallet_Says} No recovery was sent." \
+                | tee -a "${CURR_ELECTIONS_DIR}/${elections_id}.log"
+            [[ $Hot_Wallet_Status -eq 1 ]] && Send_msg_toTelBot "$VALIDATOR_NAME Server" \
+                "$Tg_SOS_sign ###-ERROR: ${Hot_Wallet_Says}" > /dev/null 2>&1
+            exit 1
+        fi
+    fi
     # =================================================
     # recover_amount=1
     if [ $recover_amount -gt 0 ]; then

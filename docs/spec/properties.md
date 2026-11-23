@@ -51,6 +51,7 @@ comments, tests and bug reports refer to it by that id. The format is in [rules.
 | [ELECT-6](#elect-6)   | No bid beside a pending transaction.                                  |
 | [ELECT-7](#elect-7)   | A proxy is funded before it can freeze.                               |
 | [ELECT-8](#elect-8)   | No stake moves to or from the elector while a proxy is not active.    |
+| [ELECT-9](#elect-9)   | No recovery or bid while the contract's hot wallet is not this Safe.  |
 | [VOTE-1](#vote-1)     | Managed nodes vote only through `vote join`.                          |
 | [VOTE-2](#vote-2)     | A payment is asked about first.                                       |
 | [VOTE-3](#vote-3)     | One vote pass at a time.                                              |
@@ -745,6 +746,24 @@ DePool's order (`recover_stake` in `DePoolProxy.sol`), and the DePool asks once:
 completes, and the rounds stop rotating. When the proxy is already frozen as the DePool asks, the
 request itself bounces: the DePool steps the round back (`onBounce`) and asks again on a later
 tick, and nothing reaches the elector.
+
+### ELECT-9
+
+**No recovery or bid while the contract's hot wallet is not this Safe.**
+
+- **Rule.** Before a nominator validator's run builds a recovery or a bid, it reads the contract's
+  state and compares the hot wallet it names with the node's Safe. Unless they match, nothing is
+  sent and the step ends with status 1: preparation before the recovery request, the bid before
+  the console makes a key for the election. A different wallet also raises an alert. The next run
+  checks again.
+- **Why.** The owner may replace the hot wallet at any time (`nominator rotate`). The contract then
+  keeps what the old Safe sends without acting on it, and nothing bounces. A recovery goes out on
+  every run while the elector owes the contract, so the Safe would drain into the contract, and
+  the bid would only report that it did not register.
+- **Enforced by.** `Nominator_Hot_Wallet_Check` in `functions.shinc`, called by
+  `prepare_elections.sh` and `take_part_in_elections.sh`; the state is read as
+  `nominator verify` reads it.
+- **Checked by.** `tests/test_nominator.py`.
 
 ## Votes
 

@@ -1436,3 +1436,125 @@ class OpenBidSearchTests(unittest.TestCase):
         for code in (1, 2, 5, 6):
             with self.subTest(code=code):
                 self.assertEqual(self.search(code, "unreadable"), {"status": "unreadable"})
+
+
+SAFE = "-1:" + "5a" * 32
+ROTATED = "-1:" + "7b" * 32
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Requires bash and jq")
+class HotWalletCheckTests(unittest.TestCase):
+    """The contract keeps what a replaced hot wallet sends without acting on it,
+    so an election run checks the wallet it names before a recovery or a bid.
+    Run from the kit's own text, like BidBranchTests."""
+
+    @classmethod
+    def setUpClass(cls):
+        functions = (KIT / "functions.shinc").read_text()
+        start = functions.index("function Nominator_Hot_Wallet_Check() {")
+        cls.function = functions[start: functions.index("\n}\n", start) + 3]
+        cls.take_part = (KIT / "take_part_in_elections.sh").read_text()
+        pending = cls.take_part.index("# Check that you have unsigned transactions")
+        start = cls.take_part.index('case "$STAKE_MODE" in', pending)
+        cls.bid_guard = cls.take_part[start: cls.take_part.index("\nesac\n", start) + len("\nesac\n")]
+        cls.prepare = (KIT / "prepare_elections.sh").read_text()
+        start = cls.prepare.index("# A nominator contract acts only on the hot wallet")
+        cls.recovery_guard = cls.prepare[start: cls.prepare.index("# recover_amount=1", start)]
+
+    @staticmethod
+    def bash(program):
+        return subprocess.run(["bash", "-c", program], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=60)
+
+    def check(self, *, validator=SAFE, state="active", console=True, image=True, decodes=True):
+        account = {"address": POOL, "state": state, "balance": "1"}
+        if state == "active":
+            account["validator"] = validator
+        with tempfile.TemporaryDirectory() as directory:
+            return self.bash(f"""VALIDATOR_NAME=validator01
+NOMINATOR_TOOLS_IMAGE=local/tools:abc
+CURR_ELECTIONS_DIR={directory!r}
+INPL_CURR_ELECTIONS_DIR=/ever-node/elections/1
+console() {{ [[ $2 == "getaccountstate {POOL} /ever-node/elections/1/nominator_account.boc" ]] || return 9
+    {'echo state > "$CURR_ELECTIONS_DIR/nominator_account.boc"' if console else 'return 1'}; }}
+CALL_CONS=console
+docker() {{
+    [[ $1 == image ]] && return {0 if image else 1}
+    {"echo " + repr(json.dumps(account)) if decodes else "return 1"}
+}}
+{self.function}
+Nominator_Hot_Wallet_Check {POOL} {SAFE.upper()}""")
+
+    def test_the_nodes_own_safe_passes(self):
+        result = self.check()
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+    def test_a_replaced_hot_wallet_is_refused_by_name(self):
+        result = self.check(validator=ROTATED)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        for part in (ROTATED, SAFE, "evernode election stop -n validator01"):
+            self.assertIn(part, result.stdout)
+
+    def test_a_wallet_that_cannot_be_read_is_unknown(self):
+        for case, expected in (
+            ({"console": False}, "could not read"),
+            ({"image": False}, "evernode nominator prepare -n validator01"),
+            ({"decodes": False}, "could not be decoded"),
+            ({"state": "frozen"}, "is frozen, not active"),
+        ):
+            with self.subTest(**case):
+                result = self.check(**case)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(expected, result.stdout)
+
+    def guarded(self, block, *, mode, answer, setup=""):
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.bash(f"""SelfScriptName=test VALIDATOR_NAME=validator01 STAKE_MODE={mode}
+NOMINATOR_ADDR={POOL} Validator_addr={SAFE} CURR_ELECTIONS_DIR={directory!r} elections_id=1
+Exist_El_Trans_Qty=0 Exist_Nom_Trans_Qty=0 Exist_DP_Trans_Qty=0 Exist_Proxy0_Trans_Qty=0 Exist_Proxy1_Trans_Qty=0
+{setup}
+Nominator_Hot_Wallet_Check() {{ echo called >> {directory!r}/checks; echo "the reason"; return {answer}; }}
+Send_msg_toTelBot() {{ echo alert >> {directory!r}/alerts; }}
+{block}
+echo PASSED""")
+            checks = Path(directory, "checks").exists()
+            alerts = Path(directory, "alerts").exists()
+        return result, checks, alerts
+
+    def test_a_bid_is_built_only_after_the_check(self):
+        start = self.take_part.index("unsigned transactions to the nominator contract")
+        check = self.take_part.index("Nominator_Hot_Wallet_Check", start)
+        self.assertLess(check, self.take_part.index("election-bid ", start))
+        for answer, alerted in ((1, True), (2, False)):
+            with self.subTest(answer=answer):
+                result, checked, alerts = self.guarded(self.bid_guard, mode="nominator", answer=answer)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("the reason No bid was sent.", result.stdout)
+                self.assertNotIn("PASSED", result.stdout)
+                self.assertEqual(alerts, alerted)
+        result, checked, _ = self.guarded(self.bid_guard, mode="nominator", answer=0)
+        self.assertTrue(checked)
+        self.assertIn("PASSED", result.stdout)
+
+    def test_a_recovery_is_built_only_after_the_check(self):
+        self.assertLess(self.prepare.index("Nominator_Hot_Wallet_Check"),
+                        self.prepare.index("recover_stake ${INPL_CURR_ELECTIONS_DIR}"))
+        for answer, alerted in ((1, True), (2, False)):
+            with self.subTest(answer=answer):
+                result, _, alerts = self.guarded(self.recovery_guard, mode="nominator", answer=answer,
+                                                 setup="recover_amount=5")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("the reason No recovery was sent.", result.stdout)
+                self.assertEqual(alerts, alerted)
+        result, _, _ = self.guarded(self.recovery_guard, mode="nominator", answer=0, setup="recover_amount=5")
+        self.assertIn("PASSED", result.stdout)
+
+    def test_other_modes_and_nothing_to_recover_never_check(self):
+        cases = [(self.bid_guard, mode, "") for mode in ("msig", "depool")]
+        cases += [(self.recovery_guard, "msig", "recover_amount=5"),
+                  (self.recovery_guard, "nominator", "recover_amount=0")]
+        for block, mode, setup in cases:
+            with self.subTest(mode=mode, setup=setup):
+                result, checked, _ = self.guarded(block, mode=mode, answer=1, setup=setup)
+                self.assertIn("PASSED", result.stdout, result.stderr)
+                self.assertFalse(checked)

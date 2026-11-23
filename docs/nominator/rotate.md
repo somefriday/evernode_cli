@@ -22,6 +22,7 @@ Builds the message body that makes another masterchain wallet the one allowed to
 ## Behaviour
 
 - Once the owner's message executes, the contract ignores this node's Safe: stop this node's elections first.
+- Until they stop, this node's election runs send the contract nothing and log why.
 - Stake at the elector and the node's validator keys are not moved.
 - The contract's address does not change, so a node with another Safe cannot derive it with `nominator prepare`.
 
