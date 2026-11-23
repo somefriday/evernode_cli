@@ -29,6 +29,7 @@ const ERROR::WRONG_SET_CODE = 0x2002;
 const ERROR::WRONG_VALIDATOR_WC = 0x2003;
 const ERROR::INSUFFICIENT_BALANCE = 0x2004;
 const ERROR::INSUFFICIENT_ELECTOR_FEE = 0x2005;
+const ERROR::WRONG_NEW_STAKE_MSG = 0x2006; ;; evernode: a new_stake body not in the elector's request format
 
 ;; =============== storage =============================
 
@@ -181,12 +182,15 @@ slice elector_address() inline_ref {
 ;; taken from nominator-pool: https://github.com/ton-blockchain/nominator-pool/blob/2f35c36b5ad662f10fd7b01ef780c3f1949c399d/func/pool.fc#L139
 ;; check the validity of the new_stake message
 ;; https://github.com/ton-blockchain/ton/blob/b38d227a469666d83ac535ad2eea80cb49d911b8/crypto/smartcont/elector-code.fc#L208
+;; evernode: accepts exactly the elector's request format: 576 bits and one 512-bit signature cell
 int check_new_stake_msg(slice cs) impure inline_ref {
+    throw_unless(ERROR::WRONG_NEW_STAKE_MSG, (cs.slice_bits() == 576) & (cs.slice_refs() == 1));
     var validator_pubkey = cs~load_uint(256);
     var stake_at = cs~load_uint(32);
     var max_factor = cs~load_uint(32);
     var adnl_addr = cs~load_uint(256);
-    var signature = cs~load_ref().begin_parse().preload_bits(512);
+    slice signature = cs~load_ref().begin_parse();
+    throw_unless(ERROR::WRONG_NEW_STAKE_MSG, (signature.slice_bits() == 512) & (signature.slice_refs() == 0));
     cs.end_parse();
     return stake_at; ;; supposed start of next validation round (utime_since)
 }

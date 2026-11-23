@@ -12,6 +12,7 @@ this implementation believes.
 
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -36,9 +37,24 @@ ASSETS = Path(__file__).resolve().parents[1] / "evernode" / "assets"
 REFERENCE = Path(__file__).resolve().parent / "fixtures" / "nominator"
 OWNER = "-1:e253907b4dc0e9d64cb738df4895094ef8d115ae3e1742f637f0329608815913"
 HOT = "-1:c43ea310703d54abf436c53af049013960f1097b5360a453af3467b1321b00bc"
-POOL = "-1:abc84de88f337e99590aac84578cbd350eb76b6ecf02b24af8edd9675af17ef1"
-FACTORY = "-1:6c1d45100d4978ff2b006956730fa2b9675b084003030aa229585285b3208895"
-CODE_HASH = "cc0d39589eb2c0cfe0fde28456657a3bdd3d953955ae3f98f25664ab3c904fbd"
+POOL = "-1:2e733a99573d9d81fa4292930c3044f6d47dadb7a52e5b5d86bc5a52cd2ea374"
+FACTORY = "-1:21bfa1f5c717de99cd17b406822ab7295498d194570dfd8a2d26782b9536d88a"
+CODE_HASH = "78562f9a9a11337188bdd1fc430092146dbcc8b2b11b0bf30b3a8140efc72a25"
+# upstream v1.1, unmodified: the hash upstream publishes
+UPSTREAM_CODE_HASH = "cc0d39589eb2c0cfe0fde28456657a3bdd3d953955ae3f98f25664ab3c904fbd"
+# The one change evernode makes to upstream's source, as (upstream text, vendored text).
+EVERNODE_CHANGE = (
+    ("const ERROR::INSUFFICIENT_ELECTOR_FEE = 0x2005;\n",
+     "const ERROR::INSUFFICIENT_ELECTOR_FEE = 0x2005;\n"
+     "const ERROR::WRONG_NEW_STAKE_MSG = 0x2006; ;; evernode: a new_stake body not in the elector's request format\n"),
+    ("int check_new_stake_msg(slice cs) impure inline_ref {\n",
+     ";; evernode: accepts exactly the elector's request format: 576 bits and one 512-bit signature cell\n"
+     "int check_new_stake_msg(slice cs) impure inline_ref {\n"
+     "    throw_unless(ERROR::WRONG_NEW_STAKE_MSG, (cs.slice_bits() == 576) & (cs.slice_refs() == 1));\n"),
+    ("    var signature = cs~load_ref().begin_parse().preload_bits(512);\n",
+     "    slice signature = cs~load_ref().begin_parse();\n"
+     "    throw_unless(ERROR::WRONG_NEW_STAKE_MSG, (signature.slice_bits() == 512) & (signature.slice_refs() == 0));\n"),
+)
 
 
 def nominator_config(**changes):
@@ -355,8 +371,33 @@ class ContractToolTests(unittest.TestCase):
             raise AssertionError(result.stderr.strip() or result.stdout.strip())
         return result.stdout.strip()
 
-    def test_the_contract_compiles_to_the_published_upstream_hash(self):
+    def test_the_contract_compiles_to_the_pinned_hash(self):
         self.assertEqual(self.compiled["codeHash"], CODE_HASH)
+
+    def test_the_bid_shape_check_is_the_only_change_from_upstream(self):
+        """Undoing the one change gives upstream's source byte for byte, and that
+        still compiles to the hash upstream publishes."""
+        pinned = json.loads((VENDOR / "PINNED.json").read_text())
+        upstream = (VENDOR / "contracts/single-nominator.fc").read_text()
+        for original, changed in EVERNODE_CHANGE:
+            self.assertEqual(upstream.count(changed), 1, changed)
+            upstream = upstream.replace(changed, original)
+        self.assertEqual(hashlib.sha256(upstream.encode()).hexdigest(), pinned["upstreamSourceDigest"])
+        self.assertEqual(pinned["upstreamCodeHash"], UPSTREAM_CODE_HASH)
+        source = self.work / "upstream.fc"
+        source.write_text(upstream)
+        result = subprocess.run(
+            ["node", "-e",
+             "const {compileFunc} = require('@ton-community/func-js');"
+             "const {Cell} = require('@ton/core');"
+             "const fs = require('fs');"
+             "compileFunc({targets: ['stdlib.fc', 'upstream.fc'], sources: p => p === 'stdlib.fc'"
+             " ? fs.readFileSync('contracts/imports/stdlib.fc', 'utf8') : fs.readFileSync(process.argv[1], 'utf8')})"
+             ".then(r => console.log(Cell.fromBase64(r.codeBoc).hash().toString('hex')));",
+             str(source)],
+            cwd=VENDOR, capture_output=True, text=True, timeout=300, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), UPSTREAM_CODE_HASH)
 
     def test_the_pinned_manifest_agrees_with_the_compiler(self):
         pinned = json.loads((VENDOR / "PINNED.json").read_text())
