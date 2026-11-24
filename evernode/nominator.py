@@ -201,8 +201,9 @@ def nominator_address(config):
 
 
 PREPARE_PROGRAM = r"""set -e
-# Addresses here may start with '-1:'. The script-file form of node passes
-# such an argument through, but 'node -e' reads it as one of node's own
+# Addresses here start with '-1:' or '0:': the contract and its Safe are in
+# the masterchain, and the owner is in either. The script-file form of node
+# passes a '-1:' argument through, but 'node -e' reads it as one of node's own
 # options, so the inline snippets below take their addresses from the
 # environment instead of from argv.
 node tools/cells.cjs compile /work/code.boc > /work/compile.json
