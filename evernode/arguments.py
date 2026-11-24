@@ -451,6 +451,15 @@ def build_argument_parser():
     q.add_argument("-n", "--name", required=True)
     q.add_argument("--message", required=True, help="Path to the signed BOC")
     q.add_argument("--yes", action="store_true")
+    q = nominator.add_parser(
+        "link", help="A wallet link that sends a body to the contract; the owner confirms it"
+    )
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--value", type=int, help="Whole tokens to attach (default 2)")
+    q.add_argument(
+        "--body",
+        help="Message body as a base64 BOC (default: withdraw everything above the reserve)",
+    )
     elections = groups.add_parser("election").add_subparsers(
         dest="action", required=True
     )

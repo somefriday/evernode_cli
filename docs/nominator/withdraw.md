@@ -30,3 +30,4 @@ Builds the message body and prints it with the destination, the value to attach 
 ## See also
 
 - [nominator submit](submit.md)
+- [nominator link](link.md)

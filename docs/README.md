@@ -200,6 +200,7 @@ A pending Safe transaction to the elector, the DePool or the nominator contract 
 | [`nominator withdraw`](nominator/withdraw.md) | Prepare an owner withdrawal for signing elsewhere.            |
 | [`nominator rotate`](nominator/rotate.md)     | Prepare the owner's replacement of the hot wallet.            |
 | [`nominator submit`](nominator/submit.md)     | Broadcast a message the owner signed.                         |
+| [`nominator link`](nominator/link.md)         | Make a wallet link the owner confirms in a wallet app.        |
 
 ## Elections
 

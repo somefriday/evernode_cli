@@ -22,7 +22,8 @@ import subprocess
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import urllib.parse
 
 from evernode import (
     configuration, elections, nominator, process, role, scripts, setup_actions,
@@ -235,6 +236,58 @@ class OwnerWorkchainTests(unittest.TestCase):
     def test_a_malformed_owner_is_refused(self):
         with self.assertRaisesRegex(process.OperationError, "Invalid owner address"):
             self.ask("0:" + "a" * 63)
+
+
+class OwnerLinkTests(unittest.TestCase):
+    """A wallet link the owner confirms: this node's contract, the tokens, the body."""
+
+    def config(self):
+        config = nominator_config()
+        config["settings"] = dict(config["settings"], NOMINATOR_ADDR=POOL)
+        return config
+
+    def test_by_default_it_withdraws_everything_with_two_tokens(self):
+        result = nominator.owner_link(self.config())
+        self.assertEqual(
+            result["link"],
+            f"https://oberton.app/deeplink?t=p&da={POOL}&v=2&p=te6ccgEBAQEABwAACgAAAAB3",
+        )
+        self.assertEqual(
+            (result["owner"], result["destination"], result["attach_value_nanotokens"]),
+            (OWNER, POOL, "2000000000"),
+        )
+
+    def test_a_given_value_and_body_reach_the_link_intact(self):
+        body = "te6ccvj+/g=="  # a BOC header whose base64 holds +, / and =
+        result = nominator.owner_link(self.config(), value=5, body=body)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(result["link"]).query)
+        self.assertEqual(query, {"t": ["p"], "da": [POOL], "v": ["5"], "p": [body]})
+
+    def test_a_value_or_body_it_cannot_carry_is_refused(self):
+        not_a_boc = base64.b64encode(b"not a BOC").decode()
+        for value, body in ((0, None), (-1, None), (2, "not base64!"), (2, not_a_boc)):
+            with self.subTest(value=value, body=body):
+                with self.assertRaises(process.OperationError):
+                    nominator.owner_link(self.config(), value=value, body=body)
+
+    def test_it_needs_a_prepared_contract_on_a_nominator_node(self):
+        with self.assertRaisesRegex(process.OperationError, "nominator prepare"):
+            nominator.owner_link(nominator_config())
+        with self.assertRaises(process.OperationError):
+            nominator.owner_link(make_node_configuration("v1", validator_type="solo"))
+
+    def test_it_runs_without_the_console_and_asks_nothing(self):
+        store = MagicMock()
+        store.load_node_config.return_value = self.config()
+        args = build_argument_parser().parse_args(["nominator", "link", "-n", "validator01"])
+        printed = io.StringIO()
+        with (
+            patch("evernode.scripts.require_node_console", side_effect=AssertionError("console")),
+            patch("evernode.setup_actions.ui.confirm_operation", side_effect=AssertionError("asked")),
+            contextlib.redirect_stdout(printed),
+        ):
+            self.assertEqual(setup_actions.handle_setup_action(store, args), 0)
+        self.assertEqual(json.loads(printed.getvalue())["destination"], POOL)
 
 
 class StageTests(unittest.TestCase):
@@ -464,6 +517,11 @@ class ContractToolTests(unittest.TestCase):
         self.assertEqual(
             json.loads(self.cells("roles", str(data))), {"owner": owner, "validator": HOT}
         )
+
+    def test_the_link_body_is_the_comment_withdraw_all_builds(self):
+        body = self.work / "withdraw-all.body.boc"
+        self.cells("body", "comment", str(body), "w")
+        self.assertEqual(self.cells("base64", str(body)), nominator.WITHDRAW_ALL_BODY)
 
     def test_the_deployer_is_derived_as_the_reference_recorded_it(self):
         init = self.work / "init.boc"

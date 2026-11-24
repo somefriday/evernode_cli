@@ -10,8 +10,9 @@ from . import configuration, elections, nominator, nodes, process, scripts, stak
 # Preparing the nominator contract compiles code and derives an address. It
 # spends nothing, sends nothing and reads no chain state, so requiring a
 # synchronized console would only stop an operator inspecting what they are
-# about to deploy before the node has caught up.
-OFFLINE_ACTIONS = (("nominator", "prepare"),)
+# about to deploy before the node has caught up. A wallet link for the owner
+# is built from the saved setup alone, so it needs no console either.
+OFFLINE_ACTIONS = (("nominator", "prepare"), ("nominator", "link"))
 
 
 def _require_setup_node(store, name, action):
@@ -257,6 +258,7 @@ def handle_setup_action(store, args):
         ("nominator", "info"),
         ("nominator", "withdraw"),
         ("nominator", "rotate"),
+        ("nominator", "link"),
     )
     secret_action = action in (("wallet", "create"), ("depool", "prepare"))
     if secret_action and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -370,6 +372,10 @@ def handle_setup_action(store, args):
         elif action == ("nominator", "submit"):
             result_config, result = config, nominator.submit(
                 store, config, message=args.message
+            )
+        elif action == ("nominator", "link"):
+            result_config, result = config, nominator.owner_link(
+                config, value=args.value, body=args.body
             )
         elif action == ("stake", "confirm"):
             result_config, result = wallets.stake_confirm(

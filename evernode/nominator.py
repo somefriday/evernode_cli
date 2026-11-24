@@ -19,12 +19,14 @@ else: those functions write a message body and say what to do with it, and
 never ask for an owner key.
 """
 
+import base64
 import json
 import os
 import re
 import shutil
 import sys
 import time
+import urllib.parse
 
 from . import configuration, docker, process, storage
 
@@ -959,6 +961,73 @@ def submit(store, config, *, message):
         "note": (
             "Submission is not execution. Check nominator info for the "
             "effect; an expired or unauthorized message is simply ignored."
+        ),
+    }
+
+
+# A link the owner opens in the Oberton wallet app, or scans as a QR code, to
+# send a body to the contract: t=p is a transfer with a payload, da its
+# destination, v the tokens to attach and p the body as a URL-encoded base64
+# BOC. The app reads only these short parameter names correctly.
+WALLET_LINK = "https://oberton.app/deeplink"
+# The comment "w" as the contract reads it: a zero op and the letter in one
+# cell, nothing attached. It withdraws every liquid token above the reserve;
+# nominator withdraw --all builds the same body.
+WITHDRAW_ALL_BODY = "te6ccgEBAQEABwAACgAAAAB3"
+# Whole tokens to attach; what a withdrawal does not use comes back with it.
+DEFAULT_LINK_VALUE = 2
+BOC_MAGIC = bytes.fromhex("b5ee9c72")
+
+
+def owner_link(config, *, value=None, body=None):
+    """A wallet link that sends VALUE tokens with BODY to this node's contract.
+
+    The owner opens it, or a QR code of it, in the wallet app that holds the
+    owner wallet and confirms there: the contract acts only on the owner's
+    messages. Nothing here reads the chain, signs or sends. Without a body the
+    link withdraws everything above the reserve.
+    """
+    _require_nominator(config)
+    value = DEFAULT_LINK_VALUE if value is None else value
+    if value <= 0:
+        raise process.OperationError(
+            "The value to attach must be a positive number of tokens"
+        )
+    body = WITHDRAW_ALL_BODY if body is None else body.strip()
+    try:
+        is_boc = base64.b64decode(body, validate=True).startswith(BOC_MAGIC)
+    except ValueError:
+        is_boc = False
+    if not is_boc:
+        raise process.OperationError("The body must be a base64 BOC")
+    destination = nominator_address(config)
+    owner = owner_address(config)
+    withdraw_all = body == WITHDRAW_ALL_BODY
+    return {
+        "operation": "link",
+        "authorized_by": "owner",
+        "owner": owner,
+        "destination": destination,
+        "attach_value_nanotokens": str(value * NANO),
+        "body_base64": body,
+        "description": (
+            "Withdraw every liquid token above the contract's reserve to the owner."
+            if withdraw_all
+            else "Send this body to the contract; check what it does before confirming."
+        ),
+        "warning": (
+            "This takes the principal, not only the reward. It cannot touch "
+            "stake still held by the elector."
+            if withdraw_all
+            else None
+        ),
+        "link": (
+            f"{WALLET_LINK}?t=p&da={destination}&v={value}"
+            f"&p={urllib.parse.quote(body, safe='')}"
+        ),
+        "how_to_use": (
+            "Open the link, or a QR code of it, in the wallet app that holds "
+            f"the owner wallet {owner}, and confirm from that wallet only."
         ),
     }
 
