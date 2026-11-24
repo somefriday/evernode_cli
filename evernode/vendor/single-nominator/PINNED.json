@@ -2,11 +2,11 @@
   "upstreamRepository": "https://github.com/ton-blockchain/single-nominator.git",
   "upstreamCommit": "b6455fcf7fbaf068d0fe723a5a11988ef67f6ea7",
   "upstreamVersion": "v1.1",
-  "note": "Contract source is upstream's with one change, marked 'evernode' in it: check_new_stake_msg accepts exactly the elector's request format. The compiler is the latest release; it reproduces upstream's published code hash for the unmodified source.",
+  "note": "Contract source is upstream's with two changes, marked 'evernode' in it: check_new_stake_msg accepts exactly the elector's request format, and the contract keeps a 10-token reserve. The compiler is the latest release; it reproduces upstream's published code hash for the unmodified source.",
   "upstreamCodeHash": "cc0d39589eb2c0cfe0fde28456657a3bdd3d953955ae3f98f25664ab3c904fbd",
   "upstreamSourceDigest": "54a0b53fcd49c09522955ab61f8ee109775631d80d91b8d1467959acc92bbd37",
   "sourceDigests": {
-    "contracts/single-nominator.fc": "fb27751c423f4deca8ab1d569eb2dc35f1a7f1b8b4eede5c0c26dfc24ffd3fc8",
+    "contracts/single-nominator.fc": "e1315161f0818d7a1ba795980269e113d78389a13f6660f057715c91e4f95245",
     "contracts/imports/stdlib.fc": "fabe28724c4f627779733715a0ff47b401f59f7f688bc399269f80d244fab0af"
   },
   "compiler": {
@@ -16,6 +16,7 @@
     "@ton/crypto": "3.3.0",
     "@ton/crypto-primitives": "2.1.0"
   },
-  "codeHash": "78562f9a9a11337188bdd1fc430092146dbcc8b2b11b0bf30b3a8140efc72a25",
-  "codeHashBase64": "eFYvmpoRM3GIvdH8QwCSFG28yLKxGwvzCzqBQO/HKiU="
+  "codeHash": "559f37e08977a7d0eb0562c351fe67884a9e353a99c29bb127a706982cee589c",
+  "codeHashBase64": "VZ834Il3p9DrBWLDUf5niEqeNTqZwpuxJ6cGmCzuWJw=",
+  "reserveNanotokens": "10000000000"
 }

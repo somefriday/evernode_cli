@@ -233,6 +233,7 @@ node -e '
     address: process.env.POOL,
     factory: process.env.FACTORY,
     deployValueNanotokens: process.env.DEPLOY_VALUE,
+    reserveNanotokens: pinned.reserveNanotokens,
   }, null, 2) + "\n");
 '
 cat /work/manifest.json
@@ -452,6 +453,13 @@ def prepare(store, config, *, source, recipe, new_contract=False):
     # The election scripts splice the stake into the elector's request with
     # this image, so the node's environment has to name it.
     settings["NOMINATOR_TOOLS_IMAGE"] = tag
+    # The reserve is part of the contract's code, so it is this contract's
+    # own. A manifest without one gets the default.
+    settings["NOMINATOR_RESERVE"] = int(
+        manifest.get(
+            "reserveNanotokens", configuration.DEFAULT_ENVIRONMENT["NOMINATOR_RESERVE"]
+        )
+    )
     config["settings"] = settings
     config["nominator"] = {
         "address": manifest["address"],
@@ -466,6 +474,7 @@ def prepare(store, config, *, source, recipe, new_contract=False):
         {
             "NOMINATOR_ADDR": manifest["address"],
             "NOMINATOR_TOOLS_IMAGE": tag,
+            "NOMINATOR_RESERVE": settings["NOMINATOR_RESERVE"],
         },
     )
     # An imported node's contract exists already, and so does a deployed one's:

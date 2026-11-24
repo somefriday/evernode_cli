@@ -64,12 +64,13 @@ type choice.
 | `NOMINATOR_ADDR`            | empty         |                    | The nominator contract's address.                            |
 | `NOMINATOR_OWNER`           | empty         |                    | The cold owner's address.                                    |
 | `NOMINATOR_OP_FEE`          | `2000000000`  |                    | Nanotokens the Safe attaches to each instruction to the contract. |
-| `NOMINATOR_RESERVE`         | `1000000000`  |                    | Nanotokens the contract keeps and never stakes.              |
+| `NOMINATOR_RESERVE`         | `1000000000`  |                    | Nanotokens the contract keeps; `nominator prepare` sets it.  |
 | `NOMINATOR_DEPLOY_VALUE`    | `10000000000` |                    | Nanotokens the deployer passes to the new contract.          |
 | `NOMINATOR_DEPLOY_MARGIN`   | `1000000000`  |                    | Nanotokens added to the deployer's funding for fees.         |
 | `NOMINATOR_TOOLS_IMAGE`     | empty         |                    | The tools image the contract was compiled with.              |
 
-No command changes `VAL_ACC_RESERVED`, `MAX_FACTOR` or the four nominator amounts.
+No command changes `VAL_ACC_RESERVED`, `MAX_FACTOR` or the nominator amounts, except that
+`nominator prepare` records `NOMINATOR_RESERVE` from the contract it prepares: 10 tokens.
 
 The max factor a bid carries is not this setting. It is `max_factor` in `node_cfg/console.json`,
 which is 3 from the kit's template and which the console writes into the elector request.

@@ -17,6 +17,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,13 +39,15 @@ ASSETS = Path(__file__).resolve().parents[1] / "evernode" / "assets"
 REFERENCE = Path(__file__).resolve().parent / "fixtures" / "nominator"
 OWNER = "-1:e253907b4dc0e9d64cb738df4895094ef8d115ae3e1742f637f0329608815913"
 HOT = "-1:c43ea310703d54abf436c53af049013960f1097b5360a453af3467b1321b00bc"
-POOL = "-1:2e733a99573d9d81fa4292930c3044f6d47dadb7a52e5b5d86bc5a52cd2ea374"
-FACTORY = "-1:21bfa1f5c717de99cd17b406822ab7295498d194570dfd8a2d26782b9536d88a"
-CODE_HASH = "78562f9a9a11337188bdd1fc430092146dbcc8b2b11b0bf30b3a8140efc72a25"
+POOL = "-1:b51768dca9e3be25dbda3a9bedf7fe91781d0de402418ac9535164e92c68794d"
+FACTORY = "-1:e4c0fb4addcc5a16a37ed01e248024dd358d1f669f9a88ec6f6e2e3ef21a4b73"
+CODE_HASH = "559f37e08977a7d0eb0562c351fe67884a9e353a99c29bb127a706982cee589c"
 # upstream v1.1, unmodified: the hash upstream publishes
 UPSTREAM_CODE_HASH = "cc0d39589eb2c0cfe0fde28456657a3bdd3d953955ae3f98f25664ab3c904fbd"
-# The one change evernode makes to upstream's source, as (upstream text, vendored text).
+# The changes evernode makes to upstream's source, as (upstream text, vendored text).
 EVERNODE_CHANGE = (
+    ("const MIN_TON_FOR_STORAGE = 1000000000; ;; 10% from nominator-pool since we have a single cell\n",
+     "const MIN_TON_FOR_STORAGE = 10000000000; ;; evernode: 10 tokens kept for the contract's storage\n"),
     ("const ERROR::INSUFFICIENT_ELECTOR_FEE = 0x2005;\n",
      "const ERROR::INSUFFICIENT_ELECTOR_FEE = 0x2005;\n"
      "const ERROR::WRONG_NEW_STAKE_MSG = 0x2006; ;; evernode: a new_stake body not in the elector's request format\n"),
@@ -460,9 +463,9 @@ class ContractToolTests(unittest.TestCase):
     def test_the_contract_compiles_to_the_pinned_hash(self):
         self.assertEqual(self.compiled["codeHash"], CODE_HASH)
 
-    def test_the_bid_shape_check_is_the_only_change_from_upstream(self):
-        """Undoing the one change gives upstream's source byte for byte, and that
-        still compiles to the hash upstream publishes."""
+    def test_the_marked_changes_are_the_only_changes_from_upstream(self):
+        """Undoing evernode's changes gives upstream's source byte for byte, and
+        that still compiles to the hash upstream publishes."""
         pinned = json.loads((VENDOR / "PINNED.json").read_text())
         upstream = (VENDOR / "contracts/single-nominator.fc").read_text()
         for original, changed in EVERNODE_CHANGE:
@@ -484,6 +487,12 @@ class ContractToolTests(unittest.TestCase):
             cwd=VENDOR, capture_output=True, text=True, timeout=300, check=True,
         )
         self.assertEqual(result.stdout.strip(), UPSTREAM_CODE_HASH)
+
+    def test_the_pinned_reserve_is_the_contracts_own(self):
+        pinned = json.loads((VENDOR / "PINNED.json").read_text())
+        source = (VENDOR / "contracts/single-nominator.fc").read_text()
+        reserve = re.search(r"const MIN_TON_FOR_STORAGE = (\d+);", source).group(1)
+        self.assertEqual((pinned["reserveNanotokens"], reserve), ("10000000000", "10000000000"))
 
     def test_the_pinned_manifest_agrees_with_the_compiler(self):
         pinned = json.loads((VENDOR / "PINNED.json").read_text())
@@ -616,7 +625,8 @@ class ContractAddressGuardTests(unittest.TestCase):
 
     ARTIFACTS = ("code.boc", "compile.json", "init.boc", "factory-deploy.boc", "manifest.json")
 
-    def prepare(self, *, derived, new_contract=False, mode="new", stage="ready-for-elections"):
+    def prepare(self, *, derived, new_contract=False, mode="new", stage="ready-for-elections",
+                reserve=None):
         deployed = "-1:" + "1" * 64
         config = nominator_config(
             wallet={"mode": mode, "custodians": 1, "required_signatures": 1,
@@ -625,6 +635,8 @@ class ContractAddressGuardTests(unittest.TestCase):
         )
         manifest = {"address": derived, "factory": FACTORY, "validator": "-1:" + "a" * 64,
                     "owner": OWNER, "codeHash": CODE_HASH, "upstreamCommit": "x"}
+        if reserve is not None:
+            manifest["reserveNanotokens"] = reserve
 
         def tools(arguments, **_):
             # The container writes its results into whatever directory is mounted at /work.
@@ -669,6 +681,18 @@ class ContractAddressGuardTests(unittest.TestCase):
         written.assert_called_once()
         self.assertEqual(files["code.boc"], "built for -1:" + "1" * 64)
         self.assertEqual(listing, sorted(self.ARTIFACTS))
+
+    def test_the_prepared_contracts_reserve_is_recorded(self):
+        config, written, error, _, _ = self.prepare(derived="-1:" + "1" * 64, reserve="10000000000")
+        self.assertIsNone(error)
+        self.assertEqual(config["settings"]["NOMINATOR_RESERVE"], 10_000_000_000)
+        self.assertEqual(written.call_args.args[1]["NOMINATOR_RESERVE"], 10_000_000_000)
+
+    def test_a_manifest_without_a_reserve_gets_the_default(self):
+        config, written, error, _, _ = self.prepare(derived="-1:" + "1" * 64)
+        self.assertIsNone(error)
+        self.assertEqual(config["settings"]["NOMINATOR_RESERVE"], 1_000_000_000)
+        self.assertEqual(written.call_args.args[1]["NOMINATOR_RESERVE"], 1_000_000_000)
 
     def test_new_contract_moves_the_node_to_the_new_address(self):
         config, _, error, files, _ = self.prepare(derived="-1:" + "2" * 64, new_contract=True)

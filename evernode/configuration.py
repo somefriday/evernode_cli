@@ -41,7 +41,9 @@ DEFAULT_ENVIRONMENT = {
     # Nominator staking: the contract that holds the principal, the cold
     # owner that may withdraw it, what an instruction attaches for gas, what
     # the contract keeps liquid, and the deployment budget. The two deploy
-    # values are budgets at one set of network prices, not constants.
+    # values are budgets at one set of network prices, not constants. The
+    # reserve is the contract's own: nominator prepare records it from the
+    # pinned contract, and this default applies where none is recorded.
     "NOMINATOR_ADDR": "",
     "NOMINATOR_OWNER": "",
     "NOMINATOR_OP_FEE": 2000000000,

@@ -20,7 +20,7 @@ Reads the contract, the Safe, the elector, this node's validator keys and the pu
 
 ## Behaviour
 
-- `liquid_nanotokens`: the contract's balance. `withdrawable_nanotokens`: that minus the 1-token reserve.
+- `liquid_nanotokens`: the contract's balance. `withdrawable_nanotokens`: that minus the contract's reserve, `reserve_nanotokens`.
 - `recoverable_nanotokens`: what the elector owes the contract now; the next election run recovers it.
 - `open_bid`: this node's stake in the election open now; `null` when it has not bid or none is open.
 - `at_elector`: each round this node was elected for whose stake the elector still holds (`previous`, `current`, `next`), with `returns_about`: the set's end plus the network's hold time. Amounts are not shown.

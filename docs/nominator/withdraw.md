@@ -18,7 +18,7 @@ Builds the message body and prints it with the destination, the value to attach 
 | -------------- | ------ | -------- | ---------------------------------------------- |
 | `-n`, `--name` | NAME   | required | The managed node.                              |
 | `--amount`     | TOKENS |          | Withdraw this much to the owner.               |
-| `--all`        |        |          | Withdraw everything above the 1-token reserve. |
+| `--all`        |        |          | Withdraw everything above the reserve.         |
 
 ## Behaviour
 

@@ -25,6 +25,7 @@ Builds the pinned tool image, compiles the contract, checks its code hash agains
 
 - Nominator validators only. Sends nothing and spends nothing; works before the node is synchronized.
 - Needs the Safe to exist: the address depends on it.
+- Records the contract's reserve, 10 tokens: it never stakes or pays them out.
 - Run it again after an evernode upgrade that changes the tools, or after an image prune removed the tools image: the image is rebuilt and the address stays the same.
 - Once the contract is deployed, code that gives another address is refused unless `--new-contract`: the node would bid from an empty contract while its stake sits in the old one. A refused prepare leaves the contract's files as they were.
 - Next: `nominator deploy` for a new contract; `nominator verify` for an imported node or a contract already deployed.
