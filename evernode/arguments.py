@@ -147,8 +147,8 @@ def build_argument_parser():
     s.add_argument("--required-signatures", type=int)
     s.add_argument(
         "--owner-address",
-        help="Cold owner of a nominator validator's stake; masterchain, and "
-        "never a wallet this server holds",
+        help="Cold owner of a nominator validator's stake: a masterchain (-1:) "
+        "or basechain (0:) wallet, never one this server holds",
     )
     s.add_argument("--depool-type", choices=["EverX", "StEver"])
     s.add_argument("--validator-assurance", type=int)

@@ -24,7 +24,7 @@ Asks for the validator type, a new or an existing Safe and, for a DePool validat
 | `--depool-address`      | ADDRESS                     | asked for an imported DePool                   | Existing DePool; needs `--import-wallet`, DePool type only.      |
 | `--custodians`          | N                           | asked; `3` without a terminal; nominator: menu | Safe custodians, 1-31.                                           |
 | `--required-signatures` | N                           | asked; `2` without a terminal; nominator: menu | Signatures a Safe transaction needs.                             |
-| `--owner-address`       | `-1:…`                      | asked                                          | Nominator: the cold owner wallet. Cannot be changed later.       |
+| `--owner-address`       | `-1:…` or `0:…`             | asked                                          | Nominator: the cold owner wallet. Cannot be changed later.       |
 | `--depool-type`         | `EverX` `StEver`            | menu; `EverX` without a terminal               | DePool contract. DePool validators only.                         |
 | `--validator-assurance` | TOKENS                      | asked; `50000` without a terminal              | DePool: validator's own stake, at least the minimum stake.       |
 | `--min-stake`           | TOKENS                      | asked; `10` without a terminal                 | DePool: smallest participant stake, at least 1 token.            |

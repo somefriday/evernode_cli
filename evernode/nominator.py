@@ -201,7 +201,7 @@ def nominator_address(config):
 
 
 PREPARE_PROGRAM = r"""set -e
-# Addresses here all start with '-1:'. The script-file form of node passes
+# Addresses here may start with '-1:'. The script-file form of node passes
 # such an argument through, but 'node -e' reads it as one of node's own
 # options, so the inline snippets below take their addresses from the
 # environment instead of from argv.

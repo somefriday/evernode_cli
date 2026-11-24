@@ -15,6 +15,12 @@ NOMINATOR_SAFE_KEYS = [
     ("several", "Several keys - each operation is proposed, then approved by others"),
 ]
 
+# The workchains a nominator's cold owner may be in, as its address starts.
+# The contract compares a sender's whole address with the owner it stores and
+# never checks the owner's workchain, so a wallet in either one can own it.
+# Only the contract and the Safe that instructs it have to be in -1.
+OWNER_WORKCHAINS = ("-1", "0")
+
 
 def choose_safe_keys(args, nominator, importing):
     """Return (custodians, required signatures) for the node's Safe.
@@ -175,13 +181,13 @@ def ask_role(store, config, args):
         owner = ui.prompt_for_value(owner, "Cold owner wallet address")
         # The contract stores the owner in its initial data and has no
         # change-owner operation, so a wrong address here is permanent.
-        if not str(owner).startswith("-1:"):
-            raise process.OperationError(
-                "The owner authorizes withdrawals from a masterchain "
-                "contract; its address must start with -1:"
-            )
         if not wallets.ADDRESS_PATTERN.fullmatch(str(owner)):
             raise process.OperationError("Invalid owner address")
+        if str(owner).split(":", 1)[0] not in OWNER_WORKCHAINS:
+            raise process.OperationError(
+                "The owner has to be a wallet in the masterchain (-1:) or the "
+                "basechain (0:)"
+            )
     if (
         depool_type not in ("EverX", "StEver")
         or not 1 <= cron_interval <= 59

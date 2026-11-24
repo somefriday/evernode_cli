@@ -64,7 +64,8 @@ Command: [`node setup`](../node/setup.md). Code: `role.handle_node_setup`, `role
    assurance, minimum stake, participant reward fraction, balance threshold. Refuse what the
    DePool's constructor refuses: a reward fraction outside 1 to 99, a minimum stake under 1
    token, or an assurance under the minimum stake.
-5. For a nominator validator ask the cold owner's address. It must be in the masterchain.
+5. For a nominator validator ask the cold owner's address. It must be in the masterchain or the
+   basechain.
 6. Ask the Safe's custodians and required signatures. A nominator validator's Safe defaults to
    one key. The other types default to 3 custodians and 2 signatures.
 7. For an imported Safe ask its address, and for a DePool validator the DePool's address. A solo

@@ -204,6 +204,39 @@ class OwnerSeparationTests(unittest.TestCase):
         self.assertNotIn("_broadcast", nominator.withdraw.__doc__ or "")
 
 
+class OwnerWorkchainTests(unittest.TestCase):
+    """The owner may be in either workchain; only the contract and its Safe are in -1."""
+
+    def ask(self, owner):
+        args = build_argument_parser().parse_args(normalize_address_arguments(
+            ["node", "setup", "-n", "validator01", "--validator-type", "nominator",
+             "--owner-address", owner]
+        ))
+
+        class Store:
+            def list_node_names(inner):
+                return []
+
+        with patch("sys.stdin", io.StringIO()):
+            return role.ask_role(Store(), make_node_configuration("validator01"), args)
+
+    def test_a_masterchain_or_basechain_owner_is_recorded_as_given(self):
+        for owner in (OWNER, "0:" + OWNER.split(":", 1)[1]):
+            with self.subTest(owner=owner):
+                self.assertEqual(self.ask(owner)["settings"]["NOMINATOR_OWNER"], owner)
+
+    def test_an_owner_in_any_other_workchain_is_refused(self):
+        for owner in ("1:" + "a" * 64, "00:" + "a" * 64):
+            with self.subTest(owner=owner):
+                with self.assertRaises(process.OperationError) as caught:
+                    self.ask(owner)
+                self.assertIn("basechain (0:)", str(caught.exception))
+
+    def test_a_malformed_owner_is_refused(self):
+        with self.assertRaisesRegex(process.OperationError, "Invalid owner address"):
+            self.ask("0:" + "a" * 63)
+
+
 class StageTests(unittest.TestCase):
     def profile(self, mode="new"):
         return {
@@ -411,6 +444,26 @@ class ContractToolTests(unittest.TestCase):
         self.assertEqual(self.cells("address", str(self.code), OWNER, HOT), POOL)
         swapped = self.cells("address", str(self.code), HOT, OWNER)
         self.assertNotEqual(swapped, POOL)
+
+    def test_a_basechain_owner_is_stored_as_given_in_a_masterchain_contract(self):
+        owner = "0:" + OWNER.split(":", 1)[1]
+        init = self.work / "basechain-owner.init.boc"
+        address = self.cells("init", str(self.code), owner, HOT, str(init))
+        self.assertTrue(address.startswith("-1:"))
+        self.assertNotEqual(address, POOL)
+        data = self.work / "basechain-owner.data.boc"
+        subprocess.run(
+            ["node", "-e",
+             "const {Cell, loadStateInit} = require('@ton/core');"
+             "const fs = require('fs');"
+             "const init = loadStateInit(Cell.fromBoc(fs.readFileSync(process.argv[1]))[0].beginParse());"
+             "fs.writeFileSync(process.argv[2], init.data.toBoc());",
+             str(init), str(data)],
+            cwd=VENDOR, capture_output=True, text=True, timeout=300, check=True,
+        )
+        self.assertEqual(
+            json.loads(self.cells("roles", str(data))), {"owner": owner, "validator": HOT}
+        )
 
     def test_the_deployer_is_derived_as_the_reference_recorded_it(self):
         init = self.work / "init.boc"

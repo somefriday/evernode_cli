@@ -425,14 +425,15 @@ Read-only commands (`depool info`, `stake status`, `nominator info`) do not take
 
 **The validator type decides the Safe's workchain.**
 
-- **Rule.** A solo or nominator validator's Safe is in the masterchain, `-1`. So are a
-  nominator's contract and owner. A DePool validator's Safe is in the workchain of its `NODE_WC`
-  setting, and its DePool is in workchain 0.
+- **Rule.** A solo or nominator validator's Safe is in the masterchain, `-1`. So is a
+  nominator's contract; its owner may be in the masterchain or the basechain, `0`. A DePool
+  validator's Safe is in the workchain of its `NODE_WC` setting, and its DePool is in workchain 0.
 - **Why.** The elector accepts a stake only from the masterchain, and the nominator contract
-  refuses any other.
+  refuses any other. The contract compares a sender's whole address with the owner it stores and
+  never checks the owner's workchain.
 - **Enforced by.** `wallets.wallet_workchain`, `role.ask_role`, `nominator.hot_wallet_address`,
   `DePool-prep.sh`, and the election scripts' own check of the Safe's address.
-- **Checked by.** `tests/test_solo_validation.py`.
+- **Checked by.** `tests/test_solo_validation.py`, `tests/test_nominator.py`.
 
 ### SETUP-5
 
