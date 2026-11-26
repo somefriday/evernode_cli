@@ -9,6 +9,7 @@ that follow (wallet create, or wallet recover for an existing Safe) need them.
 import sys
 
 from . import configuration, process, ui, wallets
+from .denominator import SETUP_FLAGS as POOL_FLAGS, ask_settings as ask_pool_settings, refuse_setup_flags as refuse_pool_flags
 
 NOMINATOR_SAFE_KEYS = [
     ("one", "One key - a single seed phrase signs every operation (recommended)"),
@@ -89,6 +90,7 @@ def ask_role(store, config, args):
             ("depool", "DePool - stake through a DePool contract, shared with participants"),
             ("solo", "Solo - stake directly from this validator's own Safe wallet"),
             ("nominator", "Nominator - stake from a contract a cold owner controls"),
+            ("denominator", "Denominator - stake through nominator pools that stakers deposit into"),
         ],
         flag="--validator-type",
         # Existing automation predates this choice, so a noninteractive run
@@ -97,6 +99,8 @@ def ask_role(store, config, args):
     )
     solo = validator_type == "solo"
     nominator = validator_type == "nominator"
+    denominator = validator_type == "denominator"
+    refuse_pool_flags(args, validator_type)
     importing = args.import_wallet
     if not importing and sys.stdin.isatty():
         importing = input(
@@ -117,6 +121,11 @@ def ask_role(store, config, args):
     if args.owner_address is not None and not nominator:
         raise process.OperationError(
             "--owner-address applies only to a nominator validator"
+        )
+    if denominator and any(value is not None for value in depool_arguments):
+        raise process.OperationError(
+            "DePool parameters do not apply to a denominator validator; its pools' terms "
+            "are set with " + ", ".join(POOL_FLAGS.values())
         )
     if (solo or nominator) and any(value is not None for value in depool_arguments):
         raise process.OperationError(
@@ -147,7 +156,7 @@ def ask_role(store, config, args):
         configuration.DEFAULT_ENVIRONMENT["DePool_TYPE"]
         # Neither of these modes has a DePool, so neither should be asked
         # which kind it wants.
-        if solo or nominator
+        if solo or nominator or denominator
         else ui.select_choice(
             args.depool_type,
             "DePool type",
@@ -157,7 +166,7 @@ def ask_role(store, config, args):
             default="EverX",
         )
     )
-    if solo or nominator or importing:
+    if solo or nominator or denominator or importing:
         # A solo validator has no DePool, and an imported DePool's terms are
         # on-chain contract state. Keep the internal environment schema
         # complete without pretending these defaults describe either.
@@ -201,7 +210,7 @@ def ask_role(store, config, args):
     # The DePool's constructor refuses anything else (EverX's DePool.sol; StEver's
     # DePool derives from it), and only at deploy, once the Safe exists and this
     # step can no longer change them.
-    if not (solo or nominator or importing) and not (
+    if not (solo or nominator or denominator or importing) and not (
         1 <= reward_fraction <= 99 and min_stake >= 1 and assurance >= min_stake
     ):
         raise process.OperationError(
@@ -224,6 +233,8 @@ def ask_role(store, config, args):
         "ParticipantRewardFraction": reward_fraction,
         "BalanceThresholdT": balance_threshold,
     }
+    if denominator:
+        settings.update(ask_pool_settings(args))
     custodians, required = choose_safe_keys(args, nominator, importing)
     wallet_address = args.wallet_address
     depool_address = args.depool_address
@@ -235,7 +246,7 @@ def ask_role(store, config, args):
         )
     if importing:
         wallet_address = ui.prompt_for_value(wallet_address, "Existing wallet address")
-        if solo or nominator:
+        if solo or nominator or denominator:
             # The elector only accepts a stake sent from the masterchain. A
             # solo validator sends it itself; a nominator validator's wallet
             # has to instruct a masterchain contract, which refuses anything

@@ -15,7 +15,7 @@ still be waiting for a recovery, is the one decision in this system with no
 way to correct it until the round ends.
 """
 
-from . import configuration, nodes, nominator, process, scripts, ui, wallets
+from . import configuration, denominator, nodes, nominator, process, scripts, ui, wallets
 
 NANO = 10**9
 
@@ -198,6 +198,8 @@ def _stake_at_elector(config):
 
 def describe_stake(store, config):
     """Report the configured stake beside what the chain says about it."""
+    if configuration.validator_type(config) == "denominator":
+        return denominator.stake_status(store, config)
     address = _staking_account(store, config)
     settings = _settings(config)
     observed = _observe(store, config)
@@ -258,6 +260,8 @@ def _resolve_mode(mode, amount, spendable, facts):
 def ask_mode(store, config):
     """The stake mode menu on its own, so it can be answered before the
     election lock is taken."""
+    if configuration.validator_type(config) == "denominator":
+        denominator.refuse_stake_set(config)
     spendable = _spendable_nanotokens(_observe(store, config), _settings(config))
     return _resolve_mode(None, None, spendable, _chain_facts(config))
 
@@ -270,6 +274,8 @@ def set_stake(store, config, amount=None, mode=None):
     to be inferred. Afterwards the election scripts only ever read a fixed
     amount, which is the one sizing they handle without a hidden threshold.
     """
+    if configuration.validator_type(config) == "denominator":
+        denominator.refuse_stake_set(config)
     address = _staking_account(store, config)
     noun = _account_noun(config)
     if amount is not None and mode is not None:
@@ -406,6 +412,10 @@ def set_stake(store, config, amount=None, mode=None):
 
 def recover(store, config):
     """Ask the elector to return the stake of rounds that have finished."""
+    if configuration.validator_type(config) == "denominator":
+        # A pool takes its stake back only once its own guard allows it, and
+        # pays queued withdrawals after: the pools' cycle decides what is due.
+        return denominator.maintain(store, config)
     if configuration.validator_type(config) == "nominator":
         # The hot wallet asks its contract, which asks the elector; the money
         # returns to the contract.

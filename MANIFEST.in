@@ -4,6 +4,8 @@
 graft evernode/vendor/ever-validator
 graft evernode/vendor/single-nominator
 prune evernode/vendor/single-nominator/node_modules
+graft evernode/vendor/nominator-pool
+prune evernode/vendor/nominator-pool/node_modules
 # The vote engine's build inputs (setup.py's ENGINE_INPUTS): setup.py copies them
 # into the package, and evernode host setup builds the engine from that copy.
 include vote/Cargo.toml vote/Cargo.lock vote/Dockerfile vote/.dockerignore

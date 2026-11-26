@@ -49,6 +49,22 @@ sudo evernode stake set -n validator01 --mode balanced
 sudo evernode election start -n validator01
 ```
 
+**Denominator**
+
+```bash
+sudo evernode node create -n validator01
+sudo evernode node sync -n validator01 --wait
+sudo evernode node setup -n validator01 --validator-type denominator
+sudo evernode wallet create -n validator01
+sudo evernode wallet deploy -n validator01
+sudo evernode denominator prepare -n validator01
+sudo evernode denominator deploy -n validator01
+sudo evernode denominator verify -n validator01
+sudo evernode denominator deposit -n validator01 --amount 1000   # the validator's own funds, into each pool
+sudo evernode denominator link -n validator01                     # the links stakers use, rescue links included
+sudo evernode election start -n validator01
+```
+
 **Import (existing Safe, from seed phrases)**
 
 ```bash
@@ -61,6 +77,7 @@ sudo evernode wallet verify -n validator01
 sudo evernode depool verify -n validator01                # DePool
 sudo evernode stake set -n validator01 --mode balanced    # solo; --amount N while the former node's stake is at the elector
 sudo evernode nominator prepare -n validator01            # nominator; then nominator verify and stake set
+sudo evernode denominator prepare -n validator01          # denominator; then deploy, verify and deposit
 sudo evernode election start -n validator01               # once the former node is fenced
 ```
 
@@ -117,6 +134,15 @@ sudo evernode wallet send -n validator01 --address 0:ADDRESS --amount 100   # wa
 sudo evernode election start -n validator01
 ```
 
+**Wind down a denominator validator.** The pools' cycle keeps running after `election stop`, so every stake comes back and every queued withdrawal is paid.
+
+```bash
+sudo evernode election stop -n validator01                       # no new bids; the pools' cycle keeps running
+sudo evernode denominator info -n validator01                    # wait until every pool is idle, with no queued withdrawals
+sudo evernode denominator withdraw -n validator01 --pool A --amount TOKENS   # the validator's own funds, per pool
+sudo evernode denominator retire -n validator01                  # removes the cycle
+```
+
 **A node that does not bid.** Read these in order.
 
 ```bash
@@ -124,6 +150,7 @@ sudo evernode election status -n validator01            # schedule installed, cr
 sudo evernode node logs -n validator01 --component election-cron --tail 100   # each scheduled run
 sudo evernode depool info -n validator01                # DePool: rounds, stake, pending Safe transactions
 sudo evernode stake status -n validator01               # solo, nominator: stake, balance, pending transactions
+sudo evernode denominator info -n validator01           # denominator: each pool's phase and next action
 ```
 
 A pending Safe transaction to the elector, the DePool or the nominator contract stops every run until `depool confirm` or `stake confirm` finishes it, or it expires after an hour. A DePool round that holds no stake has nothing to bid with.
@@ -201,6 +228,23 @@ A pending Safe transaction to the elector, the DePool or the nominator contract 
 | [`nominator rotate`](nominator/rotate.md)     | Prepare the owner's replacement of the hot wallet.            |
 | [`nominator submit`](nominator/submit.md)     | Broadcast a message the owner signed.                         |
 | [`nominator link`](nominator/link.md)         | Make a wallet link the owner confirms in a wallet app.        |
+
+## Denominator pools
+
+A denominator validator stakes through one or two nominator pools that stakers deposit into. A pool holds one stake at a time, so a pair bids in alternate elections.
+A pool's stake has to be large enough to be elected, as a solo stake does; one that is not elected comes back only after two new validator sets and the hold time, 30 to 36 hours after its bid on mainnet.
+
+| Command                                           | What it does                                               |
+| ------------------------------------------------- | ---------------------------------------------------------- |
+| [`denominator prepare`](denominator/prepare.md)   | Compile the pool contract and derive the pools' addresses. |
+| [`denominator deploy`](denominator/deploy.md)     | Create the pools on chain.                                 |
+| [`denominator verify`](denominator/verify.md)     | Check each pool's code, validator wallet and terms.        |
+| [`denominator deposit`](denominator/deposit.md)   | Send the validator's own funds into the pools.             |
+| [`denominator withdraw`](denominator/withdraw.md) | Take the validator's own funds out of an idle pool.        |
+| [`denominator info`](denominator/info.md)         | Show where each pool's money is and what happens next.     |
+| [`denominator stakers`](denominator/stakers.md)   | List each pool's stakers and what they hold.               |
+| [`denominator link`](denominator/link.md)         | Make the Oberton links stakers use, rescue links included. |
+| [`denominator retire`](denominator/retire.md)     | Remove the pools' cycle once no stake is out.              |
 
 ## Elections
 

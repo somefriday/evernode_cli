@@ -24,6 +24,7 @@ Sends the recovery request from the Safe, signs it through and waits until the e
 - Solo: the stake returns to the Safe. Nominator: the Safe asks the contract, and the stake returns to the contract.
 - The scheduled election run does the same at every open election; this is for recovering outside one.
 - Reports `recovered_nanotokens: 0` when nothing is owed, and sends nothing.
+- Denominator: runs the pools' cycle once without a bid: counts new validator sets, recovers the stakes the pools allow and pays queued withdrawals. Reports what it sent for each pool.
 
 ## See also
 

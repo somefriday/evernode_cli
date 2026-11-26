@@ -750,7 +750,7 @@ class SafeTransportTests(unittest.TestCase):
     def test_the_kit_is_told_this_mode_by_name(self):
         self.assertEqual(
             configuration.STAKE_MODES,
-            {"depool": "depool", "solo": "msig", "nominator": "nominator"},
+            {"depool": "depool", "solo": "msig", "nominator": "nominator", "denominator": "denominator"},
         )
 
     def test_both_election_scripts_branch_on_the_nominator_mode(self):
@@ -1267,11 +1267,11 @@ class ModeInheritanceTests(unittest.TestCase):
 
     def test_no_mode_without_a_depool_is_asked_which_depool_to_use(self):
         source = Path(role.__file__).read_text()
-        self.assertIn("if solo or nominator\n", source)
+        self.assertIn("if solo or nominator or denominator\n", source)
 
     def test_an_imported_safe_must_reach_the_elector_in_both_modes(self):
         source = Path(role.__file__).read_text()
-        self.assertIn("if solo or nominator:", source)
+        self.assertIn("if solo or nominator or denominator:", source)
 
     def test_the_stake_questions_name_the_account_that_holds_the_stake(self):
         """A nominator's stake leaves from, and returns to, its contract."""

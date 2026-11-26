@@ -21,10 +21,48 @@ RECOVERY_SETTLE_SECONDS = 120
 
 DEPOOL_SEQUENCE_FILE = "run-election-sequence.sh"
 SOLO_SEQUENCE_FILE = "run-solo-election-sequence.sh"
+DENOMINATOR_SEQUENCE_FILE = "run-denominator-election-sequence.sh"
 
 
 def node_election_cron_path(name):
     return Path("/etc/cron.d") / ("evernode-" + configuration.validate_node_name(name))
+
+
+def _is_denominator(config):
+    return configuration.has_role(config) and configuration.validator_type(config) == "denominator"
+
+
+def denominator_bidding(config):
+    """Whether a denominator validator's schedule bids; election stop turns it off."""
+    return bool((config.get("denominator") or {}).get("bidding", False))
+
+
+def schedule_can_bid(config):
+    """Whether this node has an installed schedule that may bid.
+
+    What waits for election stop waits for this. A denominator validator's
+    schedule outlives election stop to bring its pools' stakes back; it then only
+    keeps them moving, and its runs take the election lock like every command
+    that acts on the node or its Safe, so the two never overlap.
+    """
+    if not node_election_cron_path(config["name"]).exists():
+        return False
+    return denominator_bidding(config) if _is_denominator(config) else True
+
+
+def pools_cycle_installed(config):
+    """Whether a denominator validator's pools still have their cycle, which
+    denominator retire removes once every stake is back."""
+    return _is_denominator(config) and node_election_cron_path(config["name"]).exists()
+
+
+def stop_denominator_bidding(store, config):
+    """Turn a denominator validator's bids off and keep its pools' cycle, which
+    still brings every stake back. The caller saves the node record."""
+    config["denominator"] = dict(config.get("denominator") or {}, bidding=False)
+    if node_election_cron_path(config["name"]).exists():
+        write_election_programs(store, config)
+    return config
 
 
 def election_sequence_path(store, config):
@@ -33,7 +71,10 @@ def election_sequence_path(store, config):
     A nominator validator shares the solo sequence: in both modes recovery and
     bidding are independent, because the stake goes to the elector rather than
     through a DePool whose rounds the preparation step has to advance first.
+    A denominator validator has a sequence of its own: its pools' cycle.
     """
+    if configuration.validator_type(config) == "denominator":
+        return store.node_directory(config["name"]) / DENOMINATOR_SEQUENCE_FILE
     direct = configuration.validator_type(config) in ("solo", "nominator")
     return store.node_directory(config["name"]) / (
         SOLO_SEQUENCE_FILE if direct else DEPOOL_SEQUENCE_FILE
@@ -136,6 +177,26 @@ fi
 """
 
 
+def _denominator_sequence_program(scripts_dir, bidding):
+    """Keep the pools moving on every run, and bid while elections are on.
+
+    A pool's stake comes back only when someone counts the validator sets and
+    asks for it, and its stakers' queued withdrawals are paid only after that,
+    so election stop turns the bids off and leaves this running. denominator
+    retire removes it once nothing is left to bring back.
+    """
+    mode = "bid" if bidding else "maintain"
+    return (
+        "#!/bin/bash\n# Denominator pools' cycle, written by evernode election start.\n"
+        "set -uo pipefail\n"
+        + RUN_MARKS
+        + "cd "
+        + shlex.quote(str(scripts_dir))
+        + "\n"
+        f"./denominator_cycle.sh cycle {mode}\n"
+    )
+
+
 def disable_node_election_schedule(name):
     path = node_election_cron_path(name)
     if path.exists() or path.is_symlink():
@@ -177,7 +238,9 @@ def write_election_programs(store, config):
         stale = workspace / other
         if stale != sequence and stale.is_file() and not stale.is_symlink():
             stale.unlink()
-    if configuration.validator_type(config) in ("solo", "nominator"):
+    if configuration.validator_type(config) == "denominator":
+        program = _denominator_sequence_program(workspace / "scripts", denominator_bidding(config))
+    elif configuration.validator_type(config) in ("solo", "nominator"):
         program = _solo_sequence_program(
             workspace / "scripts", workspace / "elections" / "last-preparation.log"
         )
@@ -338,6 +401,9 @@ def describe_election_state(store, config, statistics=None, console_error=None):
     so they are reported separately and never inferred from the schedule.
     """
     result = election_schedule_status(store, config)
+    if _is_denominator(config):
+        # Its schedule keeps running after election stop, to bring every stake back.
+        result["bidding"] = denominator_bidding(config)
     result["last_run"] = last_run(result["log"])
     result["cron_daemon"] = cron_daemon_state()
     if result["enabled"] and result["cron_daemon"] == "not running":

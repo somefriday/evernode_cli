@@ -382,7 +382,7 @@ def wallet_workchain(config):
     through its DePool and keeps the node's own workchain, where fees are
     lower.
     """
-    if configuration.validator_type(config) in ("solo", "nominator"):
+    if configuration.validator_type(config) in ("solo", "nominator", "denominator"):
         return -1
     settings = dict(
         configuration.DEFAULT_ENVIRONMENT, **(config.get("settings") or {})
@@ -536,6 +536,14 @@ def wallet_verify(store, config):
         store.node_directory(config["name"]) / "keys", config["name"]
     )
     _check_imported_wallet(profile, local_public_keys, observed)
+    if configuration.validator_type(config) == "denominator":
+        # Its pools are derived from this Safe and checked by denominator verify.
+        config["setup_stage"] = "imported"
+        return config, {
+            "stage": config["setup_stage"],
+            "wallet": observed,
+            "next": f"Run: evernode denominator prepare -n {config['name']}",
+        }
     if configuration.validator_type(config) in ("solo", "nominator"):
         # Nothing this CLI manages links these modes to a second contract that
         # verifying the wallet could check: a solo validator stakes from the
@@ -925,7 +933,7 @@ def require_confirmable(config, group, transaction_id):
         require_validator_type(config, "depool", "stake")
         _require_operational_depool(config, DEPLOYED_STAGES)
     else:
-        require_validator_type(config, ("solo", "nominator"), "depool")
+        require_validator_type(config, ("solo", "nominator", "denominator"), "depool")
     if config.get("setup_stage") not in DEPLOYED_STAGES:
         raise process.OperationError(
             "This action needs a finished setup; run: "
@@ -971,7 +979,9 @@ def depool_confirm(store, config, *, transaction_id):
 def stake_confirm(store, config, *, transaction_id):
     """A solo or nominator validator's Safe can hold a half-signed transaction too."""
     require_confirmable(config, "stake", transaction_id)
-    check = "nominator info" if configuration.validator_type(config) == "nominator" else "stake status"
+    check = {"nominator": "nominator info", "denominator": "denominator info"}.get(
+        configuration.validator_type(config), "stake status"
+    )
     return confirm_wallet_transaction(store, config, transaction_id, check)
 
 
@@ -1098,6 +1108,19 @@ def next_setup_command(config):
             ("import", "nominator-prepared"): f"evernode nominator deploy -n {name}",
             ("import", "nominator-deployed"): f"evernode nominator verify -n {name}",
             ("import", "nominator-verified"): f"evernode stake set -n {name} --mode balanced",
+            ("import", "ready-for-elections"): f"evernode election start -n {name}",
+        },
+        # A denominator validator's pools are derived from its Safe, then
+        # deployed, checked and given the validator's own funds before a bid.
+        "denominator": {
+            ("new", "wallet-deployed"): f"evernode denominator prepare -n {name}",
+            ("new", "denominator-prepared"): f"evernode denominator deploy -n {name}",
+            ("new", "denominator-deployed"): f"evernode denominator verify -n {name}",
+            ("new", "denominator-verified"): f"evernode denominator deposit -n {name} --amount TOKENS",
+            ("import", "imported"): f"evernode denominator prepare -n {name}",
+            ("import", "denominator-prepared"): f"evernode denominator deploy -n {name}",
+            ("import", "denominator-deployed"): f"evernode denominator verify -n {name}",
+            ("import", "denominator-verified"): f"evernode denominator deposit -n {name} --amount TOKENS",
             ("import", "ready-for-elections"): f"evernode election start -n {name}",
         },
         # A solo validator needs a stake on record before it can bid, whether

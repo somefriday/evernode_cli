@@ -29,6 +29,7 @@ Checks the amount against the chain's stake limits and writes it into the node's
 - A stake must be at least the elector's minimum plus 1 token, which the elector keeps; less is refused. A mode above the maximum is capped; a named amount above it is refused.
 - The first `stake set` moves setup to `ready-for-elections`.
 - To be elected the stake must also compete: the elector seats the set with the largest total stake.
+- Refused for a denominator validator: a pool stakes everything its stakers and its validator hold.
 
 ## See also
 

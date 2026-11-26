@@ -23,7 +23,7 @@ Runs `node stop` and `node start` under one lock.
 
 ## Behaviour
 
-- Refuses while the election schedule is installed: run `election stop` first and `election start` afterwards.
+- Refuses while the election schedule can bid: run `election stop` first and `election start` afterwards. A denominator validator's pools' cycle, which `election stop` leaves running, waits for the restart and runs again after it.
 - Refuses while an election run that began before `election stop` is still using the node; retry when it finishes.
 - Refuses while the node is in the current or next validator set, unless `--force`.
 - Refuses a node that was removed or never finished preparation.

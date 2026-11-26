@@ -24,10 +24,10 @@ Sends one transfer of whole tokens from the node's Safe, signed with as many of 
 
 ## Behaviour
 
-- The same for DePool, solo and nominator validators, from either workchain to either.
+- The same for DePool, solo, nominator and denominator validators, from either workchain to either.
 - Needs a synchronized node and a Safe on chain: from `wallet deploy`, or from `wallet recover` for an existing Safe.
-- Refuses while the node's election schedule is installed: run `election stop`, send, then `election start`.
-- Refuses the node's own accounts: the elector, the config contract, the Safe itself, the DePool and its proxies, the nominator contract.
+- Refuses while the node's election schedule can bid: run `election stop`, send, then `election start`. A denominator validator's pools' cycle, which `election stop` leaves running, waits for the send.
+- Refuses the node's own accounts: the elector, the config contract, the Safe itself, the DePool and its proxies, the nominator contract, the pools.
 - Keeps back 1 token for each signature the Safe needs and, in the masterchain, the storage the Safe owes since its last transaction, counted as at least 0.2 token a day; a larger amount is refused with the most it can send.
 - With bounce, an address with no contract (not deployed or frozen), or one that refuses the tokens, sends them back minus fees.
 - With `--no-bounce` the tokens stay at the address; a frozen address first takes the storage it owes.

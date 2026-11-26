@@ -18,6 +18,8 @@ HOST_SCRIPTS = {
     "prepare_elections.sh",
     "take_part_in_elections.sh",
     "part_check.sh",
+    # A denominator validator's pools: maintenance, bids and its Safe's messages to them.
+    "denominator_cycle.sh",
 }
 
 # These two only generate keys, addresses and config files. Every other host

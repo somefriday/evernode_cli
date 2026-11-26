@@ -27,6 +27,8 @@ Deletes `/etc/cron.d/evernode-NAME`.
 - `node update`, `node restart` and `node lsync` refuse until that run has finished.
 - Stake at the elector and sets the node is already in are not affected.
 - The node is free to stop once `election status` shows it outside both validator sets.
+- Denominator: stops the bids only. The pools' cycle keeps running, so every stake comes back and queued withdrawals are paid; `denominator retire` removes it.
+- Denominator: `wallet send`, `node restart` and `node update` no longer wait once bidding is stopped; `node remove` waits for `denominator retire`.
 
 ## See also
 

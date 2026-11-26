@@ -22,9 +22,26 @@ BUNDLED_SOURCE_SPEC = {"local": None, "repo": None, "ref": None}
 DEFAULT_ORCHESTRATION_REPOSITORY = "https://github.com/Custler/Ever-Validator.git"
 NODE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
-VALIDATOR_TYPES = ("depool", "solo", "nominator")
+VALIDATOR_TYPES = ("depool", "solo", "nominator", "denominator")
 # What each validator type is called in the reference scripts' own vocabulary.
-STAKE_MODES = {"depool": "depool", "solo": "msig", "nominator": "nominator"}
+STAKE_MODES = {"depool": "depool", "solo": "msig", "nominator": "nominator", "denominator": "denominator"}
+# A denominator validator's settings, saved for its nodes only: the pools' terms
+# node setup records, the pools and tools image denominator prepare derives, and
+# what its messages carry. No other node saves or renders any of them.
+DENOMINATOR_SETTINGS = {
+    "DENOMINATOR_POOLS": 2,
+    "DENOMINATOR_REWARD_SHARE": 40,
+    "DENOMINATOR_MAX_STAKERS": 40,
+    "DENOMINATOR_MIN_STAKER_STAKE": 1000,
+    "DENOMINATOR_MIN_VALIDATOR_STAKE": 1000,
+    "DENOMINATOR_ADDRS": "",
+    "DENOMINATOR_TOOLS_IMAGE": "",
+    "DENOMINATOR_OP_FEE": 2000000000,
+    "DENOMINATOR_DEPLOY_VALUE": 12000000000,
+    "DENOMINATOR_DEPLOY_MARGIN": 1000000000,
+}
+# The part of them env.sh gets, for the kit's denominator_cycle.sh.
+DENOMINATOR_ENVIRONMENT = ("DENOMINATOR_ADDRS", "DENOMINATOR_TOOLS_IMAGE", "DENOMINATOR_OP_FEE")
 DEFAULT_ENVIRONMENT = {
     "NODE_WC": 0,
     "CRONTAB_INTERVAL": 10,
@@ -174,8 +191,15 @@ def validate_saved_node_config(value, name):
         raise process.OperationError("Invalid setup state in node configuration")
     settings = value.get("settings")
     if settings is not None:
-        if not isinstance(settings, dict) or set(settings) - set(DEFAULT_ENVIRONMENT):
+        own = set(DENOMINATOR_SETTINGS) if value.get("validator_type") == "denominator" else set()
+        if not isinstance(settings, dict) or set(settings) - set(DEFAULT_ENVIRONMENT) - own:
             raise process.OperationError("Invalid saved environment settings")
+        if any(
+            type(settings[key]) is not type(DENOMINATOR_SETTINGS[key])
+            or (isinstance(settings[key], int) and settings[key] < 0)
+            for key in own & set(settings)
+        ):
+            raise process.OperationError("Invalid saved denominator settings")
         # A node saved before a setting existed keeps working on its default.
         settings = dict(DEFAULT_ENVIRONMENT, **settings)
         if (
@@ -245,6 +269,8 @@ def write_node_environment(path, values):
                 "NOMINATOR_OP_FEE",
                 "NOMINATOR_RESERVE",
                 "NOMINATOR_TOOLS_IMAGE",
+                # Denominator staking is this CLI's too, rendered for those nodes only.
+                *DENOMINATOR_ENVIRONMENT,
             }:
                 raise process.OperationError(f"Unsupported project: env.sh lacks {key}")
             text += "\n# Added by evernode-manager\n" + assignment + "\n"
@@ -261,7 +287,7 @@ def write_node_environment(path, values):
 def build_node_environment(config):
     container = node_container_name(config)
     settings = dict(DEFAULT_ENVIRONMENT, **config.get("settings", {}))
-    return {
+    values = {
         "NETWORK_TYPE": config["network"],
         "RUN_MODE": "docker",
         "NODE_ROLE": "validator",
@@ -309,3 +335,7 @@ def build_node_environment(config):
         "NOMINATOR_TOOLS_IMAGE": settings["NOMINATOR_TOOLS_IMAGE"],
         "IS_ENVIRONMENT_CONFIGURED": "true",
     }
+    if has_role(config) and validator_type(config) == "denominator":
+        own = dict(DENOMINATOR_SETTINGS, **config.get("settings", {}))
+        values.update({key: own[key] for key in DENOMINATOR_ENVIRONMENT})
+    return values

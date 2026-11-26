@@ -37,14 +37,16 @@ cron
    └── evernode vote tick ── evernode-vote      one file per state directory
 ```
 
-| Part                 | Source                                 | What it does                                                                 |
-| -------------------- | -------------------------------------- | ---------------------------------------------------------------------------- |
-| evernode             | `evernode/*.py`, entry `cli.main`      | Every command. Owns the node records, the locks and the schedules.           |
-| Election kit         | `evernode/vendor/ever-validator/`      | Bash scripts, configs and contract files. Copied into each node's directory. |
-| Nominator source     | `evernode/vendor/single-nominator/`    | The contract, its build tool `tools/cells.cjs` and the pinned code hash.     |
-| Vote engine          | `vote/` (Rust), binary `evernode-vote` | Checks, pays for and casts config votes. Built by `host setup`.              |
-| Node image           | `evernode/assets/ever-node.Dockerfile` | ever-node, console, keygen and ever-cli, built from source.                  |
-| Tools image          | `evernode/assets/nominator-tools.Dockerfile` | Node.js with the contract compiler. Built by `nominator prepare`.      |
+| Part                  | Source                                       | What it does                                                                 |
+| --------------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| evernode              | `evernode/*.py`, entry `cli.main`            | Every command. Owns the node records, the locks and the schedules.           |
+| Election kit          | `evernode/vendor/ever-validator/`            | Bash scripts, configs and contract files. Copied into each node's directory. |
+| Nominator source      | `evernode/vendor/single-nominator/`          | The contract, its build tool `tools/cells.cjs` and the pinned code hash.     |
+| Pool source           | `evernode/vendor/nominator-pool/`            | The pool contract, its tool `tools/cells.cjs` and the pinned code hash.      |
+| Vote engine           | `vote/` (Rust), binary `evernode-vote`       | Checks, pays for and casts config votes. Built by `host setup`.              |
+| Node image            | `evernode/assets/ever-node.Dockerfile`       | ever-node, console, keygen and ever-cli, built from source.                  |
+| Nominator tools image | `evernode/assets/nominator-tools.Dockerfile` | Node.js with the contract compiler. Built by `nominator prepare`.            |
+| Pool tools image      | `evernode/assets/pool-tools.Dockerfile`      | Node.js with the pool compiler. Built by `denominator prepare`.              |
 
 evernode has no Python dependency outside the standard library.
 
@@ -202,6 +204,7 @@ the line `# Managed by evernode`; evernode refuses to replace or remove a file w
 | `wallets.py`         | Safe and DePool setup stages, DePool commands, `wallet send`            |
 | `stake.py`           | the recorded stake of a solo or nominator validator                     |
 | `nominator.py`       | the nominator contract: build, deploy, verify, owner requests           |
+| `denominator.py`     | the `denominator` commands: pools, validator funds, reports, links      |
 | `scripts.py`         | running kit scripts and inline kit programs                             |
 | `elections.py`       | the election schedule, its programs and the election lock               |
 | `voting.py`          | the `vote` group: what evernode tells the engine                        |

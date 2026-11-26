@@ -17,6 +17,7 @@ Last checked against the code at commit `7700414` (evernode 0.3.3, vote engine 0
 | [setup.md](setup.md)                         | From a running node to a validator ready for elections, by validator type.   |
 | [wallet-operations.md](wallet-operations.md) | How any transfer from the Safe is sent, signed and judged.                   |
 | [staking.md](staking.md)                     | The commands that move or report stake: DePool, solo, nominator.             |
+| [denominator.md](denominator.md)             | Denominator pools: their setup, the validator's funds and the pools' cycle.  |
 | [elections.md](elections.md)                 | The schedule and one scheduled run, step by step.                            |
 | [voting.md](voting.md)                       | Network config votes: what evernode adds to the vote engine.                 |
 | [glossary.md](glossary.md)                   | The words used here.                                                         |

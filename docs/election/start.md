@@ -28,9 +28,10 @@ Writes `/etc/cron.d/evernode-NAME`, which runs the node's election sequence ever
 - On a DePool node the command tops up the proxies the same way before it installs the schedule; such a failed top-up stops it with nothing installed.
 - While one of the DePool's proxies does not read as Active, the command is refused and each scheduled run stops before the tick; `election status` shows why. A frozen one, or one without code (uninit or gone), gets a red alarm. A frozen one needs the state it had when it froze, its code and data, sent with the tokens it owes; one without code cannot be rebuilt.
 - Solo and nominator sequence: recover finished rounds, then bid; a failed recovery does not cancel the bid.
+- Denominator sequence: the pools' cycle (`denominator_cycle.sh`) counts new validator sets, recovers stakes and pays queued withdrawals, then bids from the pool whose turn it is. Needs stage `ready-for-elections` and the tools image `denominator prepare` builds. After `election stop` it turns bidding back on.
 - A bid that does not register is sent again by the next scheduled run, in the same election: three runs at most. No retry when the DePool's round being elected holds no stake, which a retry cannot change. To allow more runs in that election, delete `elections/ID/ID_bid-stopped.txt` in the node's workspace.
 - A run is skipped, with a `skipped` line in the log, while another run or an evernode command holds the node's election lock. Output goes to `node logs --component election-cron`.
-- The interval is the one chosen at `node setup`. Refuses if a schedule is already installed.
+- The interval is the one chosen at `node setup`. Refuses if a schedule is already installed, except a denominator cycle left running by `election stop`.
 
 ## See also
 

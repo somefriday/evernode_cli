@@ -64,6 +64,52 @@ def normalize_address_arguments(argv):
     return result
 
 
+def add_denominator_commands(groups):
+    """evernode denominator: the nominator pools of a denominator validator."""
+    pools = groups.add_parser(
+        "denominator", help="Nominator pools that stakers deposit into, run by this validator"
+    ).add_subparsers(dest="action", required=True)
+    q = pools.add_parser("prepare", help="Compile the pool contract and derive the pools' addresses")
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument(
+        "--contract-source",
+        help="nominator-pool contract directory; defaults to the one installed with evernode",
+    )
+    q.add_argument("--new-contract", action="store_true", help="move a node whose pools are deployed to new pools")
+    q.add_argument("--yes", action="store_true")
+    q = pools.add_parser("deploy", help="Create the pools, funded from the Safe")
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--yes", action="store_true")
+    q = pools.add_parser("verify", help="Check each pool's code, validator wallet and terms")
+    q.add_argument("-n", "--name", required=True)
+    for command, text in (
+        ("deposit", "Send the validator's own funds from the Safe into the pools"),
+        ("withdraw", "Take the validator's own funds out of an idle pool, to the Safe"),
+    ):
+        q = pools.add_parser(command, help=text)
+        q.add_argument("-n", "--name", required=True)
+        q.add_argument("--amount", type=int, required=True, help="Whole tokens")
+        q.add_argument(
+            "--pool", choices=("A", "B"), required=command == "withdraw",
+            help="One pool" + ("" if command == "withdraw" else "; default: the amount goes to each"),
+        )
+        q.add_argument("--yes", action="store_true")
+    for command, text in (
+        ("info", "Where each pool's money is and what its cycle does next"),
+        ("stakers", "Each pool's stakers and what they hold"),
+    ):
+        q = pools.add_parser(command, help=text)
+        q.add_argument("-n", "--name", required=True)
+        q.add_argument("--pool", choices=("A", "B"), help="One pool; default: every pool")
+    q = pools.add_parser("link", help="Oberton links for stakers: stake, withdraw and the rescue steps")
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--pool", choices=("A", "B"), help="One pool; default: every pool")
+    q.add_argument("--staker", help="A staker's 0: address, for a link that pays its queued withdrawal")
+    q = pools.add_parser("retire", help="Remove the pools' cycle once no stake is out")
+    q.add_argument("-n", "--name", required=True)
+    q.add_argument("--yes", action="store_true")
+
+
 def build_argument_parser():
     p = argparse.ArgumentParser(
         prog="evernode",
@@ -132,9 +178,10 @@ def build_argument_parser():
     s.add_argument("-n", "--name")
     s.add_argument(
         "--validator-type",
-        choices=["depool", "solo", "nominator"],
+        choices=["depool", "solo", "nominator", "denominator"],
         help="How this validator stakes: through a DePool, solo from its own "
-        "Safe, or from a nominator contract a cold owner holds",
+        "Safe, from a nominator contract a cold owner holds, or through "
+        "nominator pools stakers deposit into",
     )
     s.add_argument(
         "--import-wallet",
@@ -157,6 +204,17 @@ def build_argument_parser():
     s.add_argument("--balance-threshold", type=int)
     s.add_argument("--cron-interval", type=int)
     s.add_argument("--workchain", type=int)
+    # A denominator validator's pools: fixed in each pool's data for life. They all
+    # start with --pool, which no older flag here does, so argparse resolves every
+    # abbreviation of an older flag as it did before.
+    s.add_argument("--pools", type=int, choices=(1, 2), help="Nominator pools: 2 bid in alternate elections")
+    s.add_argument("--pool-reward-share", dest="reward_share", type=int,
+                   help="Validator's share of each pool reward, in percent")
+    s.add_argument("--pool-max-stakers", dest="max_stakers", type=int, help="Most stakers a pool takes, at most 40")
+    s.add_argument("--pool-min-staker-stake", dest="min_staker_stake", type=int,
+                   help="Smallest staker deposit, in tokens")
+    s.add_argument("--pool-min-validator-stake", dest="min_validator_stake", type=int,
+                   help="Validator's own funds a pool needs to bid, in tokens")
     s.add_argument("--yes", action="store_true")
     s.add_argument("--dry-run", action="store_true")
     for command in (
@@ -460,6 +518,7 @@ def build_argument_parser():
         "--body",
         help="Message body as a base64 BOC (default: withdraw everything above the reserve)",
     )
+    add_denominator_commands(groups)
     elections = groups.add_parser("election").add_subparsers(
         dest="action", required=True
     )

@@ -12,6 +12,7 @@ from . import (
     arguments,
     configuration,
     creation,
+    denominator,
     elections,
     host,
     images,
@@ -363,6 +364,8 @@ def main(argv=None):
             return resources.show_node_resources(store, args.name)
         if args.group in ("wallet", "depool", "stake", "nominator"):
             return setup_actions.handle_setup_action(store, args)
+        if args.group == "denominator":
+            return denominator.handle_action(store, args)
         if args.group == "node" and args.action == "sync-scripts":
             return handle_script_refresh(store, args)
         if args.group == "node" and args.action == "log-level":
@@ -442,6 +445,8 @@ def main(argv=None):
                     wallets.require_live_proxies(store, config)
                 if configuration.validator_type(config) == "nominator":
                     nominator.require_tools_image(config)
+                if denominator.is_denominator(config):
+                    denominator.require_ready(config)
                 if args.dry_run:
                     ui.print_json_result({"enable_managed_schedule": name})
                 else:
@@ -455,7 +460,12 @@ def main(argv=None):
                             # election window.
                             with elections.hold_election_lock(store, name):
                                 wallets.fund_proxies(store, config)
-                        elections.enable_node_election_schedule(store, config)
+                        if denominator.is_denominator(config):
+                            # Also turns bidding back on for a cycle election stop left running.
+                            config = denominator.start_bidding(store, config)
+                            store.save_node_config(config)
+                        else:
+                            elections.enable_node_election_schedule(store, config)
                         ui.print_json_result(
                             {
                                 "name": name,
@@ -463,13 +473,25 @@ def main(argv=None):
                             }
                         )
             elif args.dry_run:
-                ui.print_json_result(
-                    {"disable_managed_schedules": select_node_names(store, args)}
-                )
+                names = select_node_names(store, args)
+                pools = [n for n in names if denominator.is_denominator(store.load_node_config(n))]
+                plan = {"disable_managed_schedules": [n for n in names if n not in pools]}
+                if pools:
+                    plan["stop_bidding_keep_pool_cycle"] = pools
+                ui.print_json_result(plan)
             else:
                 for n in select_node_names(store, args):
                     with store.acquire_operation_lock(n):
-                        store.load_node_config(n)
+                        config = store.load_node_config(n)
+                        if denominator.is_denominator(config):
+                            store.save_node_config(denominator.stop_bidding(store, config))
+                            print(
+                                f"{n}: bidding stopped; the pools' cycle keeps running until every stake is "
+                                f"back. Remove it then with evernode denominator retire -n {n}."
+                                if elections.node_election_cron_path(n).exists()
+                                else f"{n}: bidding stopped; no schedule was installed."
+                            )
+                            continue
                         elections.disable_node_election_schedule(n)
                         print(
                             f"{n}: managed schedule disabled; existing on-chain duties remain. External jobs are not controlled."

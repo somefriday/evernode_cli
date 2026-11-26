@@ -13,21 +13,23 @@ that each command needs one setup stage and moves to the next
 A new Safe:
 
 ```
-node setup ─ wallet create ─ wallet deploy ─┬─ depool:    depool prepare ─ depool deploy ─ depool stake-initial ─┐
-                                            ├─ solo:      stake set ─────────────────────────────────────────────┤
-                                            └─ nominator: nominator prepare ─ deploy ─ verify ─ stake set ───────┴─ election start
+node setup ─ wallet create ─ wallet deploy ─┬─ depool:      depool prepare ─ depool deploy ─ depool stake-initial ─┐
+                                            ├─ solo:        stake set ─────────────────────────────────────────────┤
+                                            ├─ nominator:   nominator prepare ─ deploy ─ verify ─ stake set ───────┤
+                                            └─ denominator: denominator prepare ─ deploy ─ verify ─ deposit ───────┴─ election start
 ```
 
 An imported Safe:
 
 ```
-node setup ─ wallet recover ─ wallet verify ─┬─ depool:    depool verify ───────────────────────────────────┐
-                                             ├─ solo:      stake set ───────────────────────────────────────┤
-                                             └─ nominator: nominator prepare ─ deploy ─ verify ─ stake set ─┴─ election start
+node setup ─ wallet recover ─ wallet verify ─┬─ depool:      depool verify ───────────────────────────────────┐
+                                             ├─ solo:        stake set ───────────────────────────────────────┤
+                                             ├─ nominator:   nominator prepare ─ deploy ─ verify ─ stake set ─┤
+                                             └─ denominator: denominator prepare ─ deploy ─ verify ─ deposit ─┴─ election start
 ```
 
-`stake set` is in [staking.md](staking.md#set-the-stake). `election start` is in
-[elections.md](elections.md#the-schedule).
+`stake set` is in [staking.md](staking.md#set-the-stake), the `denominator` commands in
+[denominator.md](denominator.md). `election start` is in [elections.md](elections.md#the-schedule).
 
 ## What every setup command does first
 

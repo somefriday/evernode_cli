@@ -4,7 +4,7 @@ import contextlib
 from pathlib import Path
 import sys
 
-from . import configuration, elections, nominator, nodes, process, scripts, stake, ui, wallets
+from . import configuration, denominator, elections, nominator, nodes, process, scripts, stake, ui, wallets
 
 
 # Preparing the nominator contract compiles code and derives an address. It
@@ -44,6 +44,15 @@ def _acknowledge_secret_backup():
 
 def _confirmation_question(args, config):
     name = config["name"]
+    if configuration.validator_type(config) == "denominator":
+        if (args.group, args.action) == ("stake", "set"):
+            # Refused before anything is asked: a pool stakes all it holds.
+            denominator.refuse_stake_set(config)
+        if (args.group, args.action) == ("stake", "recover"):
+            return (
+                f"Run {name}'s pool maintenance now: count new validator sets, take back "
+                "the stakes the pools allow and pay queued withdrawals?"
+            )
     # A nominator's stake leaves from, and returns to, its contract.
     account = (
         "nominator contract"
@@ -120,6 +129,9 @@ def _own_contracts(store, config):
         address = (config.get("settings") or {}).get("NOMINATOR_ADDR")
         if address:
             contracts[address] = "this node's nominator contract"
+    elif kind == "denominator":
+        for pool in (config.get("denominator") or {}).get("pools") or []:
+            contracts[pool["address"]] = f"this node's pool {pool['label']}"
     return {address.lower(): whose for address, whose in contracts.items()}
 
 
@@ -205,7 +217,7 @@ def _review_send(store, config, args):
     schedule is installed, and never to the node's own accounts."""
     name = config["name"]
     plan = wallets.plan_send(config, args.address, args.amount)
-    if elections.node_election_cron_path(name).exists():
+    if elections.schedule_can_bid(config):
         raise process.OperationError(
             f"{name}'s election schedule is installed. Stop it, send, and start it "
             f"again: evernode election stop -n {name}, then evernode election "

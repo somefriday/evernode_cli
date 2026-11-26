@@ -32,6 +32,7 @@ Removes the node's election cron file, then stops the node and its exporter with
 - Refuses while the node has bid in an election whose result is not out yet: elected while stopped, it would miss that round.
 - A console that does not answer cannot prove membership, so the stop goes ahead.
 - Stake at the elector is not withdrawn; duties already accepted remain.
+- Denominator: keeps the pools' cycle and turns its bids off, as `election stop` does. The cycle runs again once the node starts; `election start` turns the bids back on.
 - `--after-block`, `--watch` and `--cancel` take one node, not `--all`, and only one of them at a time.
 - `--after-block` makes both refusals at once, and keeps `--force` and `--timeout` for the stop. It needs a console that answers, a cron daemon, and a node still below block N: a node at or past N is refused.
 - Cron stops the node 30 s after its console reports block N and every shard block N lists as applied. It tries once; a stop that fails is in the log and nothing stays scheduled.

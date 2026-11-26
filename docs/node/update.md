@@ -27,7 +27,7 @@ Stops the node, rewrites its Compose definition for the new image, starts it and
 ## Behaviour
 
 - One of `--image` and `--rollback` is required.
-- Refuses while the election schedule is installed or the node is in a validator set; `--dry-run` lists these blockers and exits `1`.
+- Refuses while the election schedule can bid or the node is in a validator set; `--dry-run` lists these blockers and exits `1`. A denominator validator's pools' cycle, which `election stop` leaves running, waits for the update and runs again after it.
 - Refuses while an election run that began before `election stop` is still using the node; retry when it finishes.
 - Database, keys, wallet and configuration are kept.
 - Success needs two synchronized readings within about a minute of the start. A node still catching up after that is reported as not synchronized: check `node sync --wait` before rolling back.

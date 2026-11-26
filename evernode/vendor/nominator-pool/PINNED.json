@@ -1,0 +1,22 @@
+{
+  "upstreamRepository": "https://github.com/ton-blockchain/nominator-pool.git",
+  "upstreamCommit": "2f35c36b5ad662f10fd7b01ef780c3f1949c399d",
+  "upstreamVersion": "v1",
+  "note": "Contract source is upstream's, unchanged. The compiler is the one the single-nominator tools pin; it reproduces the code hash of the nominator pools running on TON mainnet.",
+  "sourceDigests": {
+    "contracts/pool.fc": "85ae5b7f864ee2760d682aaff19775ef0613c64484b103ba22442922a82e2f10",
+    "contracts/stdlib.fc": "f93963540b7957841f6741cae6d262b716164ea5cfad459df85ed2d852595cdd"
+  },
+  "compiler": {
+    "@ton-community/func-js": "0.11.0",
+    "@ton-community/func-js-bin": "0.4.6-wasmfix.debugger.1",
+    "@ton/core": "0.63.1",
+    "@ton/crypto": "3.3.0",
+    "@ton/crypto-primitives": "2.1.0"
+  },
+  "codeHash": "9a3ec14bc098f6b44064c305222caea2800f17dda85ee6a8198a7095ede10dcf",
+  "codeHashBase64": "mj7BS8CY9rRAZMMFIiyuooAPF92oXuaoGYpwle3hDc8=",
+  "reserveNanotokens": "10000000000",
+  "depositFeeNanotokens": "1000000000",
+  "minStakeToSendNanotokens": "500000000000"
+}

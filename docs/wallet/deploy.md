@@ -23,7 +23,7 @@ Sends the Safe's deployment with the configured custodians and signature thresho
 
 - Needs stage `wallet-created` and a funded address (about 1 token is enough for the deployment itself).
 - Run again after a wait that ran out or a dropped session: a Safe already on chain is not deployed again, only checked against this node's custodian keys and threshold.
-- Next step by type: `depool prepare`, `stake set`, or `nominator prepare`.
+- Next step by type: `depool prepare`, `stake set`, `nominator prepare`, or `denominator prepare`.
 
 ## See also
 

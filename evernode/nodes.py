@@ -651,6 +651,15 @@ def stop_node(config, timeout=30, disable_elections=True):
             )
 
 
+def _stop_keeping_pools_cycle(config, timeout):
+    """stop_node, but a denominator validator's pools' cycle stays: it is what
+    brings their stakes back. Every other node's schedule goes, as before."""
+    if elections.pools_cycle_installed(config):
+        stop_node(config, timeout, disable_elections=False)
+    else:
+        stop_node(config, timeout)
+
+
 def remove_node(store, config, purge=False, timeout=30):
     stop_node(config, timeout)
     for name in (configuration.node_container_name(config), config["statsd"]):
@@ -833,6 +842,20 @@ def _refuse_with_pending_bid(store, config, action):
     )
 
 
+def _refuse_while_pools_need_their_cycle(config):
+    """A denominator validator's schedule is what brings its pools' stakes back
+    and pays their queued withdrawals; removing the node removes it."""
+    if not elections.pools_cycle_installed(config):
+        return
+    name = config["name"]
+    raise process.OperationError(
+        f"{name}'s pools still have their cycle, which brings their stakes back and pays "
+        f"queued withdrawals. Stop bidding (evernode election stop -n {name}), wait until every "
+        f"stake is back and run evernode denominator retire -n {name}, then remove the node; "
+        "or pass --force to remove it anyway, leaving the pools to their rescue links."
+    )
+
+
 def refuse_stop(store, config):
     """What node stop refuses without --force, for a stop that is carried out later."""
     _refuse_while_validating(config, "stop")
@@ -854,6 +877,8 @@ def apply_node_lifecycle_operation(
             # A restart is back within a minute, long before that round starts.
             if action != "restart":
                 _refuse_with_pending_bid(store, config, action)
+            if action == "remove":
+                _refuse_while_pools_need_their_cycle(config)
         if action == "start":
             # A removed node can reserve its image again before startup.
             with store.acquire_operation_lock():
@@ -870,9 +895,13 @@ def apply_node_lifecycle_operation(
                     store.save_node_config(config)
             start_node(store, config)
         elif action == "stop":
-            stop_node(config, timeout)
+            if elections.pools_cycle_installed(config):
+                # The stop turns a denominator validator's bids off, as election
+                # stop does; its pools' cycle runs again once the node starts.
+                store.save_node_config(elections.stop_denominator_bidding(store, config))
+            _stop_keeping_pools_cycle(config, timeout)
         elif action == "restart":
-            if elections.node_election_cron_path(name).exists():
+            if elections.schedule_can_bid(config):
                 raise process.OperationError(
                     "Disable the election schedule explicitly before restart"
                 )
@@ -881,7 +910,7 @@ def apply_node_lifecycle_operation(
                     "Use node create --resume and node start before restarting this node"
                 )
             with elections.hold_election_lock(store, name):
-                stop_node(config, timeout)
+                _stop_keeping_pools_cycle(config, timeout)
                 start_node(store, config)
         elif action == "remove":
             remove_node(store, config, purge_data, timeout)
@@ -896,7 +925,11 @@ def image_maintenance_blockers(store, name):
     nothing, so both read the same conditions.
     """
     reasons = []
-    if elections.node_election_cron_path(name).exists():
+    try:
+        blocking = elections.schedule_can_bid(store.load_node_config(name))
+    except process.OperationError:
+        blocking = elections.node_election_cron_path(name).exists()
+    if blocking:
         reasons.append(
             "This node's election schedule is installed; disable it with "
             "evernode election stop before image maintenance"
@@ -950,7 +983,7 @@ def update_node_image(store, name, record=None, *, rollback=False, timeout=30):
             process.execute_command(["docker", "image", "inspect", target["image_id"]])
             config.update(target)
             store.save_node_config(config)
-        stop_node(config, timeout)
+        _stop_keeping_pools_cycle(config, timeout)
         storage.write_json_atomically(
             store.node_directory(name) / "compose.json",
             docker.build_node_compose_config(config, store.node_directory(name)),

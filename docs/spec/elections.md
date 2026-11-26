@@ -29,7 +29,10 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
 - For a DePool validator, both proxies read as Active ([ELECT-8](properties.md#elect-8)).
 - For a nominator validator, the tools image that `nominator prepare` builds is on the host: a
   bid splices its stake with it, and an image prune removes it.
-- No schedule installed yet.
+- For a denominator validator, setup stage `ready-for-elections` and the pool tools image
+  ([denominator.md](denominator.md#the-pools-cycle)).
+- No schedule installed yet. A denominator validator's schedule left running by `election stop`
+  is switched back to bidding instead.
 
 **Logic** of `election start`:
 
@@ -38,7 +41,8 @@ Commands: [`election start`](../election/start.md), [`election stop`](../electio
    ([ELECT-7](properties.md#elect-7)). If that stops the command, nothing is installed.
 3. Under the node lock, write the two programs (`elections.write_election_programs`):
    - the *sequence*: `run-election-sequence.sh` for a DePool validator,
-     `run-solo-election-sequence.sh` for a solo or nominator validator. The other type's file is
+     `run-solo-election-sequence.sh` for a solo or nominator validator,
+     `run-denominator-election-sequence.sh` for a denominator validator. The other type's file is
      removed if it is there. A sequence writes a mark into the cron log when a run starts, and
      one with its exit status when it ends, each on a line of its own. A run killed by a signal
      (HUP, INT, TERM) ends with 128 plus the signal; one killed outright leaves no end mark;
@@ -51,7 +55,13 @@ Each file is written under a temporary name and renamed
 whose schedule is installed, so they follow the installed evernode.
 
 `election stop`, under the node lock, removes the cron file. It refuses a file that does not start
-with `# Managed by evernode`. It does not end a run that is in progress.
+with `# Managed by evernode`. It does not end a run that is in progress. For a denominator
+validator it keeps the file and switches the sequence to maintenance only
+([denominator.md](denominator.md#the-pools-cycle)); `denominator retire` removes it. What waits
+for `election stop` (`wallet send`, `node restart`, image maintenance) waits for
+`elections.schedule_can_bid`: the cron file, or for a denominator validator, its bidding. A
+restart and an image update keep that validator's cycle; `node stop` turns its bids off and keeps
+the cycle too (`elections.stop_denominator_bidding`), where it removes every other schedule.
 
 `election status` and `election list` report two things separately and never one from the other:
 
@@ -98,6 +108,10 @@ The two sequences differ in what a failed preparation means
 3. If the output shows a recovered amount above 0, wait 120 s for it to arrive. A test network
    may shorten the wait with `ELECTION_SETTLE_SECONDS`.
 4. Run `take_part_in_elections.sh`, whatever step 1 returned.
+
+**Denominator validator** (`elections._denominator_sequence_program`): run
+`denominator_cycle.sh cycle bid`, or `cycle maintain` once bidding is stopped; see
+[denominator.md](denominator.md#the-pools-cycle).
 
 Both scripts also hold a lock of their own, so a second copy of the same script ends at once.
 

@@ -23,6 +23,7 @@ Reads the Safe on chain and compares it with the installed key files and the nod
 - Needs stage `wallet-recovered`.
 - DePool validator: stage becomes `wallet-verified`; next is `depool verify`.
 - Solo and nominator: the import ends here with stage `imported`; next is `stake set` or `nominator prepare`.
+- Denominator: stage `imported`; next is `denominator prepare`, which derives the pools from this Safe.
 
 ## See also
 
