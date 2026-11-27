@@ -47,9 +47,21 @@ Code: `denominator.handle_action`.
 **Logic**:
 
 1. Prepare builds the tools image, tagged by a fingerprint of its sources, and runs
-   `PREPARE_PROGRAM` in it: compile, compare with the pinned hash, then for each pool the
-   StateInit, the address and a one-shot deployer with its trigger. It refuses addresses that
-   differ from deployed pools' unless `--new-contract`.
+   `PREPARE_PROGRAM` in it. That program compiles, compares with the pinned hash, then builds for
+   each pool its StateInit, its address and a one-shot deployer with its trigger.
+   - **Other addresses:** it refuses addresses that differ from deployed pools' unless
+     `--new-contract`.
+   - **A pool about to be dropped (`_check_dropped_pools`):** prepare reads it with the recorded
+     tools image. It reads the account, its stake at the elector (the larger of the elector's credit
+     and the stake sent), its stakers and queue, and the Safe's unsigned transactions to it.
+   - **Asking:** a pool that holds anything is dropped only after a yes or `--force`. `--yes` does
+     not answer, and with no terminal prepare refuses.
+   - **An unreadable pool:** it blocks the drop at `denominator-deployed` and later, unless
+     `--force`. Before that it is listed as not checked.
+   - **The question comes before the election lock.** Only moving the files and rewriting `env.sh`
+     hold the lock.
+   - **The stage:** new pools that are not deployed yet set the stage back to
+     `denominator-prepared`.
 2. Deploy funds each missing pool's deployer from the Safe (`scripts.fund_nominator_deployer`) and
    sends the trigger through the console, three times at most, until the pool is active. The
    deployer creates the pool with a top-up (op 1) and deletes itself.
@@ -59,8 +71,8 @@ Code: `denominator.handle_action`.
 **Result**: `config["denominator"]["pools"]`, `DENOMINATOR_ADDRS` and `DENOMINATOR_TOOLS_IMAGE` in
 the settings and `env.sh`; stages `denominator-prepared`, `-deployed`, `-verified`.
 
-**On failure**: a refused prepare leaves the previous files. A deploy that stops after paying is
-run again; a paid deployer is not paid again.
+**On failure**: a refused prepare leaves the previous files and records, apart from a tools image it
+built. A deploy that stops after paying is run again; a paid deployer is not paid again.
 
 ## The validator's funds
 

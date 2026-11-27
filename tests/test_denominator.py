@@ -322,6 +322,203 @@ class SetupFlagTests(unittest.TestCase):
         self.assertIn("DePool parameters do not apply to a denominator validator", err)
 
 
+class PrepareTests(unittest.TestCase):
+    """denominator prepare: what it asks before it drops a pool that holds anything.
+
+    The build and the compile are stubbed: the compile yields the addresses each
+    test names. A dropped pool is read through the node (stubbed per test).
+    """
+
+    NEW_A = "-1:" + "3" * 64
+    NEW_B = "-1:" + "4" * 64
+    FUNDED = {POOL_A: {"acc_type": "Active", "balance": 13797964098}}
+
+    @contextlib.contextmanager
+    def stubs(self, addresses, *, accounts=None, pools=None, credit=0, pending=(), tty=False, answer="n"):
+        events = []
+
+        def compile_pools(command, timeout):
+            staging = Path(command[command.index("-v") + 1].split(":", 1)[0])
+            (staging / "manifest.json").write_text("{}\n")
+            manifest = {"maxStakers": 40, "codeHash": PINNED["codeHash"], "upstreamCommit": "c",
+                        "pools": [{"salt": salt, "address": address, "factory": "-1:" + "9" * 64}
+                                  for salt, address in enumerate(addresses)]}
+            return subprocess.CompletedProcess(command, 0, json.dumps(manifest), "")
+
+        @contextlib.contextmanager
+        def lock(store, name):
+            events.append("lock")
+            yield
+
+        def account(config, address):
+            events.append(f"read {address}")
+            found = (accounts or {}).get(address, {"acc_type": "Nonexist"})
+            if isinstance(found, Exception):
+                raise found
+            return found
+
+        def ask(prompt):
+            events.append("question")
+            events.append(prompt)
+            return answer
+
+        with (
+            patch.object(denominator, "build_tools_image", return_value=("local/evernode-pool-tools:new", True)),
+            patch("evernode.process.execute_command", side_effect=compile_pools),
+            patch.object(elections, "hold_election_lock", side_effect=lock),
+            patch.object(denominator, "_account", side_effect=account),
+            patch.object(denominator, "read_pool", side_effect=lambda store, config, address: pools[address]),
+            patch("evernode.scripts.read_elector_credit", return_value={"recoverable_nanotokens": str(credit)}),
+            patch("evernode.scripts.read_wallet_pending", return_value={"pending_transactions": list(pending)}),
+            patch("sys.stdin.isatty", return_value=tty),
+            patch("builtins.input", side_effect=ask),
+        ):
+            yield events
+
+    @staticmethod
+    def staked(stakers=5, queued=0):
+        account = pool_account(state=2, sent=13367, requests=queued)
+        account["pool"]["nominatorsCount"] = stakers
+        return account
+
+    def prepare(self, config, addresses, *, force=False, new_contract=True, **stubs):
+        """(config, result) or None, the error or None, the events, and env.sh afterwards."""
+        with node_store() as (store, _), self.stubs(addresses, **stubs) as events:
+            add_node(store, config)
+            env = store.node_directory(config["name"]) / "scripts" / "env.sh"
+            try:
+                done = denominator.prepare(store, config, new_contract=new_contract, force=force)
+            except process.OperationError as error:
+                return None, error, events, env.read_text()
+            return done, None, events, env.read_text()
+
+    def test_a_prepare_that_keeps_the_pools_reads_and_asks_nothing(self):
+        done, error, events, _ = self.prepare(pool_config(), [POOL_A, POOL_B], new_contract=False)
+        self.assertIsNone(error)
+        config, result = done
+        self.assertEqual(events, ["lock"])
+        self.assertNotIn("dropped_pools", result)
+        self.assertEqual(config["setup_stage"], "ready-for-elections")
+
+    def test_no_to_the_question_keeps_every_pool_and_takes_no_lock(self):
+        done, error, events, env = self.prepare(
+            pool_config(), [self.NEW_A, self.NEW_B], accounts=self.FUNDED, pools={POOL_A: self.staked()},
+            tty=True, answer="n",
+        )
+        self.assertIsNone(done)
+        self.assertIn("use --force", str(error))
+        self.assertNotIn("lock", events)
+        question = events[events.index("question") + 1]
+        self.assertIn(f"Pool A ({POOL_A}) still holds 13.797964098 tokens in the pool and 13,367 at the elector",
+                      question)
+        self.assertIn("5 staker(s) and 0 queued withdrawal(s)", question)
+        self.assertIn("Drop this pool from this node for good?", question)
+        self.assertNotIn("Pool B", question)
+        self.assertIn(POOL_A, env)
+        self.assertNotIn(self.NEW_A, env)
+
+    def test_yes_drops_the_pools_records_them_and_starts_the_setup_again(self):
+        done, error, events, env = self.prepare(
+            pool_config(), [self.NEW_A, self.NEW_B], accounts=self.FUNDED, pools={POOL_A: self.staked()},
+            tty=True, answer="y",
+        )
+        self.assertIsNone(error)
+        config, result = done
+        self.assertEqual(events[0], f"read {POOL_A}")
+        self.assertLess(events.index("question"), events.index("lock"))
+        self.assertEqual(
+            [(entry["pool"], entry["balance_nanotokens"], entry["at_elector_nanotokens"], entry["stakers"])
+             for entry in result["dropped_pools"]],
+            [("A", "13797964098", str(13367 * NANO), 5), ("B", "0", "0", 0)],
+        )
+        self.assertEqual(config["setup_stage"], "denominator-prepared")
+        self.assertEqual(result["next"], "evernode denominator deploy -n v-pools")
+        self.assertIn(self.NEW_A, env)
+        self.assertNotIn(POOL_A, env)
+
+    def test_without_a_terminal_only_force_drops_a_pool_that_holds_funds(self):
+        done, error, events, _ = self.prepare(
+            pool_config(), [self.NEW_A, self.NEW_B], accounts=self.FUNDED, pools={POOL_A: self.staked()},
+        )
+        self.assertIsNone(done)
+        self.assertIn("13,367 at the elector", str(error))
+        self.assertIn("--force drops them without asking", str(error))
+        self.assertNotIn("lock", events)
+        done, error, events, _ = self.prepare(
+            pool_config(), [self.NEW_A, self.NEW_B], accounts=self.FUNDED, pools={POOL_A: self.staked()},
+            force=True,
+        )
+        self.assertIsNone(error)
+        self.assertNotIn("question", events)
+        self.assertEqual(done[1]["dropped_pools"][0]["at_elector_nanotokens"], str(13367 * NANO))
+
+    def test_yes_on_the_command_line_does_not_answer_the_question(self):
+        with node_store() as (store, root), self.stubs([self.NEW_A, self.NEW_B], accounts=self.FUNDED,
+                                                       pools={POOL_A: self.staked()}) as events:
+            add_node(store, pool_config())
+            code, out, err = run_cli(root, "denominator", "prepare", "-n", "v-pools", "--new-contract", "--yes")
+            self.assertNotEqual(code, 0)
+            self.assertIn("--force drops them without asking", err)
+            self.assertEqual(store.load_node_config("v-pools")["settings"]["DENOMINATOR_ADDRS"], f"{POOL_A} {POOL_B}")
+            code, out, err = run_cli(root, "denominator", "prepare", "-n", "v-pools", "--new-contract", "--yes",
+                                     "--force")
+            self.assertEqual(code, 0, err)
+            saved = store.load_node_config("v-pools")
+        self.assertEqual(saved["settings"]["DENOMINATOR_ADDRS"], f"{self.NEW_A} {self.NEW_B}")
+        self.assertEqual(saved["setup_stage"], "denominator-prepared")
+        self.assertEqual([entry["pool"] for entry in json.loads(out)["dropped_pools"]], ["A", "B"])
+        self.assertIn("lock", events)
+
+    def test_a_pool_that_cannot_be_read_blocks_the_change_once_deployed(self):
+        down = {POOL_A: process.OperationError("The node container is not running")}
+        done, error, events, _ = self.prepare(pool_config(), [self.NEW_A, self.NEW_B], accounts=down)
+        self.assertIsNone(done)
+        self.assertIn(f"pool A ({POOL_A}) could not be read: The node container is not running", str(error))
+        self.assertIn("--force", str(error))
+        self.assertNotIn("lock", events)
+        done, error, _, _ = self.prepare(pool_config(), [self.NEW_A, self.NEW_B], accounts=down, force=True)
+        self.assertIsNone(error)
+        self.assertEqual(done[1]["dropped_pools"][1]["not_checked"], "The node container is not running")
+        # Before deploy, prepare works without the node and reports what it could not check.
+        done, error, events, _ = self.prepare(
+            pool_config(stage="denominator-prepared"), [self.NEW_A, self.NEW_B], accounts=down, new_contract=False,
+        )
+        self.assertIsNone(error)
+        self.assertNotIn("question", events)
+        self.assertIn("not_checked", done[1]["dropped_pools"][1])
+
+    def test_a_pool_that_never_existed_is_dropped_without_a_question(self):
+        done, error, events, _ = self.prepare(
+            pool_config(stage="denominator-prepared"), [self.NEW_A, self.NEW_B], new_contract=False,
+        )
+        self.assertIsNone(error)
+        self.assertNotIn("question", events)
+        self.assertEqual(done[1]["dropped_pools"][0]["balance_nanotokens"], "0")
+        self.assertEqual(done[0]["setup_stage"], "denominator-prepared")
+
+    def test_a_pair_that_becomes_one_pool_reads_only_the_pool_it_drops(self):
+        funded = {POOL_B: {"acc_type": "Active", "balance": 30 * NANO}}
+        done, error, events, _ = self.prepare(
+            pool_config(), [POOL_A], accounts=funded, pools={POOL_B: pool_account(balance=30)},
+            tty=True, answer="y",
+        )
+        self.assertIsNone(error)
+        self.assertEqual([event for event in events if event.startswith("read ")], [f"read {POOL_B}"])
+        self.assertEqual([entry["pool"] for entry in done[1]["dropped_pools"]], ["B"])
+        # Pool A is deployed already, so the node stays ready.
+        self.assertEqual(done[0]["setup_stage"], "ready-for-elections")
+
+    def test_an_unsigned_safe_transaction_to_a_pool_is_asked_about(self):
+        done, error, events, _ = self.prepare(
+            pool_config(stage="denominator-prepared"), [self.NEW_A, self.NEW_B], new_contract=False,
+            pending=[{"id": "7", "dest": POOL_A}], tty=True, answer="n",
+        )
+        self.assertIsNone(done)
+        question = events[events.index("question") + 1]
+        self.assertIn(f"Pool A ({POOL_A}) still holds 0 tokens", question)
+        self.assertIn("the Safe holds 1 unsigned transaction(s) to it", question)
+
+
 class LinkTests(unittest.TestCase):
     """denominator link: every Oberton link, built offline from fixed bodies."""
 

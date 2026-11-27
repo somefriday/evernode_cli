@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 import urllib.parse
 
@@ -383,11 +384,15 @@ def _manifest(store, config):
     return manifest
 
 
-def prepare(store, config, *, source=None, new_contract=False):
+def prepare(store, config, *, source=None, new_contract=False, force=False):
     """Compile the pool contract and derive the pools' addresses. Nothing is sent or spent.
 
     A pool's address follows from the code, the Safe and the terms node setup
-    recorded, so all of them are settled before anything exists on chain.
+    recorded, so all of them are settled before anything exists on chain. A
+    prepare that drops a recorded pool first reads what the pool still holds,
+    and asks before dropping one that holds anything (_check_dropped_pools).
+    The question comes before the election lock: a scheduled run that finds the
+    lock taken skips, so only the change itself holds it.
     """
     require(config)
     validator = safe_address(config)
@@ -420,7 +425,8 @@ def prepare(store, config, *, source=None, new_contract=False):
         if int(manifest["maxStakers"]) > MAX_STAKERS:
             raise process.OperationError(f"A pool takes at most {MAX_STAKERS} stakers")
         addresses = [item["address"] for item in manifest["pools"]]
-        deployed = [item["address"] for item in (config.get("denominator") or {}).get("pools") or []]
+        recorded = (config.get("denominator") or {}).get("pools") or []
+        deployed = [item["address"] for item in recorded]
         on_chain = config.get("setup_stage") in STAGES[1:] + ("ready-for-elections",)
         if deployed and on_chain and addresses != deployed and not new_contract:
             raise process.OperationError(
@@ -428,32 +434,41 @@ def prepare(store, config, *, source=None, new_contract=False):
                 f"{', '.join(addresses)}. Prepare them from the source they were built from, or use "
                 "--new-contract to move the node to the new pools"
             )
-        for item in staging.iterdir():
-            item.chmod(0o600)
-            os.replace(item, work / item.name)
+        dropped = _check_dropped_pools(
+            store, config, [item for item in recorded if item["address"] not in addresses], on_chain, force
+        )
+        with elections.hold_election_lock(store, config["name"]):
+            for item in staging.iterdir():
+                item.chmod(0o600)
+                os.replace(item, work / item.name)
+            terms["DENOMINATOR_ADDRS"] = " ".join(addresses)
+            terms["DENOMINATOR_TOOLS_IMAGE"] = tag
+            config["settings"] = dict(config.get("settings") or {}, **{
+                key: terms[key] for key in ("DENOMINATOR_ADDRS", "DENOMINATOR_TOOLS_IMAGE")
+            })
+            config["denominator"] = dict(
+                config.get("denominator") or {},
+                pools=[
+                    {"label": LABELS[item["salt"]], "address": item["address"], "factory": item["factory"],
+                     "salt": item["salt"]}
+                    for item in manifest["pools"]
+                ],
+                code_hash=manifest["codeHash"],
+                upstream_commit=manifest["upstreamCommit"],
+            )
+            configuration.write_node_environment(
+                store.node_directory(config["name"]) / "scripts" / "env.sh",
+                configuration.build_node_environment(config),
+            )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    terms["DENOMINATOR_ADDRS"] = " ".join(addresses)
-    terms["DENOMINATOR_TOOLS_IMAGE"] = tag
-    config["settings"] = dict(config.get("settings") or {}, **{
-        key: terms[key] for key in ("DENOMINATOR_ADDRS", "DENOMINATOR_TOOLS_IMAGE")
-    })
-    config["denominator"] = dict(
-        config.get("denominator") or {},
-        pools=[
-            {"label": LABELS[item["salt"]], "address": item["address"], "factory": item["factory"], "salt": item["salt"]}
-            for item in manifest["pools"]
-        ],
-        code_hash=manifest["codeHash"],
-        upstream_commit=manifest["upstreamCommit"],
-    )
-    configuration.write_node_environment(
-        store.node_directory(config["name"]) / "scripts" / "env.sh",
-        configuration.build_node_environment(config),
-    )
+    if deployed and on_chain and any(address not in deployed for address in addresses):
+        # A pool that does not exist yet takes deploy, verify and deposit again;
+        # until then election start refuses.
+        config["setup_stage"] = "denominator-prepared"
     if config.get("setup_stage") in ("wallet-deployed", "imported", "denominator-prepared"):
         config["setup_stage"] = "denominator-prepared"
-    return config, {
+    result = {
         "tools_image": tag,
         "tools_image_built": built,
         "contract_source": str(source),
@@ -471,6 +486,112 @@ def prepare(store, config, *, source=None, new_contract=False):
         ),
         "next": wallets.next_setup_command(config) or f"evernode denominator info -n {config['name']}",
     }
+    if dropped:
+        # The only record left of them: evernode no longer reads or maintains these.
+        result["dropped_pools"] = dropped
+    return config, result
+
+
+def _tokens(nanotokens):
+    """Exact tokens for a person to read: 13797964098 reads 13.797964098."""
+    whole, fraction = divmod(int(nanotokens), NANO)
+    return f"{whole:,}" + (f".{fraction:09d}".rstrip("0") if fraction else "")
+
+
+def _pool_holdings(store, config, item, pending):
+    """What one pool holds: its balance, its stake at the elector, its stakers and
+    queue, and the Safe's unsigned transactions to it (PENDING, or UNKNOWN).
+
+    An address that never existed holds nothing and needs no tools image. The
+    rest is read with the tools image the node records, which matches the code
+    of the pools it records.
+    """
+    address = item["address"]
+    unsigned = pending if pending == UNKNOWN else sum(
+        1 for transaction in pending if str(transaction.get("dest", "")).lower() == address.lower()
+    )
+    holdings = {"pool": item["label"], "address": address, "balance_nanotokens": "0",
+                "at_elector_nanotokens": "0", "stakers": 0, "queued_withdrawals": 0,
+                "unsigned_safe_transactions": unsigned}
+    account = _account(config, address)
+    kind = account.get("acc_type")
+    if kind == "Nonexist":
+        return holdings
+    if kind not in ("Active", "Uninit", "Frozen"):
+        raise process.OperationError("the node did not return its account")
+    pool = read_pool(store, config, address).get("pool") or {}
+    credit = int(scripts.read_elector_credit(store, config, address)["recoverable_nanotokens"])
+    sent = int(pool.get("stakeAmountSent") or 0) if pool.get("state") else 0
+    holdings.update(
+        balance_nanotokens=str(int(account.get("balance") or 0)),
+        at_elector_nanotokens=str(max(credit, sent)),
+        stakers=int(pool.get("nominatorsCount") or 0),
+        queued_withdrawals=int(pool.get("withdrawRequests") or 0),
+    )
+    return holdings
+
+
+def _holds_something(holdings):
+    return bool(
+        int(holdings["balance_nanotokens"]) or int(holdings["at_elector_nanotokens"])
+        or holdings["stakers"] or holdings["queued_withdrawals"]
+        or holdings["unsigned_safe_transactions"] != 0
+    )
+
+
+def _dropping_question(held):
+    lines = [
+        f"Pool {entry['pool']} ({entry['address']}) still holds {_tokens(entry['balance_nanotokens'])} tokens "
+        f"in the pool and {_tokens(entry['at_elector_nanotokens'])} at the elector; it has {entry['stakers']} "
+        f"staker(s) and {entry['queued_withdrawals']} queued withdrawal(s), and the Safe holds "
+        f"{entry['unsigned_safe_transactions']} unsigned transaction(s) to it."
+        for entry in held
+    ]
+    lines.append(
+        "Once dropped, evernode no longer maintains " + ("it" if len(held) == 1 else "them")
+        + ": nothing counts rounds, recovers a stake or pays a withdrawal there, and the validator's "
+        "funds there are out of evernode's reach."
+    )
+    lines.append("Drop " + ("this pool" if len(held) == 1 else "these pools") + " from this node for good?")
+    return "\n".join(lines)
+
+
+def _check_dropped_pools(store, config, dropped, on_chain, force):
+    """Read what each pool that prepare is about to drop still holds, and ask
+    before dropping any that holds something. Returns what was read.
+
+    Nothing maintains a dropped pool: no rounds are counted, no stake recovered,
+    no withdrawal paid, and the validator's funds in it are out of evernode's
+    reach. Only --force answers the question; --yes does not, so a habitual
+    --yes cannot drop funds. A pool that cannot be read blocks the change once
+    the pools are deployed, unless --force; before that, prepare works without
+    the node and reports such a pool as not checked.
+    """
+    if not dropped:
+        return []
+    pending = _reading(
+        lambda: scripts.read_wallet_pending(store, config, safe_address(config)).get("pending_transactions", [])
+    )
+    checked, unread = [], []
+    for item in dropped:
+        try:
+            checked.append(_pool_holdings(store, config, item, pending))
+        except (process.OperationError, KeyError, TypeError, ValueError) as exc:
+            unread.append({"pool": item["label"], "address": item["address"], "not_checked": str(exc)})
+    if unread and on_chain and not force:
+        raise process.OperationError(
+            "Nothing was changed: "
+            + "; ".join(f"pool {entry['pool']} ({entry['address']}) could not be read: {entry['not_checked']}"
+                        for entry in unread)
+            + ". Rerun once the node runs and its pools can be read, or pass --force to drop them unread"
+        )
+    held = [entry for entry in checked if _holds_something(entry)]
+    if held and not force:
+        question = _dropping_question(held)
+        if not sys.stdin.isatty():
+            raise process.OperationError(f"{question} Nothing was changed; --force drops them without asking")
+        ui.confirm_operation(False, question, flag="--force")
+    return checked + unread
 
 
 def _wait_active(config, address, attempts=15, delay=4):
@@ -892,7 +1013,8 @@ def retire(store, config):
 
 OFFLINE = ("prepare", "link")
 READ_ONLY = ("info", "stakers", "link", "verify")
-ELECTION_LOCKED = ("prepare", "deploy", "deposit", "withdraw", "retire")
+# prepare takes the election lock itself, after any question it asks.
+ELECTION_LOCKED = ("deploy", "deposit", "withdraw", "retire")
 
 
 def _question(args, config):
@@ -926,7 +1048,8 @@ def handle_action(store, args):
         if action in ELECTION_LOCKED:
             stack.enter_context(elections.hold_election_lock(store, name))
         if action == "prepare":
-            config, result = prepare(store, config, source=args.contract_source, new_contract=args.new_contract)
+            config, result = prepare(store, config, source=args.contract_source,
+                                     new_contract=args.new_contract, force=args.force)
         elif action == "deploy":
             config, result = deploy(store, config)
         elif action == "verify":

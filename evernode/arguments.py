@@ -76,6 +76,10 @@ def add_denominator_commands(groups):
         help="nominator-pool contract directory; defaults to the one installed with evernode",
     )
     q.add_argument("--new-contract", action="store_true", help="move a node whose pools are deployed to new pools")
+    q.add_argument(
+        "--force", action="store_true",
+        help="drop recorded pools that still hold funds without asking; --yes does not",
+    )
     q.add_argument("--yes", action="store_true")
     q = pools.add_parser("deploy", help="Create the pools, funded from the Safe")
     q.add_argument("-n", "--name", required=True)

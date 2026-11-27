@@ -34,7 +34,8 @@ def prompt_for_value(value, label, default=None):
     return answer or default or prompt_for_value(None, label)
 
 
-def confirm_operation(yes, text):
+def confirm_operation(yes, text, flag="--yes"):
+    """Ask TEXT [y/N] unless YES; FLAG names the option that gives YES."""
     if yes:
         return
     if not sys.stdin.isatty() or input(text + " [y/N]: ").strip().lower() not in (
@@ -42,7 +43,7 @@ def confirm_operation(yes, text):
         "yes",
     ):
         raise process.OperationError(
-            "Cancelled; no action taken (use --yes for explicit noninteractive approval)"
+            f"Cancelled; no action taken (use {flag} for explicit noninteractive approval)"
         )
 
 
