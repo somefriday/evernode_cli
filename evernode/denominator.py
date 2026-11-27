@@ -57,6 +57,14 @@ DEPOSIT_FEE = 1 * NANO
 # The validator funds a pool needs when the network has no config 40, as on
 # Everscale mainnet (pool.fc's max_recommended_punishment_for_validator_misbehaviour).
 PUNISHMENT_FLOOR = 101 * NANO
+# A pool's masterchain storage at its largest when idle, for the pinned code 9a3ec14b:
+# 58 code cells and 81 data cells (18,231 and 14,879 bits) with 40 stakers, plus its
+# account cell, rounded up. Storage comes out of the pool's balance, and its books
+# never see it. A validator's withdrawal leaves a year of it on top of the reserve:
+# once storage eats into the reserve, the last staker's 2-token withdrawal pays nothing.
+FULL_POOL_CELLS = 150
+FULL_POOL_BITS = 36_000
+YEAR_SECONDS = 365 * 24 * 3600
 
 # A link opens an Oberton wallet transfer to a pool: t=p a transfer with a
 # payload, da the destination, v the tokens and p the body as a URL-encoded
@@ -733,6 +741,29 @@ def deposit(store, config, *, amount, label=None):
     }
 
 
+def storage_year(config, now=None):
+    """A year of masterchain storage for a full pool at the network's current
+    prices (config 18), in nanotokens, rounded up as the network rounds fees."""
+    now = int(time.time()) if now is None else now
+    try:
+        prices = json.loads(_console(config, "getconfig 18").stdout)["p18"]
+        current = max((item for item in prices if int(item["utime_since"]) <= now),
+                      key=lambda item: int(item["utime_since"]))
+        per_second = (FULL_POOL_BITS * int(current["mc_bit_price_ps_dec"])
+                      + FULL_POOL_CELLS * int(current["mc_cell_price_ps_dec"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise process.OperationError(
+            "The chain did not report its storage prices (configuration parameter 18)"
+        ) from exc
+    return -(-per_second * YEAR_SECONDS // 65536)
+
+
+def withdrawable(account, cushion):
+    """What the validator may take out of an idle pool: everything beyond the
+    stakers' funds, the 10-token reserve and a year of storage (CUSHION)."""
+    return int(account["balance"]) - RESERVE - cushion - int(account["pool"]["nominatorsTotal"])
+
+
 def withdraw(store, config, *, amount, label):
     """Take the validator's own funds out of one idle pool, to the Safe (op 5)."""
     require(config)
@@ -746,11 +777,13 @@ def withdraw(store, config, *, amount, label):
             f"Pool {item['label']}'s stake is out; the validator's funds can be withdrawn only "
             "between its rounds, once the stake is back"
         )
-    free = int(account["balance"]) - RESERVE - int(pool["nominatorsTotal"])
+    cushion = storage_year(config)
+    free = withdrawable(account, cushion)
     if amount * NANO > free:
         raise process.OperationError(
-            f"Pool {item['label']} holds {max(free, 0) // NANO} tokens beyond what its stakers own and "
-            "its 10-token reserve; that is the most the validator can withdraw now"
+            f"Pool {item['label']} holds {max(free, 0) // NANO} tokens beyond what its stakers own, "
+            f"its 10-token reserve and a year of its storage ({_tokens(cushion)} tokens); that is the "
+            "most the validator can withdraw now"
         )
     result = _send(store, config, item["address"], NANO, "withdraw-validator", amount * NANO)
     return config, {"pool": item["label"], "address": item["address"], "withdrawn_tokens": amount,
@@ -798,7 +831,7 @@ def _next_action(config, pool, credit, p34_since, now):
     return "wait for the elector to release the stake"
 
 
-def _pool_report(store, config, item, p34_since, now):
+def _pool_report(store, config, item, p34_since, now, cushion=UNKNOWN):
     account = read_pool(store, config, item["address"])
     pool = account.get("pool")
     if not pool:
@@ -828,7 +861,9 @@ def _pool_report(store, config, item, p34_since, now):
         "next_action": _next_action(config, pool, credit, p34_since, now),
     }
     if pool["state"] == 0:
-        report["validator_withdrawable_nanotokens"] = str(max(0, balance - RESERVE - int(pool["nominatorsTotal"])))
+        report["validator_withdrawable_nanotokens"] = (
+            str(max(0, withdrawable(account, cushion))) if isinstance(cushion, int) else UNKNOWN
+        )
     return report
 
 
@@ -840,13 +875,16 @@ def info(store, config, *, label=None):
     safe = safe_address(config)
     wallet = _account(config, safe)
     pending = _reading(lambda: scripts.read_wallet_pending(store, config, safe).get("pending_transactions", []))
+    cushion = _reading(lambda: storage_year(config, now))
     return {
         "node": config["name"],
         "safe": safe,
         "safe_balance_nanotokens": str(int(wallet.get("balance") or 0)),
         "pending_safe_transactions": pending,
         "bidding": bidding(config),
-        "pools": [_pool_report(store, config, item, p34_since, now) for item in pools(config, label)],
+        # What a full pool pays for storage in a year; a validator's withdrawal leaves it in the pool.
+        "pool_storage_per_year_nanotokens": str(cushion) if isinstance(cushion, int) else cushion,
+        "pools": [_pool_report(store, config, item, p34_since, now, cushion) for item in pools(config, label)],
         "note": (
             "A pool's stake is at the elector from its bid until the hold time after its round "
             "ends (9 h 6 min on mainnet); stakers' withdrawals asked for meanwhile are paid when it returns."

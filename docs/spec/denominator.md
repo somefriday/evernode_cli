@@ -80,8 +80,12 @@ built. A deploy that stops after paying is run again; a paid deployer is not pai
 [denominator deposit](../denominator/deposit.md), [denominator withdraw](../denominator/withdraw.md):
 `denominator.deposit`, `withdraw`, through `denominator_cycle.sh send`.
 
-**Requires**: stage `denominator-verified` or later. A withdrawal needs an idle pool and at most
-the pool's balance less its stakers' funds and its 10-token reserve.
+**Requires**: stage `denominator-verified` or later. A withdrawal needs an idle pool. It is at most
+the pool's balance less three things:
+- the stakers' funds;
+- the 10-token reserve;
+- a year of storage for a full pool at the current config 18 prices (`storage_year`: 150 cells
+  and 36,000 bits, which is the pinned code with 40 stakers plus the account cell).
 
 **Logic**: the cycle script builds the body (op 4, or op 5 with the amount), submits it from the
 Safe with `Submit_And_Identify` and signs it through with `Complete_And_Await`. A deposit is

@@ -24,6 +24,7 @@ Prints, for each pool, an Oberton link for every operation a staker sends: `stak
 
 - Reads nothing from the chain and needs no running node. Nothing is signed or sent, and the links hold no secret.
 - `stake` attaches the minimum deposit plus the pool's 1-token fee; every other link attaches 2 tokens. Oberton lets the sender change the tokens; a withdrawal returns what it does not use.
+- **When storage has eaten into a pool's 10-token reserve,** the last staker's `withdraw` pays nothing with 2 tokens. The pool sends the 2 tokens back, minus gas, and the staker stays in. Attaching more than the shortfall pays the staker out, and the pool keeps what was attached. `denominator withdraw` leaves a year of storage in each pool so that this does not happen.
 - `withdraw` takes the staker's whole balance: at once while the pool is idle, otherwise when its stake returns. There is no partial withdrawal: withdraw, then stake again what to keep.
 - Stakers use a basechain (`0:`) wallet. Oberton sends without bounce: a deposit the pool refuses, because it is full or below the minimum, stays in the pool, where only the validator can take it out (`denominator withdraw`), for example to send it back.
 - The rescue links are for when this validator stops; anyone may send them. `update` once as each of the two rounds after a bid begins, `recover` 9 h 7 min after the second on mainnet, then `pay` until no withdrawal waits.

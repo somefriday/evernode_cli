@@ -624,18 +624,54 @@ class FundsAndRetirementTests(unittest.TestCase):
             config, result = denominator.deposit(None, pool_config(stage="denominator-verified"), amount=1)
         self.assertEqual(result["stage"], "denominator-verified")
 
-    def test_a_withdrawal_takes_only_what_the_stakers_and_the_reserve_do_not_own(self):
+    def test_a_withdrawal_takes_only_what_the_stakers_the_reserve_and_storage_do_not_own(self):
         config = pool_config()
         with patch.object(denominator, "read_pool", return_value=pool_account(state=2)):
             with self.assertRaisesRegex(process.OperationError, "stake is out"):
                 denominator.withdraw(None, config, amount=1, label="A")
         idle = pool_account(balance=3010, stakers_funds=2000)
-        with patch.object(denominator, "read_pool", return_value=idle):
-            with self.assertRaisesRegex(process.OperationError, "holds 1000 tokens"):
-                denominator.withdraw(None, config, amount=1001, label="A")
+        with (
+            patch.object(denominator, "read_pool", return_value=idle),
+            patch.object(denominator, "storage_year", return_value=50 * NANO),
+        ):
+            with self.assertRaisesRegex(process.OperationError,
+                                        r"holds 950 tokens .* a year of its storage \(50 tokens\)"):
+                denominator.withdraw(None, config, amount=951, label="A")
             with patch.object(denominator, "_send", return_value={}) as send:
-                denominator.withdraw(None, config, amount=1000, label="A")
-        send.assert_called_once_with(None, config, POOL_A, NANO, "withdraw-validator", 1000 * NANO)
+                denominator.withdraw(None, config, amount=950, label="A")
+        send.assert_called_once_with(None, config, POOL_A, NANO, "withdraw-validator", 950 * NANO)
+
+    def test_a_year_of_storage_is_priced_for_a_full_pool_at_the_current_prices(self):
+        prices = {"p18": [
+            {"utime_since": 0, "mc_bit_price_ps_dec": "1000", "mc_cell_price_ps_dec": "500000"},
+            # A price the network has voted for but that is not in force yet.
+            {"utime_since": 2_000_000_000, "mc_bit_price_ps_dec": "9", "mc_cell_price_ps_dec": "9"},
+        ]}
+        reply = subprocess.CompletedProcess([], 0, json.dumps(prices), "")
+        with patch.object(denominator, "_console", return_value=reply) as console:
+            year = denominator.storage_year(pool_config(), now=1_800_000_000)
+        console.assert_called_once_with(pool_config(), "getconfig 18")
+        # (36,000 bits x 1000 + 150 cells x 500,000) a second, over 2^16, for 365 days, rounded up.
+        self.assertEqual(year, 53413330079)
+        for broken in ("{}", json.dumps({"p18": []}), json.dumps({"p18": [{"utime_since": 0}]}), "no json"):
+            with self.subTest(broken=broken), patch.object(
+                denominator, "_console", return_value=subprocess.CompletedProcess([], 0, broken, "")
+            ):
+                with self.assertRaisesRegex(process.OperationError, "storage prices"):
+                    denominator.storage_year(pool_config(), now=1_800_000_000)
+
+    def test_info_leaves_a_year_of_storage_out_of_what_the_validator_can_withdraw(self):
+        idle = pool_account(balance=3010, stakers_funds=2000)
+        with (
+            patch.object(denominator, "read_pool", return_value=idle),
+            patch("evernode.scripts.read_elector_credit", return_value={"recoverable_nanotokens": "0"}),
+        ):
+            known = denominator._pool_report(None, pool_config(), {"label": "A", "address": POOL_A}, 0, 10**6,
+                                             50 * NANO)
+            unread = denominator._pool_report(None, pool_config(), {"label": "A", "address": POOL_A}, 0, 10**6,
+                                              denominator.UNKNOWN)
+        self.assertEqual(known["validator_withdrawable_nanotokens"], str(950 * NANO))
+        self.assertEqual(unread["validator_withdrawable_nanotokens"], denominator.UNKNOWN)
 
     def test_info_names_the_step_the_cycle_takes_next(self):
         now = 10**6

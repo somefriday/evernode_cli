@@ -24,7 +24,11 @@ Sends the pool the validator withdrawal operation from the Safe, with 1 token fo
 ## Behaviour
 
 - Only while the pool is idle, between its rounds: a stake at the elector cannot be touched.
-- Takes at most what the pool holds beyond its stakers' funds and its 10-token reserve; stakers' money never leaves.
+- Takes at most what the pool holds beyond three things, so stakers' money never leaves:
+  - the stakers' funds;
+  - the pool's 10-token reserve;
+  - a year of storage for a full pool at the network's current prices, about 53 tokens on mainnet.
+- **Why the year of storage:** the pool pays masterchain storage from its balance, and its books never see it. Without that year, storage would eat into the reserve, and then the last staker's 2-token withdraw link would pay nothing.
 - Below the minimum validator funds the pool stops bidding: withdraw everything only when retiring it.
 - The pool lowers the validator's funds by the whole amount, to no less than 0, even where part of it was a refused deposit. Returning one costs the validator that much of its recorded funds: deposit again before the pool bids.
 - Holds the node's election lock: a scheduled run waits.

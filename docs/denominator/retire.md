@@ -25,7 +25,8 @@ Deletes `/etc/cron.d/evernode-NAME`, the schedule that keeps running after `elec
 - Refuses while a pool's stake is out, the elector still owes a pool, or a pool has queued withdrawals: leave the cycle running and retry later.
 - Refuses while the Safe holds an unsigned transaction to a pool, such as a half-signed bid. Signed after the cycle is gone, a bid would send a stake out that nothing brings back. Sign it with `stake confirm`, or let it expire, then retry.
 - Stakers can still withdraw from an idle pool at any time with the `withdraw` link.
-- The pools stay on chain, each with its 10-token reserve.
+- The pools stay on chain. Each keeps its 10-token reserve and the year of storage that `denominator withdraw` leaves.
+- Ask stakers to withdraw within that year. After it, storage eats into the reserve, and the last staker's 2-token withdraw link pays nothing (see [link](link.md)).
 - `election start` installs the cycle again, with bidding.
 - `node remove` refuses the node until this has run, unless `--force`.
 
