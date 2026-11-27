@@ -28,7 +28,9 @@ Prints, for each pool, an Oberton link for every operation a staker sends: `stak
 - `withdraw` takes the staker's whole balance: at once while the pool is idle, otherwise when its stake returns. There is no partial withdrawal: withdraw, then stake again what to keep.
 - Stakers use a basechain (`0:`) wallet. Oberton sends without bounce: a deposit the pool refuses, because it is full or below the minimum, stays in the pool, where only the validator can take it out (`denominator withdraw`), for example to send it back.
 - The rescue links are for when this validator stops; anyone may send them. `update` once as each of the two rounds after a bid begins, `recover` 9 h 7 min after the second on mainnet, then `pay` until no withdrawal waits.
-- A `recover` sent too early is refused and its tokens stay in the pool. An `update` or `pay` with nothing to do returns what it does not use.
+- A `recover` sent too early is refused and its tokens stay in the pool.
+- A `pay` with nothing to do returns what it does not use.
+- So does an `update`, unless the pool has already counted three new validator sets since its last bid. The pool then refuses the update, and since the link does not bounce, it keeps the tokens. With three sets counted, a stake still out can be recovered at once: send `recover` instead.
 - Publish the rescue links when the pools open: a validator that has stopped cannot make them.
 
 ## See also
