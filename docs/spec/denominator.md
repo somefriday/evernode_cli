@@ -132,8 +132,9 @@ unless `--force` (`nodes._refuse_while_pools_need_their_cycle`).
 [denominator link](../denominator/link.md), [denominator retire](../denominator/retire.md).
 
 **Logic**: info and stakers read each pool, the elector's credit and the Safe. Link builds every
-Oberton link from the recorded addresses and fixed bodies, offline. Retire refuses in five cases,
-then removes the cron file:
+Oberton link from the recorded addresses and fixed bodies, offline. It does so only at
+`denominator-verified` or `ready-for-elections`: a deposit to an address with no pool yet would not
+be credited to the staker. Retire refuses in five cases, then removes the cron file:
 - while bidding;
 - while a stake is out;
 - while the elector owes a pool;

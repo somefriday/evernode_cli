@@ -595,6 +595,25 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["pools"][0]["address"], POOL_A)
 
+    def test_links_wait_for_verified_pools(self):
+        """A deposit to a pool that does not exist yet is not credited to the
+        staker, so no link is given before verify, nor after prepare has moved
+        the node to pools that do not exist yet (it sets the stage back)."""
+        expected = {
+            "wallet-deployed": "evernode denominator prepare -n v-pools",
+            "denominator-prepared": "evernode denominator deploy -n v-pools",
+            "denominator-deployed": "evernode denominator verify -n v-pools",
+        }
+        for stage, command in expected.items():
+            with self.subTest(stage=stage), patch.object(denominator, "_console", side_effect=AssertionError):
+                with self.assertRaises(process.OperationError) as caught:
+                    denominator.links(pool_config(stage=stage))
+                self.assertIn("would not be credited to the staker", str(caught.exception))
+                self.assertIn(f"Run: {command}", str(caught.exception))
+        for stage in ("denominator-verified", "ready-for-elections"):
+            with self.subTest(stage=stage):
+                self.assertEqual(len(denominator.links(pool_config(stage=stage))["pools"]), 2)
+
 
 class FundsAndRetirementTests(unittest.TestCase):
     """The validator's own funds, the cycle's switch and its removal."""

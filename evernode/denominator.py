@@ -946,8 +946,21 @@ def _link(address, value, body):
 
 
 def links(config, *, label=None, staker=None):
-    """Every wallet link for each pool, for stakers to open in Oberton. Offline: nothing is read or sent."""
+    """Every wallet link for each pool, for stakers to open in Oberton. Offline: nothing is read or sent.
+
+    Only once the recorded pools are verified. A deposit sent to an address with no
+    pool yet is not credited to the staker: once the pool is deployed it is pool
+    balance that only the validator can take out. Prepare sets the stage back when
+    it records pools that do not exist yet, so this holds after a contract move too.
+    """
     require(config)
+    if config.get("setup_stage") not in ("denominator-verified", "ready-for-elections"):
+        raise process.OperationError(
+            "The pools are not deployed and verified yet. A deposit sent to them now would not be "
+            "credited to the staker: it would become pool balance that only the validator can take "
+            "out. Run: "
+            + (wallets.next_setup_command(config) or f"evernode denominator verify -n {config['name']}")
+        )
     stake_value = int(settings(config)["DENOMINATOR_MIN_STAKER_STAKE"]) + DEPOSIT_FEE // NANO
     kinds = [
         ("stake", stake_value, BODIES["stake"],
