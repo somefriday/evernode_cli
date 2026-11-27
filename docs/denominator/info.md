@@ -30,7 +30,8 @@ Reads each pool, what the elector owes it and the Safe through the node's consol
 - `pool_storage_per_year_nanotokens`: a year of masterchain storage for a full pool at the network's current prices, about 53 tokens on mainnet. The pool pays it from its balance.
 - `validator_sets_counted` and `next_action`: what the cycle sends next, and when the stake can be recovered.
 - `bidding` is false after `election stop`; the cycle still runs.
-- A source that cannot be read shows as `unknown`; the rest of the report still shows.
+- These show as `unknown` when they cannot be read, and the rest of the report still shows: the elector's credit, the current validator set, the storage prices and the Safe's unsigned transactions. A pool that cannot be read stops the report, with the reason.
+- **Without the pool tools image** (an image prune removes it), info stops and names the image and the command that restores it, `denominator prepare`. Until the image is back, the pools' cycle does no maintenance. `stake status` and every other denominator command that reads or sends to a pool say the same.
 
 ## See also
 

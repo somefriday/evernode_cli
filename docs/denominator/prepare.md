@@ -26,6 +26,7 @@ Builds the pool tools image, compiles the nominator-pool contract that ships wit
 
 - Denominator validators only, after `wallet deploy`, or `wallet verify` for an existing Safe: an address depends on the Safe.
 - Needs Docker. The first run builds the tools image, which downloads its packages.
+- Restores a tools image that an image prune removed. With the same contract source and terms it gives the same pools and the same image, so the pools' cycle resumes at its next run.
 - The node need not be running, except to read a pool that prepare would drop.
 - Refuses terms outside what `node setup` accepts, such as more than 40 stakers.
 - Refuses code that gives other addresses than the deployed pools', unless `--new-contract`.

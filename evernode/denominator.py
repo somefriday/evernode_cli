@@ -249,11 +249,9 @@ def _account(config, address):
 
 def _tools(store, config, program, environment=None, timeout=300, image=None):
     """Run a shell program in the pool tools image, which sees only this node's pool directory."""
-    image = image or settings(config)["DENOMINATOR_TOOLS_IMAGE"]
-    if not image:
-        raise process.OperationError(
-            f"This node has no pool tools image recorded; run: evernode denominator prepare -n {config['name']}"
-        )
+    if image is None:
+        require_tools_image(config)
+        image = settings(config)["DENOMINATOR_TOOLS_IMAGE"]
     work = work_directory(store, config, create=True)
     return process.execute_command(
         [
@@ -280,11 +278,22 @@ def read_pool(store, config, address):
 
 
 def require_tools_image(config):
+    """The pool tools image this node records. Every command that reads a pool or
+    sends to one needs it, and without it the pools' cycle stops at its first
+    step, so no maintenance runs at all: say so in the operator's terminal."""
     image = settings(config)["DENOMINATOR_TOOLS_IMAGE"]
-    if not image or not docker.image_exists(image):
+    restore = (
+        f"evernode denominator prepare -n {config['name']}, from the contract source the pools "
+        "were prepared from (--contract-source, if it was not evernode's own)"
+    )
+    if not image:
+        raise process.OperationError(f"This node has no pool tools image recorded; run: {restore}")
+    if not docker.image_exists(image):
         raise process.OperationError(
-            f"The pool tools image {image or ''} is not on this host, so the pools can be "
-            f"neither read nor bid from; run: evernode denominator prepare -n {config['name']}"
+            f"The pool tools image {image} is missing from this host; an image prune removes it. "
+            "Until it is back, the pools can be neither read nor bid from, and their cycle does no "
+            "maintenance: no new round is counted, no stake recovered and no withdrawal paid. "
+            f"Restore it with: {restore}"
         )
 
 
@@ -686,6 +695,9 @@ def verify(store, config):
 
 def _cycle(store, config, *arguments, timeout):
     """Run the kit's denominator_cycle.sh and return the JSON line it ends with."""
+    # The script stops at its first step without the tools image; name it and the
+    # remedy here, before the Safe is asked for anything.
+    require_tools_image(config)
     result = scripts.execute_validator_script(
         store, config, CYCLE_SCRIPT, *arguments, timeout=timeout, sensitive=True
     )

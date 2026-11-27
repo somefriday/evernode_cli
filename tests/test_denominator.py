@@ -816,6 +816,60 @@ class FundsAndRetirementTests(unittest.TestCase):
                 self.assertIn("cycle bid", sequence.read_text())
 
 
+class ToolsImageTests(unittest.TestCase):
+    """A pruned pool tools image stops every read, every send and the whole cycle,
+    so whatever needs it names it in the operator's terminal, with the remedy."""
+
+    def assert_names_the_image_and_its_remedy(self, error):
+        text = str(error)
+        self.assertIn("The pool tools image local/evernode-pool-tools:0123456789abcdef is missing", text)
+        self.assertIn("their cycle does no maintenance", text)
+        self.assertIn("Restore it with: evernode denominator prepare -n v-pools", text)
+
+    def test_reading_a_pool_names_the_missing_image(self):
+        with (
+            patch("evernode.docker.image_exists", return_value=False),
+            patch.object(denominator, "_console"),
+            patch("evernode.process.execute_command", side_effect=AssertionError("ran without the image")),
+            node_store() as (store, _),
+        ):
+            add_node(store, pool_config())
+            with self.assertRaises(process.OperationError) as caught:
+                denominator.read_pool(store, pool_config(), POOL_A)
+        self.assert_names_the_image_and_its_remedy(caught.exception)
+
+    def test_a_send_names_the_missing_image_before_the_safe_is_asked(self):
+        with (
+            patch("evernode.docker.image_exists", return_value=False),
+            patch("evernode.scripts.execute_validator_script", side_effect=AssertionError("sent")),
+        ):
+            with self.assertRaises(process.OperationError) as caught:
+                denominator._send(None, pool_config(), POOL_A, NANO, "withdraw-validator", NANO)
+        self.assert_names_the_image_and_its_remedy(caught.exception)
+
+    def test_info_and_stake_status_name_the_missing_image(self):
+        with node_store() as (store, root):
+            add_node(store, pool_config())
+            with (
+                patch("evernode.docker.image_exists", return_value=False),
+                patch("evernode.scripts.require_node_console"),
+                patch.object(denominator, "_console",
+                             return_value=subprocess.CompletedProcess([], 0, json.dumps({"balance": "1"}), "")),
+                patch("evernode.scripts.read_wallet_pending", return_value={"pending_transactions": []}),
+                patch("evernode.nodes.fetch_chain_parameter", return_value={"utime_since": 1}),
+            ):
+                for words in (("denominator", "info"), ("stake", "status")):
+                    with self.subTest(command=" ".join(words)):
+                        code, out, err = run_cli(root, *words, "-n", "v-pools")
+                        self.assertNotEqual(code, 0)
+                        self.assert_names_the_image_and_its_remedy(err)
+
+    def test_a_node_without_a_recorded_image_is_told_to_prepare(self):
+        with self.assertRaisesRegex(process.OperationError, "no pool tools image recorded; run: evernode "
+                                                            "denominator prepare -n v-pools"):
+            denominator.require_tools_image(pool_config(DENOMINATOR_TOOLS_IMAGE=""))
+
+
 class ScheduleGateTests(unittest.TestCase):
     """What waits for election stop waits until the schedule cannot bid.
 
