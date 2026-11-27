@@ -984,14 +984,25 @@ def maintain(store, config):
 
 
 def retire(store, config):
-    """Remove the cycle once no pool has a stake out and the elector owes none of them anything."""
+    """Remove the cycle once no pool has a stake out, the elector owes none of them
+    anything, and the Safe holds no unsigned transaction to any of them: a bid
+    signed after the cycle is gone would send a stake out that nothing brings back."""
     require(config)
     if bidding(config):
         raise process.OperationError(
             f"{config['name']} still bids; stop it first: evernode election stop -n {config['name']}"
         )
     blocking = []
+    pending = scripts.read_wallet_pending(store, config, safe_address(config)).get("pending_transactions") or []
     for item in pools(config):
+        waiting = [str(transaction.get("id")) for transaction in pending
+                   if str(transaction.get("dest", "")).lower() == item["address"].lower()]
+        if waiting:
+            blocking.append(
+                f"the Safe holds {len(waiting)} unsigned transaction(s) to pool {item['label']} (id "
+                f"{', '.join(waiting)}): sign them with evernode stake confirm -n {config['name']} "
+                "--transaction-id ID, or let them expire"
+            )
         pool = read_pool(store, config, item["address"]).get("pool") or {}
         credit = int(scripts.read_elector_credit(store, config, item["address"]).get("recoverable_nanotokens") or 0)
         if pool.get("state") != 0:

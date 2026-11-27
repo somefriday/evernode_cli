@@ -29,11 +29,12 @@ Code: `denominator.handle_action`.
 
 1. Take the node lock ([LOCK-1](properties.md#lock-1)).
 2. Require a role and the denominator type.
-3. Require a synchronized node ([NODE-1](properties.md#node-1)), except for `prepare` and `link`,
-   which read nothing from the chain.
+3. Require a synchronized node ([NODE-1](properties.md#node-1)), except for `prepare` and `link`.
+   Link reads nothing from the chain, and prepare reads it only for a pool it would drop.
 4. Ask for confirmation, except for `info`, `stakers`, `link` and `verify`.
-5. Take the election lock for `prepare`, `deploy`, `deposit`, `withdraw` and `retire`
-   ([LOCK-2](properties.md#lock-2)).
+5. Take the election lock for `deploy`, `deposit`, `withdraw` and `retire`
+   ([LOCK-2](properties.md#lock-2)). `prepare` takes it itself, after any question it asks, and
+   only for the change.
 6. Run the command. Save the node record only if it succeeds.
 
 ## Prepare, deploy and verify
@@ -127,6 +128,12 @@ unless `--force` (`nodes._refuse_while_pools_need_their_cycle`).
 [denominator link](../denominator/link.md), [denominator retire](../denominator/retire.md).
 
 **Logic**: info and stakers read each pool, the elector's credit and the Safe. Link builds every
-Oberton link from the recorded addresses and fixed bodies, offline. Retire refuses while bidding,
-while a stake is out, while the elector owes a pool or while a withdrawal is queued, then removes
-the cron file.
+Oberton link from the recorded addresses and fixed bodies, offline. Retire refuses in five cases,
+then removes the cron file:
+- while bidding;
+- while a stake is out;
+- while the elector owes a pool;
+- while a withdrawal is queued;
+- while the Safe holds an unsigned transaction to a pool. It reads them with
+  `scripts.read_wallet_pending`, which is the cycle's `Pending_To` rule, and refuses if the Safe
+  cannot be read.

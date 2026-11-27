@@ -692,6 +692,11 @@ class FundsAndRetirementTests(unittest.TestCase):
                 report = denominator._pool_report(None, pool_config(), {"label": "B", "address": POOL_B}, 0, 10**6)
                 self.assertEqual(report["election_id"], expected)
 
+    @staticmethod
+    def pending(*transactions):
+        return patch("evernode.scripts.read_wallet_pending",
+                     return_value={"pending_transactions": list(transactions)})
+
     def test_retire_refuses_while_the_cycle_still_has_work(self):
         with self.assertRaisesRegex(process.OperationError, "still bids"):
             denominator.retire(None, pool_config(bidding=True))
@@ -699,6 +704,7 @@ class FundsAndRetirementTests(unittest.TestCase):
         with (
             patch.object(denominator, "read_pool", side_effect=lambda store, config, address: accounts[address]),
             patch("evernode.scripts.read_elector_credit", return_value={"recoverable_nanotokens": "0"}),
+            self.pending(),
             patch.object(elections, "disable_node_election_schedule") as disable,
         ):
             with self.assertRaises(process.OperationError) as caught:
@@ -707,15 +713,44 @@ class FundsAndRetirementTests(unittest.TestCase):
         self.assertIn("pool B has 2 queued withdrawal(s)", str(caught.exception))
         disable.assert_not_called()
 
-    def test_retire_removes_the_cycle_once_every_stake_is_back(self):
+    def test_retire_refuses_while_the_safe_holds_an_unsigned_transaction_to_a_pool(self):
+        """A half-signed bid signed after the cycle is gone would send a stake out
+        that nothing brings back, though every pool reads idle."""
         with (
             patch.object(denominator, "read_pool", return_value=pool_account()),
             patch("evernode.scripts.read_elector_credit", return_value={"recoverable_nanotokens": "0"}),
+            self.pending({"id": "0x5", "dest": POOL_B}, {"id": "0x6", "dest": STAKER}),
+            patch.object(elections, "disable_node_election_schedule") as disable,
+        ):
+            with self.assertRaises(process.OperationError) as caught:
+                denominator.retire(None, pool_config())
+        self.assertIn("the Safe holds 1 unsigned transaction(s) to pool B (id 0x5)", str(caught.exception))
+        self.assertIn("evernode stake confirm -n v-pools --transaction-id ID, or let them expire",
+                      str(caught.exception))
+        self.assertNotIn("pool A", str(caught.exception))
+        disable.assert_not_called()
+
+    def test_retire_removes_the_cycle_once_every_stake_is_back(self):
+        """A transaction the Safe holds to anything but the pools does not hold it up."""
+        with (
+            patch.object(denominator, "read_pool", return_value=pool_account()),
+            patch("evernode.scripts.read_elector_credit", return_value={"recoverable_nanotokens": "0"}),
+            self.pending({"id": "0x6", "dest": STAKER}),
             patch.object(elections, "disable_node_election_schedule") as disable,
         ):
             _, result = denominator.retire(None, pool_config())
         disable.assert_called_once_with("v-pools")
         self.assertEqual(result["cycle"], "removed")
+
+    def test_retire_stops_when_the_safe_cannot_be_read(self):
+        with (
+            patch("evernode.scripts.read_wallet_pending",
+                  side_effect=process.OperationError("Could not read the pending transactions")),
+            patch.object(elections, "disable_node_election_schedule") as disable,
+        ):
+            with self.assertRaisesRegex(process.OperationError, "Could not read the pending transactions"):
+                denominator.retire(None, pool_config())
+        disable.assert_not_called()
 
     def test_start_needs_funded_verified_pools(self):
         with self.assertRaisesRegex(process.OperationError, "denominator deposit -n v-pools"):
